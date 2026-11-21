@@ -189,6 +189,11 @@ pub trait CaptureApi: Send + Sync {
     fn status(&self) -> Vec<CaptureStatus>;
     /// `cycleAll()` (replay mode, Phase 7e). Default: no-op.
     fn cycle_all(&self) {}
+    /// Camera report (Rust-only): each camera's run as
+    /// `xorgate_core::camera_truth` reads it. Default: none (test backends).
+    fn health(&self) -> Vec<(String, xorgate_core::camera_truth::CaptureLive)> {
+        Vec::new()
+    }
 }
 
 /// `onEvent(level, msg)`.
@@ -891,6 +896,14 @@ impl RecordingManager {
             },
             None => VideoRecordingStatus::default(),
         }
+    }
+
+    /// Camera report (Rust-only): the live capture supervisor's per-camera
+    /// health; empty while no supervisor runs. Takes only the `slots` lock
+    /// and the supervisor's own (both leaves, like [`Self::video_status`]).
+    pub fn capture_health(&self) -> Vec<(String, xorgate_core::camera_truth::CaptureLive)> {
+        let c = lock(&self.inner.slots).capture.clone();
+        c.map(|c| c.health()).unwrap_or_default()
     }
 
     /// `status()` (`manager.ts:397-419`) — lock-free (P9): the published

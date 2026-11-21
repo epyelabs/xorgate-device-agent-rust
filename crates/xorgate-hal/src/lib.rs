@@ -15,6 +15,7 @@ pub mod boot_config_io;
 pub mod boot_id;
 pub mod boot_sources;
 pub mod camera_list;
+pub mod camera_probe;
 pub mod child;
 pub mod config_sync_file;
 pub mod counters_file;

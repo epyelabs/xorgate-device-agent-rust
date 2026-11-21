@@ -615,3 +615,46 @@ Plan: `plans/device-agent-js-to-rust/phase-7c-rust-imu.md` §Design 6 (R6: the r
 - **What it proves:** knob → `ChildSpec` (program, `arg0`, args) → spawn → supervision (Redetect/Park). It does NOT exercise the SHTP codec or client: those rest on C4 (oracle differential), C5 (W0 lockstep) and C10b (bench reverse lockstep).
 - **The IMU knobs are refused on a JS side** (and on a JS handoff incarnation).
 - **C7 tapes:** the IMU-bearing synthetic tapes `smoke`, `calibration`, `full`, `imu`.
+
+## Camera report (support-other-camera-models, Phase 0): Rust-only, lanes on camera tapes differ by construction
+
+Since branch `camera/phase0-truth` the Rust agent does things on the camera path that the JS agent
+does not, on purpose (accepted divergences **D89–D94**, in the register
+`plans/done/device-agent-js-to-rust/phase-1/evidence/accepted-divergences.md`). Orchestrator ruling
+(provisional, 2026-11-21): the plan does not gate on JS-vs-Rust lanes for tapes with a camera
+hardware block. **No tolerance matcher was built and no tolerance row was widened**, so on those
+tapes a JS-vs-Rust lane reports the differences below as UNTOLERATED. That is the expected reading,
+not a regression. A Rust-vs-Rust lane with one binary on both sides is unaffected; an `ab` lane
+across this change differs the same way.
+
+What differs, where the agent runs in real mode, online, with a hardware block that lists cameras:
+
+| # | Stream | Difference | Row |
+|---|---|---|---|
+| 1 | `report` | `effective.cameras` on the Rust side of every report | D89 |
+| 2 | `report` (count) | extra Rust-side reports: one when capture first settles after a boot report that carried `off` / `starting`, one per real change of a port (hold 20 s, doubling to 10 min) | D89 |
+| 3 | `state` | `cameras`, the last key of the Rust state.json | D90 |
+| 4 | child processes, events | only on a tape with a camera-less port and stale pipeline files: the JS side spawns capture children from the stale name, the Rust side does not, and logs one `[video-capture] <key>: no camera enumerated on its port …` line | D91 |
+| 5 | end snapshot `etc/pipelines/<key>.gst.direct` | only on a tape with a sensor change | D92 |
+| 6 | events | the `hardware: … using it anyway` warning, only where config.txt and the model disagree or a variant name is listed | D93 |
+| 7 | `exec` | extra `rpicam-hello --list-cameras` runs (15 s, 30 s, 60 s, then every 5 min), only while a port is held AND the rig host's `/sys/bus/i2c/devices` shows a driver bound on it (never on the rig as it is) | D94 |
+
+Affected synthetic scenarios (rows 1–3; the others need inputs no synthetic tape has): every one
+that carries the `media-hw` track: `media`, `rec-boot-defer`, `rec-shed-uv`, `rec-shed-thermal`,
+`rec-disk`, `rec-upload-outage`, `rec-cameras`, `rec-preset`, `p6-takeover-open`,
+`p6-takeover-vbacklog`, `p6-takeover-vbacklog-503tail`, `p6-takeover-tbacklog`,
+`p6-takeover-inflight`, `p6-takeover-reap`, `p4-led-ladder`, `p5b-led`; `p4-cam-mount` if its
+hardware block lists cameras; and every bench tape. Not affected: `smoke`, `calibration`, `full`
+(their hardware block has `video: []`), the nmea / sms / clock / obd scenarios, and everything in sim
+or replay mode (no camera report there at all).
+
+If these lanes are ever gated again, what would be needed (none of it exists):
+
+- a presence-only row for a Rust-only SUBTREE (`effective.cameras`, state `cameras`): the JS side
+  lacks the path, the Rust side holds an object. `rust_only_value` (D85) wants one exact value;
+- a report-count rule for a Rust-side report that differs from that side's previous report only
+  under `effective.cameras` (the `report-echo` row is the model);
+- for a scenario that pins verdicts: the new inputs are not on the tape. config.txt comes from
+  `pi-ns.sh` (Pi tapes only) and `/sys/bus/i2c/devices` is the rig host's, so `bound.driver` reads
+  `false` and, off Pi tapes, `bootConfig` reads `null`. `pi-ns.sh` would have to bind a fake
+  `/sys/bus/i2c/devices`.

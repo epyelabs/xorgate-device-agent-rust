@@ -1,0 +1,95 @@
+{
+ "provenance": "RUST-ONLY fixture (no JS envelope: the JS agent has no per-port camera report). Real `rpicam-hello --list-cameras` outputs captured on the three benches for the support-other-camera-models plan, 2026-11-21 (plan evidence: bench session 2 reports, and a read-only look the same day). Mode lines carry libcamera's placeholder crop values (65535x65535) wherever a capture process held the camera; the parser must read only the first token and the path. No device identifiers, coordinates or credentials.",
+ "cases": [
+  {
+   "name": "CM4, IMX708 on CAM0 (dtoverlay=imx708,cam0)",
+   "platform": "rpi-cm4",
+   "stdout": "Available cameras\n-----------------\n0 : imx708 [4608x2592 10-bit RGGB] (/base/soc/i2c0mux/i2c@0/imx708@1a)\n    Modes: 'SRGGB10_CSI2P' : 1536x864 [30.00 fps - (65535, 65535)/65535x65535 crop]\n                             2304x1296 [30.00 fps - (65535, 65535)/65535x65535 crop]\n                             4608x2592 [30.00 fps - (65535, 65535)/65535x65535 crop]\n\n",
+   "stderr": "",
+   "exitCode": 0,
+   "cameras": [
+    {
+     "cameraName": "/base/soc/i2c0mux/i2c@0/imx708@1a",
+     "sensor": "imx708",
+     "connector": "csi0"
+    }
+   ]
+  },
+  {
+   "name": "bench 2 (CM5), IMX335 on CAM0 + IMX219 on CAM1, Arducam libcamera",
+   "platform": "rpi-cm5",
+   "stdout": "Available cameras\n-----------------\n0 : imx335 [2624x1944 12-bit RGGB] (/base/axi/pcie@1000120000/rp1/i2c@88000/imx335@1a)\n    Modes: 'SRGGB10_CSI2P' : 1312x972 [30.00 fps - (65535, 65535)/65535x65535 crop]\n                             2592x1944 [30.00 fps - (65535, 65535)/65535x65535 crop]\n           'SRGGB12_CSI2P' : 1312x972 [30.00 fps - (65535, 65535)/65535x65535 crop]\n                             2592x1944 [30.00 fps - (65535, 65535)/65535x65535 crop]\n\n1 : imx219 [3280x2464 10-bit RGGB] (/base/axi/pcie@1000120000/rp1/i2c@70000/imx219@10)\n    Modes: 'SRGGB10_CSI2P' : 640x480 [206.65 fps - (1000, 752)/1280x960 crop]\n                             1640x1232 [41.85 fps - (0, 0)/3280x2464 crop]\n                             1920x1080 [47.57 fps - (680, 692)/1920x1080 crop]\n                             3280x2464 [21.19 fps - (0, 0)/3280x2464 crop]\n           'SRGGB8' : 640x480 [206.65 fps - (1000, 752)/1280x960 crop]\n                      1640x1232 [83.70 fps - (0, 0)/3280x2464 crop]\n                      1920x1080 [47.57 fps - (680, 692)/1920x1080 crop]\n                      3280x2464 [21.19 fps - (0, 0)/3280x2464 crop]\n\n",
+   "stderr": "",
+   "exitCode": 0,
+   "cameras": [
+    {
+     "cameraName": "/base/axi/pcie@1000120000/rp1/i2c@88000/imx335@1a",
+     "sensor": "imx335",
+     "connector": "csi0"
+    },
+    {
+     "cameraName": "/base/axi/pcie@1000120000/rp1/i2c@70000/imx219@10",
+     "sensor": "imx219",
+     "connector": "csi1"
+    }
+   ]
+  },
+  {
+   "name": "bench 2 (CM5), stock libcamera: only the IMX219 on CAM1 is listed (the imx335 on CAM0 is not), placeholder mode values",
+   "platform": "rpi-cm5",
+   "stdout": "Available cameras\n-----------------\n0 : imx219 [3280x2464 10-bit] (/base/axi/pcie@1000120000/rp1/i2c@70000/imx219@10)\n    Modes: 'SBGGR10_CSI2P' : 640x480 [30.00 fps - (65535, 65535)/65535x65535 crop]\n                             1640x1232 [30.00 fps - (65535, 65535)/65535x65535 crop]\n                             1920x1080 [30.00 fps - (65535, 65535)/65535x65535 crop]\n                             3280x2464 [30.00 fps - (65535, 65535)/65535x65535 crop]\n           'SBGGR8' : 640x480 [30.00 fps - (65535, 65535)/65535x65535 crop]\n                      1640x1232 [30.00 fps - (65535, 65535)/65535x65535 crop]\n                      1920x1080 [30.00 fps - (65535, 65535)/65535x65535 crop]\n                      3280x2464 [30.00 fps - (65535, 65535)/65535x65535 crop]\n\n",
+   "stderr": "",
+   "exitCode": 0,
+   "cameras": [
+    {
+     "cameraName": "/base/axi/pcie@1000120000/rp1/i2c@70000/imx219@10",
+     "sensor": "imx219",
+     "connector": "csi1"
+    }
+   ]
+  },
+  {
+   "name": "bench 1 (CM5), the control: two IMX290",
+   "platform": "rpi-cm5",
+   "stdout": "Available cameras\n-----------------\n0 : imx290 [1920x1080 12-bit RGGB] (/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a)\n    Modes: 'SRGGB10_CSI2P' : 1280x720 [30.00 fps - (65535, 65535)/65535x65535 crop]\n                             1920x1080 [30.00 fps - (65535, 65535)/65535x65535 crop]\n           'SRGGB12_CSI2P' : 1280x720 [30.00 fps - (65535, 65535)/65535x65535 crop]\n                             1920x1080 [30.00 fps - (65535, 65535)/65535x65535 crop]\n\n1 : imx290 [1920x1080 12-bit RGGB] (/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a)\n    Modes: 'SRGGB10_CSI2P' : 1280x720 [60.00 fps - (320, 180)/1280x720 crop]\n                             1920x1080 [60.00 fps - (0, 0)/1920x1080 crop]\n           'SRGGB12_CSI2P' : 1280x720 [60.00 fps - (320, 180)/1280x720 crop]\n                             1920x1080 [60.00 fps - (0, 0)/1920x1080 crop]\n\n",
+   "stderr": "",
+   "exitCode": 0,
+   "cameras": [
+    {
+     "cameraName": "/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a",
+     "sensor": "imx290",
+     "connector": "csi0"
+    },
+    {
+     "cameraName": "/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a",
+     "sensor": "imx290",
+     "connector": "csi1"
+    }
+   ]
+  },
+  {
+   "name": "no camera at all, as the benches print it (a wrong imx219/imx708 overlay, or imx335 bound with stock libcamera)",
+   "platform": "rpi-cm4",
+   "stdout": "No cameras available!\n",
+   "stderr": "",
+   "exitCode": 0,
+   "cameras": []
+  },
+  {
+   "name": "no camera at all, the older rpicam-apps wording on stderr (the JS golden's form)",
+   "platform": "rpi-cm5",
+   "stdout": "",
+   "stderr": "ERROR: *** No cameras available! ***\n",
+   "exitCode": 255,
+   "cameras": []
+  },
+  {
+   "name": "libcamera broken: no recognizable listing",
+   "platform": "rpi-cm5",
+   "stdout": "",
+   "stderr": "rpicam-hello: error while loading shared libraries: libcamera.so.0.5: cannot open shared object file\n",
+   "exitCode": 127,
+   "cameras": null
+  }
+ ]
+}

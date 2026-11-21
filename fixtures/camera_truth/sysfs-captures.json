@@ -1,0 +1,186 @@
+{
+ "provenance": "RUST-ONLY fixture. `/sys/bus/i2c/devices` as captured read-only on the three benches on 2026-11-21 (for each entry: `readlink <entry>/of_node`, `readlink <entry>/driver`, and whether the device-tree node the link resolves to has a `port` child). `ofNode` and `driver` are the raw link texts the kernel wrote. `nodes` is what `camera_probe::scan_port_nodes` must return. No device identifiers.",
+ "cases": [
+  {
+   "name": "CM4 (BCM2711), dtoverlay=imx708,cam0: the sensor and its lens driver on CAM0",
+   "platform": "rpi-cm4",
+   "devices": [
+    {
+     "name": "0-000c",
+     "ofNode": "../../../../../../../firmware/devicetree/base/soc/i2c0mux/i2c@0/dw9817@c",
+     "driver": "../../../../../../../bus/i2c/drivers/dw9807",
+     "port": false
+    },
+    {
+     "name": "0-001a",
+     "ofNode": "../../../../../../../firmware/devicetree/base/soc/i2c0mux/i2c@0/imx708@1a",
+     "driver": "../../../../../../../bus/i2c/drivers/imx708",
+     "port": true
+    },
+    {
+     "name": "i2c-0",
+     "ofNode": "../../../../../../firmware/devicetree/base/soc/i2c0mux/i2c@0",
+     "driver": null,
+     "port": false
+    },
+    {
+     "name": "i2c-1",
+     "ofNode": "../../../../../firmware/devicetree/base/soc/i2c@7e804000",
+     "driver": null,
+     "port": false
+    },
+    {
+     "name": "i2c-10",
+     "ofNode": "../../../../../../firmware/devicetree/base/soc/i2c0mux/i2c@1",
+     "driver": null,
+     "port": false
+    },
+    {
+     "name": "i2c-20",
+     "ofNode": "../../../../../firmware/devicetree/base/soc/i2c@7ef04500",
+     "driver": null,
+     "port": false
+    },
+    {
+     "name": "i2c-21",
+     "ofNode": "../../../../../firmware/devicetree/base/soc/i2c@7ef09500",
+     "driver": null,
+     "port": false
+    },
+    {
+     "name": "i2c-22",
+     "ofNode": "../../../../../firmware/devicetree/base/soc/i2c@7e205000",
+     "driver": null,
+     "port": false
+    }
+   ],
+   "nodes": [
+    {
+     "connector": "csi0",
+     "node": "imx708@1a",
+     "driver": "imx708"
+    }
+   ]
+  },
+  {
+   "name": "CM5 (RP1), dtoverlay=imx335,cam0 + dtoverlay=imx219,cam1",
+   "platform": "rpi-cm5",
+   "devices": [
+    {
+     "name": "0-0010",
+     "ofNode": "../../../../../../../firmware/devicetree/base/axi/pcie@1000120000/rp1/i2c@70000/imx219@10",
+     "driver": "../../../../../../../bus/i2c/drivers/imx219",
+     "port": true
+    },
+    {
+     "name": "10-001a",
+     "ofNode": "../../../../../../../firmware/devicetree/base/axi/pcie@1000120000/rp1/i2c@88000/imx335@1a",
+     "driver": "../../../../../../../bus/i2c/drivers/imx335",
+     "port": true
+    },
+    {
+     "name": "i2c-0",
+     "ofNode": "../../../../../../firmware/devicetree/base/axi/pcie@1000120000/rp1/i2c@70000",
+     "driver": null,
+     "port": false
+    },
+    {
+     "name": "i2c-1",
+     "ofNode": "../../../../../../firmware/devicetree/base/axi/pcie@1000120000/rp1/i2c@74000",
+     "driver": null,
+     "port": false
+    },
+    {
+     "name": "i2c-10",
+     "ofNode": "../../../../../../firmware/devicetree/base/axi/pcie@1000120000/rp1/i2c@88000",
+     "driver": null,
+     "port": false
+    },
+    {
+     "name": "i2c-13",
+     "ofNode": "../../../../../firmware/devicetree/base/soc@107c000000/i2c@7d508200",
+     "driver": null,
+     "port": false
+    },
+    {
+     "name": "i2c-14",
+     "ofNode": "../../../../../firmware/devicetree/base/soc@107c000000/i2c@7d508280",
+     "driver": null,
+     "port": false
+    }
+   ],
+   "nodes": [
+    {
+     "connector": "csi0",
+     "node": "imx335@1a",
+     "driver": "imx335"
+    },
+    {
+     "connector": "csi1",
+     "node": "imx219@10",
+     "driver": "imx219"
+    }
+   ]
+  },
+  {
+   "name": "CM5 (RP1), two IMX290 (the control bench)",
+   "platform": "rpi-cm5",
+   "devices": [
+    {
+     "name": "0-001a",
+     "ofNode": "../../../../../../../firmware/devicetree/base/axi/pcie@1000120000/rp1/i2c@70000/imx290@1a",
+     "driver": "../../../../../../../bus/i2c/drivers/imx290",
+     "port": true
+    },
+    {
+     "name": "10-001a",
+     "ofNode": "../../../../../../../firmware/devicetree/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a",
+     "driver": "../../../../../../../bus/i2c/drivers/imx290",
+     "port": true
+    },
+    {
+     "name": "i2c-0",
+     "ofNode": "../../../../../../firmware/devicetree/base/axi/pcie@1000120000/rp1/i2c@70000",
+     "driver": null,
+     "port": false
+    },
+    {
+     "name": "i2c-1",
+     "ofNode": "../../../../../../firmware/devicetree/base/axi/pcie@1000120000/rp1/i2c@74000",
+     "driver": null,
+     "port": false
+    },
+    {
+     "name": "i2c-10",
+     "ofNode": "../../../../../../firmware/devicetree/base/axi/pcie@1000120000/rp1/i2c@88000",
+     "driver": null,
+     "port": false
+    },
+    {
+     "name": "i2c-13",
+     "ofNode": "../../../../../firmware/devicetree/base/soc@107c000000/i2c@7d508200",
+     "driver": null,
+     "port": false
+    },
+    {
+     "name": "i2c-14",
+     "ofNode": "../../../../../firmware/devicetree/base/soc@107c000000/i2c@7d508280",
+     "driver": null,
+     "port": false
+    }
+   ],
+   "nodes": [
+    {
+     "connector": "csi0",
+     "node": "imx290@1a",
+     "driver": "imx290"
+    },
+    {
+     "connector": "csi1",
+     "node": "imx290@1a",
+     "driver": "imx290"
+    }
+   ]
+  }
+ ]
+}

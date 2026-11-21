@@ -486,6 +486,9 @@ pub struct Rig {
     pub replay: Option<Arc<dyn xorgate_agent::recording::capture::ReplayCaptureHooks>>,
     /// D86: `VideoOpts.on_capture_source_absent` (default: a no-op).
     pub source_absent_hook: Option<xorgate_agent::recording::manager::SourceAbsentFn>,
+    /// `VideoOpts.cameras` instead of the fixed `cameras` list (the real
+    /// `policy_sources::cameras_fn`, for the B5 heal test).
+    pub cameras_override: Option<Arc<dyn Fn() -> Vec<CaptureCamera> + Send + Sync>>,
 }
 
 impl Rig {
@@ -522,6 +525,7 @@ impl Rig {
             clock_trusted: None,
             replay: None,
             source_absent_hook: None,
+            cameras_override: None,
         }
     }
 
@@ -569,7 +573,10 @@ impl Rig {
         let hook = self.live_shed_hook.clone();
         let video = VideoOpts {
             media_enabled: self.media_enabled,
-            cameras: Arc::new(move || cams.clone()),
+            cameras: self
+                .cameras_override
+                .clone()
+                .unwrap_or_else(|| Arc::new(move || cams.clone())),
             encoder: Arc::new(|| xorgate_core::hardware_block::EncoderToken::SwH264),
             on_capture_spawned: Arc::new(move |k: &str| {
                 l3.spawned_callbacks.lock().unwrap().push(k.to_string())

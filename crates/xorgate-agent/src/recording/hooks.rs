@@ -31,6 +31,7 @@ use xorgate_core::telemetry::{RecordingStatus, TelemetryMedia};
 use indexmap::IndexMap;
 use tokio::sync::watch;
 use tracing::{info, warn};
+use xorgate_core::cameras::EnumeratedCamera;
 use xorgate_core::hardware_block::DeviceHardwareBlock;
 use xorgate_core::stream_guard::StreamHardwareStatus;
 use xorgate_core::telemetry::{ActivityLevel, RunMode};
@@ -44,6 +45,15 @@ use crate::ctx::{AgentCtx, BoxFut, MediaControl, PhaseHooks};
 /// fatal at boot, logged and skipped on a cloud change (review-wp5 M1).
 pub trait HardwareReconciler: Send + Sync {
     fn reconcile(&self) -> BoxFut<'_, Result<Vec<String>, String>>;
+    /// Rust-only (support-other-camera-models Phase 0): the same pass, run
+    /// again for a port that is held for lack of a camera while a driver is
+    /// bound on it. It differs from [`reconcile`](Self::reconcile) in its
+    /// journal only: a line the previous pass already logged is not logged
+    /// again (a re-check every five minutes must not repeat "no camera
+    /// enumerated …" for ever). Default: the plain pass.
+    fn recheck(&self) -> BoxFut<'_, Result<Vec<String>, String>> {
+        self.reconcile()
+    }
 }
 
 /// `buildUploadOptions()` (`worker.ts:389-413`) — re-run on every re-arm, so
@@ -51,24 +61,61 @@ pub trait HardwareReconciler: Send + Sync {
 /// logged again (CF39, review-wp3 #4).
 pub type UploadBuilder = Arc<dyn Fn() -> Option<UploadOptions> + Send + Sync>;
 
+/// What the last hardware reconcile passes found (a copy of
+/// [`StreamHardware`]'s content).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StreamHardwareSnapshot {
+    /// `streamGuardArmed`: some pass could enumerate cameras.
+    pub armed: bool,
+    /// `streamHardware`: the verdicts of the last pass that could enumerate.
+    pub statuses: IndexMap<String, StreamHardwareStatus>,
+    /// Camera report (Rust-only): how many passes have completed.
+    pub passes: u64,
+    /// Camera report (Rust-only): what the LAST completed pass enumerated;
+    /// `None` = it could not enumerate (or no pass has completed).
+    pub cameras: Option<Vec<EnumeratedCamera>>,
+}
+
 /// `streamHardware` + `streamGuardArmed` (`worker.ts:129-130`): the reconcile
 /// verdicts the media spawn guard reads. Armed only after a pass that could
 /// enumerate cameras.
 #[derive(Default)]
 pub struct StreamHardware {
-    inner: Mutex<(bool, IndexMap<String, StreamHardwareStatus>)>,
+    inner: Mutex<StreamHardwareSnapshot>,
+    /// The `[hardware]` lines of the last pass (what a re-check must not
+    /// repeat).
+    last_lines: Mutex<Vec<String>>,
 }
 
 impl StreamHardware {
     /// `streamGuardArmed`.
     pub fn armed(&self) -> bool {
-        self.inner.lock().unwrap_or_else(|p| p.into_inner()).0
+        self.inner.lock().unwrap_or_else(|p| p.into_inner()).armed
     }
     /// `streamHardware.get(key)`.
     pub fn status(&self, key: &str) -> Option<StreamHardwareStatus> {
         let g = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-        g.1.get(key).copied()
+        g.statuses.get(key).copied()
     }
+    /// Camera report: everything the passes found, in one consistent copy.
+    pub fn snapshot(&self) -> StreamHardwareSnapshot {
+        self.inner.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+    /// B5: may the capture daemon launch this stream's camera?
+    /// (`camera_truth::capture_allowed` over the last verdicts.)
+    pub fn capture_allowed(&self, key: &str) -> bool {
+        let g = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        xorgate_core::camera_truth::capture_allowed(g.armed, g.statuses.get(key).copied())
+    }
+}
+
+/// Reads the text of the boot config (`None` = no file, or unreadable).
+pub type BootConfigTextFn = Arc<dyn Fn() -> Option<String> + Send + Sync>;
+
+/// The real [`BootConfigTextFn`]: `/boot/firmware/config.txt`, then
+/// `/boot/config.txt`. Read-only.
+pub fn real_boot_config_text() -> BootConfigTextFn {
+    Arc::new(xorgate_hal::boot_config_io::read_boot_config_text)
 }
 
 /// `config.media.streamGuard` (`worker.ts:205-218`, replay branch out — P14).
@@ -102,62 +149,136 @@ pub struct MediaReconciler {
     /// `rpicam-hello --list-cameras` — [`crate::media::real_list_exec`] (the
     /// `exec` tape record) in the worker; a fake in tests.
     pub list_exec: crate::media::ListExec,
+    /// Rust-only: the boot config text for the mismatch warning's
+    /// "declared" sensor ([`real_boot_config_text`] in the worker). `None` =
+    /// the model alone, as the TS has it.
+    pub boot_config: Option<BootConfigTextFn>,
+}
+
+impl MediaReconciler {
+    /// One pass. `quiet` = a re-check: lines the previous pass logged are
+    /// dropped, and a stream that got its camera says so once.
+    async fn pass(&self, quiet: bool) -> Result<Vec<String>, String> {
+        let cfg = &self.ctx.env.config;
+        let block = self.ctx.hardware.borrow().clone();
+        let Some(block) = block else {
+            return Ok(Vec::new());
+        };
+        if cfg.mode != RunMode::Real || cfg.offline {
+            return Ok(Vec::new());
+        }
+        let (state, clock) = (self.ctx.state.clone(), self.ctx.clock.clone());
+        let emit = move |level: crate::media::ReconcileLevel, msg: &str| {
+            let t = clock.wall_ms();
+            let level = match level {
+                crate::media::ReconcileLevel::Warn => {
+                    warn!("[hardware] {msg}");
+                    ActivityLevel::Warn
+                }
+                crate::media::ReconcileLevel::Info => {
+                    info!("[hardware] {msg}");
+                    ActivityLevel::Info
+                }
+            };
+            // `store.event(level, …); store.flush(t, true)` = `note`.
+            state.note(level, format!("hardware: {msg}"), t);
+        };
+        let before: Vec<String> = if quiet {
+            self.stream_hw
+                .last_lines
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .clone()
+        } else {
+            Vec::new()
+        };
+        let lines: Arc<Mutex<Vec<String>>> = Arc::default();
+        let log: crate::media::ReconcileLog = {
+            let (lines, emit) = (lines.clone(), emit.clone());
+            Arc::new(move |level, msg: &str| {
+                lines
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .push(msg.to_string());
+                if !before.iter().any(|l| l == msg) {
+                    emit(level, msg);
+                }
+            })
+        };
+        let shm = self.ctx.paths.home.join("shm");
+        let res = crate::media::reconcile_hardware(
+            &block,
+            crate::media::ReconcileOpts {
+                pipeline_dir: self.pipeline_dir.clone(),
+                // `shmSocketPathFor` (`recording/config.ts:153-155`).
+                shm_socket_path_for: Arc::new(move |key: &str| {
+                    shm.join(format!("{key}.sock")).display().to_string()
+                }),
+                list_exec: Some(self.list_exec.clone()),
+                log: Some(log),
+                boot_config: self.boot_config.as_ref().and_then(|f| f()),
+            },
+        )
+        // A throw (first failed mkdir/write, Node's message) leaves the
+        // verdicts untouched (TS parity, review-wp5 M1).
+        .await?;
+        let healed: Vec<String> = {
+            let mut g = self
+                .stream_hw
+                .inner
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            // Streams that were held for lack of a camera and now have one.
+            let healed = if res.cameras.is_some() {
+                res.statuses
+                    .iter()
+                    .filter(|(k, st)| {
+                        **st != StreamHardwareStatus::NoCamera
+                            && g.armed
+                            && g.statuses.get(*k) == Some(&StreamHardwareStatus::NoCamera)
+                    })
+                    .map(|(k, _)| k.clone())
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            if res.cameras.is_some() {
+                // `streamHardware.clear(); set(...)…; streamGuardArmed = true`.
+                g.armed = true;
+                g.statuses = res.statuses.clone();
+            }
+            // Camera report: what THIS pass saw (the guard's verdicts
+            // above stay those of the last pass that could enumerate).
+            g.passes += 1;
+            g.cameras = res.cameras.clone();
+            healed
+        };
+        *self
+            .stream_hw
+            .last_lines
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) =
+            lines.lock().unwrap_or_else(|p| p.into_inner()).clone();
+        // Rust-only: the hold of B5 ended. Said once, on a re-check only
+        // (a boot or hardware-change pass keeps the TS's lines exactly).
+        if quiet {
+            for key in &healed {
+                emit(
+                    crate::media::ReconcileLevel::Info,
+                    &format!("{key}: a camera is enumerated now — starting the stream"),
+                );
+            }
+        }
+        Ok(res.changed_streams)
+    }
 }
 
 impl HardwareReconciler for MediaReconciler {
     fn reconcile(&self) -> BoxFut<'_, Result<Vec<String>, String>> {
-        Box::pin(async move {
-            let cfg = &self.ctx.env.config;
-            let block = self.ctx.hardware.borrow().clone();
-            let Some(block) = block else {
-                return Ok(Vec::new());
-            };
-            if cfg.mode != RunMode::Real || cfg.offline {
-                return Ok(Vec::new());
-            }
-            let (state, clock) = (self.ctx.state.clone(), self.ctx.clock.clone());
-            let log: crate::media::ReconcileLog = Arc::new(move |level, msg: &str| {
-                let t = clock.wall_ms();
-                let level = match level {
-                    crate::media::ReconcileLevel::Warn => {
-                        warn!("[hardware] {msg}");
-                        ActivityLevel::Warn
-                    }
-                    crate::media::ReconcileLevel::Info => {
-                        info!("[hardware] {msg}");
-                        ActivityLevel::Info
-                    }
-                };
-                // `store.event(level, …); store.flush(t, true)` = `note`.
-                state.note(level, format!("hardware: {msg}"), t);
-            });
-            let shm = self.ctx.paths.home.join("shm");
-            let res = crate::media::reconcile_hardware(
-                &block,
-                crate::media::ReconcileOpts {
-                    pipeline_dir: self.pipeline_dir.clone(),
-                    // `shmSocketPathFor` (`recording/config.ts:153-155`).
-                    shm_socket_path_for: Arc::new(move |key: &str| {
-                        shm.join(format!("{key}.sock")).display().to_string()
-                    }),
-                    list_exec: Some(self.list_exec.clone()),
-                    log: Some(log),
-                },
-            )
-            // A throw (first failed mkdir/write, Node's message) leaves the
-            // verdicts untouched (TS parity, review-wp5 M1).
-            .await?;
-            if res.cameras.is_some() {
-                let mut g = self
-                    .stream_hw
-                    .inner
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner());
-                // `streamHardware.clear(); set(...)…; streamGuardArmed = true`.
-                *g = (true, res.statuses.clone());
-            }
-            Ok(res.changed_streams)
-        })
+        Box::pin(self.pass(false))
+    }
+    fn recheck(&self) -> BoxFut<'_, Result<Vec<String>, String>> {
+        Box::pin(self.pass(true))
     }
 }
 
@@ -223,6 +344,40 @@ impl RecordingHooks {
 
     pub fn manager(&self) -> Option<&RecordingManager> {
         self.manager.get()
+    }
+
+    /// `void reconcileHardwareNow().then(changed => bounce; reapply)
+    /// .catch(err => console.error("[agent] hardware reconcile failed", msg))`
+    /// (`worker.ts:843-850`): a failed pass bounces nothing and does not
+    /// reapply. `recheck` = the Rust-only quiet re-listing of a held port.
+    fn reconcile_then_reapply(&self, recheck: bool) {
+        let (Some(hw), Some(m)) = (self.hardware.clone(), self.manager().cloned()) else {
+            return;
+        };
+        let media = self.media.clone();
+        tokio::spawn(async move {
+            let pass = if recheck {
+                hw.recheck().await
+            } else {
+                hw.reconcile().await
+            };
+            let changed = match pass {
+                Ok(c) => c,
+                Err(e) => {
+                    // `console.error(a, b)` joins its arguments with one space.
+                    tracing::error!("[agent] hardware reconcile failed {e}");
+                    return;
+                }
+            };
+            if let Some(media) = &media {
+                for key in &changed {
+                    media.restart_channel(key);
+                }
+            }
+            if let Err(e) = m.reapply() {
+                tracing::error!("[agent] hardware reconcile failed {e}");
+            }
+        });
     }
 
     /// `recordingStatusForLed()` (`worker.ts:581-587`): the tick's cached
@@ -303,28 +458,15 @@ impl PhaseHooks for RecordingHooks {
     /// A throwing `recording.reapply()` inside the `.then` rejects the same
     /// chain, so it lands in the same `.catch` line (review-wp1 M1).
     fn hardware_changed(&self) {
-        let (Some(hw), Some(m)) = (self.hardware.clone(), self.manager().cloned()) else {
-            return;
-        };
-        let media = self.media.clone();
-        tokio::spawn(async move {
-            let changed = match hw.reconcile().await {
-                Ok(c) => c,
-                Err(e) => {
-                    // `console.error(a, b)` joins its arguments with one space.
-                    tracing::error!("[agent] hardware reconcile failed {e}");
-                    return;
-                }
-            };
-            if let Some(media) = &media {
-                for key in &changed {
-                    media.restart_channel(key);
-                }
-            }
-            if let Err(e) = m.reapply() {
-                tracing::error!("[agent] hardware reconcile failed {e}");
-            }
-        });
+        self.reconcile_then_reapply(false);
+    }
+
+    /// Rust-only: the re-listing of a held port (`HardwareReconciler::recheck`),
+    /// through the SAME path as a hardware-block change: reconcile, bounce
+    /// the changed masters, `reapply()` (which starts the capture of a
+    /// stream that now has a camera, as at boot).
+    fn hardware_recheck(&self) {
+        self.reconcile_then_reapply(true);
     }
 
     /// The boot `await reconcileHardwareNow()` (`worker.ts:427`): a throw is

@@ -105,6 +105,40 @@ mod tests {
         );
     }
 
+    /// The benches' real listings (support-other-camera-models plan,
+    /// 2026-11-21): the sensor is the first token and the port comes from
+    /// the path, whatever the mode lines say (libcamera prints placeholder
+    /// `65535x65535` crops while a capture holds the camera).
+    #[test]
+    fn bench_listings_enumerate_the_camera_on_each_port() {
+        let doc: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/camera_truth/bench-listings.json"
+        ))
+        .unwrap();
+        let cases = doc["cases"].as_array().unwrap();
+        assert_eq!(cases.len(), 7);
+        let mut placeholders = 0;
+        for c in cases {
+            let name = c["name"].as_str().unwrap();
+            let platform = Platform::parse(c["platform"].as_str().unwrap()).expect(name);
+            let code = c["exitCode"].as_i64().map(|c| c as i32);
+            let run = RunResult {
+                stdout: c["stdout"].as_str().unwrap().into(),
+                stderr: c["stderr"].as_str().unwrap().into(),
+                exit_code: code,
+                failed: code != Some(0),
+                ..Default::default()
+            };
+            placeholders += usize::from(run.stdout.contains("65535x65535"));
+            let got = serde_json::to_value(enumerate_from(platform, &run)).unwrap();
+            assert_eq!(got, c["cameras"], "{name}");
+        }
+        assert!(
+            placeholders >= 3,
+            "the fixture keeps the placeholder mode lines"
+        );
+    }
+
     #[test]
     fn enumerate_rules() {
         assert_eq!(enumerate_from(Platform::RpiCm5, &res("", "", true)), None);

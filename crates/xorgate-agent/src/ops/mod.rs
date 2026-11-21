@@ -7,6 +7,7 @@
 //! at merge).
 
 pub mod camera_mount;
+pub mod camera_truth;
 pub mod clock_stepper;
 pub mod clock_trust;
 pub mod hooks;

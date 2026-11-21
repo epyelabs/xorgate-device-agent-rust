@@ -138,9 +138,112 @@ pub fn is_recognized_direct_render(content: &str, stream_key: &str, camera_name:
         && t.contains("appsink")
 }
 
+/// B6 (support-other-camera-models Phase 0, RUST-ONLY): is this
+/// `.gst.direct` content one of OUR renders, for whatever camera it names?
+/// Returns the camera name the file itself carries.
+///
+/// [`is_recognized_direct_render`] (the JS rule) ties recognition to the
+/// camera enumerated NOW, so after a sensor change the previous sensor's
+/// render is taken for an operator's pipeline and left behind with its dead
+/// `camera-name=`. Here the name is read out of the file, and the content
+/// must then be, for THAT name:
+///
+/// - exactly the software or the hardware direct render of this stream
+///   (every render the agent itself ever wrote, CM4 ones included), or
+/// - a legacy install's render, by the JS clause unchanged: one line,
+///   `libcamerasrc` first, `x264enc` and `appsink`.
+///
+/// Anything else (no `camera-name=`, several lines, another source or sink,
+/// a hand-written `v4l2h264enc` one-liner) is an operator's pipeline:
+/// `None`, never overwritten. The legacy clause is deliberately NOT widened
+/// to `v4l2h264enc`: no installer ever wrote such a file, so the only
+/// one-liners of that shape are hand-written.
+pub fn own_direct_render_camera(content: &str, stream_key: &str) -> Option<String> {
+    let t = js_trim(content);
+    let name = crate::video_capture::extract_camera_name(t).filter(|n| !n.is_empty())?;
+    if t == build_direct_kvs_pipeline(EncoderToken::SwH264, stream_key, &name)
+        || t == build_direct_kvs_pipeline(EncoderToken::HwH264, stream_key, &name)
+    {
+        return Some(name);
+    }
+    let legacy = !t.contains('\n')
+        && t.starts_with("libcamerasrc")
+        && t.contains("x264enc")
+        && t.contains("appsink");
+    legacy.then_some(name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// B6: our own render is recognised by the camera name it carries, in
+    /// every template variant; an operator's pipeline never is.
+    #[test]
+    fn b6_own_direct_render_is_recognised_by_the_name_it_carries() {
+        let old = "/base/soc/i2c0mux/i2c@0/imx290@1a";
+        let new = "/base/soc/i2c0mux/i2c@0/imx708@1a";
+        for enc in [EncoderToken::SwH264, EncoderToken::HwH264] {
+            let file = format!("{}\n", build_direct_kvs_pipeline(enc, "cam0", old));
+            // The JS rule, asked about the NEW camera, does not know it …
+            assert!(!is_recognized_direct_render(&file, "cam0", new));
+            // … this one does, and says whose it is.
+            assert_eq!(
+                own_direct_render_camera(&file, "cam0").as_deref(),
+                Some(old)
+            );
+            // Another stream's render is not this stream's exact render. The
+            // software one is still adopted by the legacy clause (as the JS
+            // rule adopts it); the hardware one is not.
+            assert_eq!(
+                own_direct_render_camera(&file, "cam1"),
+                (enc == EncoderToken::SwH264).then(|| old.to_string())
+            );
+        }
+        // A legacy install's single-line x264enc render.
+        let legacy_sw = format!("libcamerasrc camera-name={old} ! video/x-raw ! x264enc ! appsink");
+        assert_eq!(
+            own_direct_render_camera(&legacy_sw, "cam0").as_deref(),
+            Some(old)
+        );
+        // A hand-written CM4 one-liner (v4l2h264enc) is the operator's: the
+        // legacy clause is not widened to it. The reviewer's example:
+        let hand_written = "libcamerasrc camera-name=/base/soc/i2c0mux/i2c@0/imx708@1a af-mode=continuous ! video/x-raw,width=1920,height=1080 ! videoconvert ! v4l2h264enc extra-controls=\"controls,video_bitrate=4000000\" ! video/x-h264,level=(string)4 ! appsink name=appsink-video";
+        assert_eq!(own_direct_render_camera(hand_written, "cam0"), None);
+        assert_eq!(
+            own_direct_render_camera(
+                &format!("libcamerasrc camera-name={old} ! video/x-raw ! videoconvert ! v4l2h264enc ! appsink"),
+                "cam0"
+            ),
+            None
+        );
+        // A quoted name is read without its quotes.
+        assert_eq!(
+            own_direct_render_camera(
+                "libcamerasrc camera-name=\"/c\" ! x264enc ! appsink",
+                "cam0"
+            )
+            .as_deref(),
+            Some("/c")
+        );
+        // Operator pipelines: never ours.
+        for custom in [
+            // the golden fixture's custom file: no camera name
+            "libcamerasrc ! my direct ! appsink\n",
+            // several lines
+            "libcamerasrc camera-name=/c\n! x264enc ! appsink",
+            // another source
+            "videotestsrc camera-name=/c ! x264enc ! appsink",
+            // no H.264 encoder / no appsink
+            "libcamerasrc camera-name=/c ! jpegenc ! appsink",
+            "libcamerasrc camera-name=/c ! x264enc ! filesink location=/tmp/x",
+            // an empty name
+            "libcamerasrc camera-name=\"\" ! x264enc ! appsink",
+            "",
+        ] {
+            assert_eq!(own_direct_render_camera(custom, "cam0"), None, "{custom}");
+        }
+    }
 
     #[test]
     fn shm_caps_are_the_fixed_contract() {

@@ -410,6 +410,10 @@ pub trait PhaseHooks: Send + Sync + 'static {
     /// `reconcileHardwareNow()` + master bounce + `recording.reapply()` after a
     /// changed hardware block (`:839-845`).
     fn hardware_changed(&self) {}
+    /// Rust-only (support-other-camera-models Phase 0): list the cameras
+    /// again for a port held for lack of one, through the same path as
+    /// `hardware_changed` (reconcile, bounce, reapply) with a quiet journal.
+    fn hardware_recheck(&self) {}
     /// `void reconcileCameraMountNow()` — fire-and-forget: the config path
     /// (`:889`, WP3) and the worker's 60 s poll (`:648-651`).
     fn reconcile_camera_mount(&self) {}
@@ -443,6 +447,22 @@ pub trait PhaseHooks: Send + Sync + 'static {
     fn camera_mount_state(&self) -> Option<CameraMountState> {
         None
     }
+    /// The per-port camera report for a config report (`effective.cameras`;
+    /// Rust-only, support-other-camera-models Phase 0). `None` = none (no
+    /// hardware block, not real mode, or not derived yet). Called under
+    /// ConfigSync's mutex like `camera_mount_state`: a snapshot read.
+    fn cameras_report(&self) -> Option<serde_json::Value> {
+        None
+    }
+    /// The report built from the last `cameras_report()` was handed to the
+    /// MQTT client. Also under ConfigSync's mutex: a snapshot write.
+    fn cameras_report_sent(&self) {}
+    /// Re-derive the camera report from the live state (the 1 s heartbeat).
+    /// No I/O.
+    fn cameras_tick(&self) {}
+    /// Re-read the camera report's slow facts (config.txt, sysfs): the 60 s
+    /// poll. Fire-and-forget.
+    fn cameras_refresh(&self) {}
     /// ConfigSync `hints()` (`:727-734`): bootDefer / powerShed / clockStepperArmed.
     ///
     /// Called while ConfigSync holds its core mutex (as are `camera_mount_state`

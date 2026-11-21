@@ -88,6 +88,13 @@ pub struct ConfigSyncOptions {
     /// `obd: () => source.obdReport?.() ?? null` (`worker.ts:790` @ 09da38d):
     /// the OBD collector's `effective.obd` (I2, opaque); a snapshot read.
     pub obd: Option<Arc<dyn Fn() -> Option<serde_json::Value> + Send + Sync>>,
+    /// The per-port camera report (`effective.cameras`, Rust-only;
+    /// `ops::camera_truth::CameraTruth::for_report`); a snapshot read.
+    pub cameras: Option<Arc<dyn Fn() -> Option<serde_json::Value> + Send + Sync>>,
+    /// Called when a report carrying the block `cameras` just returned was
+    /// handed to the MQTT client (`CameraTruth::report_sent`); never for a
+    /// report whose publish failed. A snapshot write, like `cameras`.
+    pub cameras_sent: Option<Arc<dyn Fn() + Send + Sync>>,
     pub on_event: Option<EventFn>,
     /// `Date.now()` (report `ts`, `lastReportTs`).
     pub now: Arc<dyn Fn() -> i64 + Send + Sync>,
@@ -131,6 +138,8 @@ impl ConfigSyncOptions {
             camera_mount: None,
             telemetry_scope: None,
             obd: None,
+            cameras: None,
+            cameras_sent: None,
             on_event: None,
             now: Arc::new(crate::now_ms),
             state_path,
@@ -528,6 +537,7 @@ impl ConfigSync {
                 mode: opts.mode.clone(),
                 changed: res.changed,
                 obd: opts.obd.as_ref().and_then(|f| f()),
+                cameras: opts.cameras.as_ref().and_then(|f| f()),
             },
             &opts.build,
         );
@@ -543,6 +553,13 @@ impl ConfigSync {
                 return;
             }
         };
+        // The camera block of this report is now what the cloud has (or
+        // will have: an offline publish is queued by the client).
+        if delivered {
+            if let Some(f) = &opts.cameras_sent {
+                f();
+            }
+        }
         let online = delivered && opts.online.as_ref().is_none_or(|f| f());
         let patch = rules::persist_after_publish(res.origin, online, &res.current, now);
         self.persist(&mut core, patch);

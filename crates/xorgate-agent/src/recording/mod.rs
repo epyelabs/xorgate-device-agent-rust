@@ -214,6 +214,9 @@ impl manager::CaptureApi for CaptureAdapter {
     fn any_recording(&self) -> bool {
         self.0.any_recording()
     }
+    fn health(&self) -> Vec<(String, xorgate_core::camera_truth::CaptureLive)> {
+        self.0.health()
+    }
     fn status(&self) -> Vec<manager::CaptureStatus> {
         self.0
             .status()

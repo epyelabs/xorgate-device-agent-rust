@@ -118,6 +118,31 @@ Value rules:
   the `agent` block (`config_report.rs` `AGENT_RUNTIME`). The JS agent sends no such key. The backend
   mirrors it positive-only (`"rust"` sets `devices.agent = 'rust'`; an absent key leaves the column
   alone), and it stores `effective` as an opaque record, so the extra key passes its schema.
+- **A second deliberate addition (support-other-camera-models plan, Phase 0):** `effective.cameras`,
+  the per-port camera report, the last key of `effective` (after `obd`). One entry per camera of the
+  device model, keyed by stream key: what is declared, what `config.txt` says, what the kernel bound
+  and libcamera listed, whether capture delivers, and one `verdict` with a sentence
+  (`crates/xorgate-core/src/camera_truth.rs`). The JS agent sends no such key. It is reported-only
+  and is **never** a namespace key: the console would compute "Device differs" for a reported block
+  that sits under one. The same value is written to `state.json` as `cameras` (its last key) for
+  `xorgate-rs status`. It exists in real mode, online, with a hardware block that lists cameras;
+  not in sim or replay mode, not with `--offline`. It is re-reported when its summary changes, not
+  on every step of the capture back-off (`crates/xorgate-agent/src/ops/camera_truth.rs`).
+
+  The words on the wire today:
+
+  | Field | Values |
+  |---|---|
+  | `verdict` | `ok`, `mismatch`, `not-detected`, `no-frames`, `empty`, `unchecked` |
+  | `capture.state` | `streaming`, `starting`, `failing`, `absent`, `off` |
+  | `declared.source` | `boot-config`, `model` |
+  | `bound.identity` | `chip-id`, `weak`, `none`, or `null` |
+
+  **A reader must tolerate a value it does not know in any of these, and a key it does not know
+  anywhere in the block.** Later phases add verdicts (`reboot-required`, `requirements-missing`,
+  `unknown-sensor`, and `unmanaged` for a port with no sensor setting), a `config` source, and
+  fields. `detail` is for people: show it, never parse it. `declared`, `bootConfig` and every
+  field of `bound` may be `null`.
 
 ### Commands
 

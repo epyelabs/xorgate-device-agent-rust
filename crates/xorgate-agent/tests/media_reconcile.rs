@@ -97,6 +97,7 @@ async fn hardware_block_test_ts_reconcile_hardware_and_the_bench_block() {
                     log: Some(Arc::new(move |level, msg| {
                         sink.lock().unwrap().push(json!([level.as_str(), msg]));
                     })),
+                    boot_config: None,
                 },
             )
             .await
@@ -163,6 +164,7 @@ fn opts(dir: &Path, listing: RunResult, logs: &Logs) -> ReconcileOpts {
         log: Some(Arc::new(move |level, msg| {
             sink.lock().unwrap().push(json!([level.as_str(), msg]));
         })),
+        boot_config: None,
     }
 }
 

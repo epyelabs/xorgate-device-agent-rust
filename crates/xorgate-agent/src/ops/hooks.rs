@@ -89,6 +89,9 @@ pub struct OpsHooks {
     /// `if (config.mode !== "real") return;`, `:170`). Bound before the boot
     /// pass; its change callback is [`OpsHooks::camera_mount_on_change`].
     camera: OnceLock<Arc<dyn CameraMountControl>>,
+    /// The per-port camera report (Rust-only, support-other-camera-models
+    /// Phase 0): bound in real, online mode only; unbound = no report.
+    cameras: OnceLock<crate::ops::camera_truth::CameraTruth>,
     /// `requestConfigReport` (`:168`): `null` until the report plane exists
     /// (`:746`) — a change seen before that (the boot pass) requests nothing.
     reports: Arc<OnceLock<ReportRequester>>,
@@ -117,6 +120,7 @@ impl OpsHooks {
             led_sim: AtomicBool::new(false),
             stepper: OnceLock::new(),
             camera: OnceLock::new(),
+            cameras: OnceLock::new(),
             reports: Arc::new(OnceLock::new()),
             clock_trust: OnceLock::new(),
             led_replay: AtomicBool::new(false),
@@ -150,6 +154,11 @@ impl OpsHooks {
     /// The camera-mount reconciler (real mode only), before the boot pass.
     pub fn bind_camera(&self, camera: Arc<dyn CameraMountControl>) {
         let _ = self.camera.set(camera);
+    }
+
+    /// The per-port camera report (real, online mode only).
+    pub fn bind_cameras(&self, cameras: crate::ops::camera_truth::CameraTruth) {
+        let _ = self.cameras.set(cameras);
     }
 
     /// The composed Phase 3 hooks (`recording` and its LED status cache).
@@ -225,6 +234,9 @@ impl PhaseHooks for OpsHooks {
     fn hardware_changed(&self) {
         self.rec.hardware_changed()
     }
+    fn hardware_recheck(&self) {
+        self.rec.hardware_recheck()
+    }
     fn reconcile_hardware_boot(&self) -> BoxFut<'_, Result<(), String>> {
         self.rec.reconcile_hardware_boot()
     }
@@ -262,6 +274,31 @@ impl PhaseHooks for OpsHooks {
     /// `cameraMount: () => cameraMountState` (`:713`).
     fn camera_mount_state(&self) -> Option<CameraMountState> {
         self.camera.get().and_then(|c| c.state())
+    }
+
+    /// `effective.cameras` (Rust-only): the block for the report being built.
+    fn cameras_report(&self) -> Option<serde_json::Value> {
+        self.cameras.get().and_then(|c| c.for_report())
+    }
+
+    fn cameras_report_sent(&self) {
+        if let Some(c) = self.cameras.get() {
+            c.report_sent();
+        }
+    }
+
+    /// The heartbeat's camera pass: verdicts from the live state, no I/O.
+    fn cameras_tick(&self) {
+        if let Some(c) = self.cameras.get() {
+            c.tick();
+        }
+    }
+
+    /// The 60 s poll's camera pass: re-read config.txt and sysfs.
+    fn cameras_refresh(&self) {
+        if let Some(c) = self.cameras.get().cloned() {
+            tokio::spawn(async move { c.refresh() });
+        }
     }
 
     /// `hints()` (`:719-726`): Phase 3's bootDefer/powerShed halves unchanged,

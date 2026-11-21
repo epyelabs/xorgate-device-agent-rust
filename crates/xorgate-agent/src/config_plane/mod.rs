@@ -151,6 +151,11 @@ pub fn options_for(ctx: &AgentCtx, deps: &ConfigPlaneDeps) -> ConfigSyncOptions 
     if let Some(obd) = deps.obd.clone() {
         o.obd = Some(Arc::new(move || Some(obd.report())));
     }
+    // `effective.cameras` (Rust-only): the per-port camera report.
+    let hooks = ctx.hooks.clone();
+    o.cameras = Some(Arc::new(move || hooks.cameras_report()));
+    let hooks = ctx.hooks.clone();
+    o.cameras_sent = Some(Arc::new(move || hooks.cameras_report_sent()));
     // `hints` (Phase 3/4 latches; T6 / CF30: all None in Phase 2).
     let hooks = ctx.hooks.clone();
     o.hints = Some(Arc::new(move || hooks.report_hints()));

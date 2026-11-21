@@ -223,7 +223,10 @@ impl TelemetrySource for SimSource {
     }
 }
 
-/// `new RecordingManager({...})` (`worker.ts:439-501`).
+/// `new RecordingManager({...})` (`worker.ts:439-501`). `stream_hw` (the
+/// hardware reconcile's verdicts) is Rust-only: the B5 hold of
+/// `policy_sources::cameras_fn`.
+#[allow(clippy::too_many_arguments)]
 fn build_recording_manager(
     ctx: &AgentCtx,
     source: Arc<dyn TelemetrySource>,
@@ -232,13 +235,15 @@ fn build_recording_manager(
     time_source: crate::recording::time_source::TimeSourceHandle,
     clock_trust: Option<crate::ops::clock_trust::ClockTrust>,
     replay: Option<Arc<dyn crate::recording::capture::ReplayCaptureHooks>>,
+    stream_hw: Arc<StreamHardware>,
 ) -> RecordingManager {
     let cfg = &ctx.env.config;
     let real = cfg.mode == RunMode::Real;
     let (m1, m2, m3, m4) = (media.clone(), media.clone(), media.clone(), media);
     let video = crate::recording::VideoOpts {
         media_enabled: cfg.media.enabled,
-        cameras: policy_sources::cameras_fn(ctx),
+        // B5: a stream whose port enumerated no camera is not launched.
+        cameras: policy_sources::cameras_fn(ctx, Some(stream_hw)),
         encoder: policy_sources::encoder_fn(ctx),
         // `source.restartMediaChannel?.(streamKey)`: bounce the master onto the new socket.
         on_capture_spawned: Arc::new(move |key: &str| {
@@ -344,6 +349,45 @@ fn camera_mount_reconciler(
         },
         Box::new(move || on_change()),
     )
+}
+
+/// The per-port camera report's inputs (Rust-only): the hardware block in
+/// force, the hardware reconcile's verdicts + listing, config.txt, sysfs,
+/// the capture supervisor's state; its outputs: state.json `cameras` and a
+/// config-report request through the camera-mount requester.
+fn camera_truth(
+    ctx: &AgentCtx,
+    pipeline_dir: &str,
+    stream_hw: &Arc<StreamHardware>,
+    hooks: &Arc<RecordingHooks>,
+    ops: &Arc<OpsHooks>,
+) -> crate::ops::camera_truth::CameraTruth {
+    use crate::ops::camera_truth as ct;
+    let hw = ctx.hardware.clone();
+    let (stream_hw, hooks, state) = (stream_hw.clone(), hooks.clone(), ctx.state.clone());
+    let on_change = ops.camera_mount_on_change();
+    // `ctx.hooks` is the composed `OpsHooks` by now.
+    let recheck = ctx.hooks.clone();
+    ct::CameraTruth::new(ct::CameraTruthOptions {
+        hardware: Box::new(move || hw.borrow().clone()),
+        stream_hw: Box::new(move || stream_hw.snapshot()),
+        boot_config: crate::recording::hooks::real_boot_config_text(),
+        port_nodes: ct::real_port_nodes(),
+        pipeline_dir: pipeline_dir.to_string(),
+        capture: Box::new(move || {
+            hooks
+                .manager()
+                .map(|m| m.capture_health())
+                .unwrap_or_default()
+        }),
+        // Written with the next state flush (the 1 Hz tick or any event).
+        publish: Box::new(move |cameras| state.set_cameras(cameras)),
+        on_change: Box::new(move || on_change()),
+        // The B5 hold heals: list the cameras again through the
+        // `hardware_changed` path (reconcile, bounce, reapply).
+        recheck: Box::new(move || recheck.hardware_recheck()),
+        hold_ms: ct::REPORT_HOLD_MS,
+    })
 }
 
 /// `createClockStepper({...})` (`worker.ts:537-552`).
@@ -602,6 +646,7 @@ async fn run(args: &[String]) -> Result<i32> {
             }],
             recording: None,
             obd: None,
+            cameras: None,
         },
         paths.state.clone(),
     );
@@ -690,6 +735,7 @@ async fn run(args: &[String]) -> Result<i32> {
             stream_hw: stream_hw.clone(),
             pipeline_dir: media_cfg.pipeline_dir.clone().into(),
             list_exec: crate::media::real_list_exec(ctx.tape.clone()),
+            boot_config: Some(crate::recording::hooks::real_boot_config_text()),
         })),
         config_plane::upload_options_builder(&ctx),
         ctx.clock.clone(),
@@ -845,7 +891,17 @@ async fn run(args: &[String]) -> Result<i32> {
         replay
             .clone()
             .map(|r| r as Arc<dyn crate::recording::capture::ReplayCaptureHooks>),
+        stream_hw.clone(),
     ));
+    // The per-port camera report (Rust-only; support-other-camera-models
+    // Phase 0): where the hardware reconcile runs (real mode, online). The
+    // boot pass reads config.txt and sysfs once; the heartbeat keeps the
+    // verdicts current and the 60 s poll re-reads the slow facts.
+    if crate::ops::camera_truth::camera_report_enabled(cfg.mode, cfg.offline) {
+        let truth = camera_truth(&ctx, &media_cfg.pipeline_dir, &stream_hw, &hooks, &ops);
+        truth.refresh();
+        ops.bind_cameras(truth);
+    }
     // Replay: lap boundaries reach the manager; first boot seeds the catalog's
     // past sessions BEFORE start() so the first uploader kick drains them.
     if let Some(r) = &replay {
@@ -979,6 +1035,9 @@ async fn run(args: &[String]) -> Result<i32> {
             _ = heartbeat.tick() => {
                 sd_notify(&[sd_notify::NotifyState::Watchdog]);
                 ctx.hooks.led_tick();
+                if !ctx.shutting_down() {
+                    ctx.hooks.cameras_tick();
+                }
                 if state.connection() != ConnectionState::Connected {
                     state.flush(ctx.now_ms(), true);
                 }
@@ -986,6 +1045,7 @@ async fn run(args: &[String]) -> Result<i32> {
             _ = camera_mount_poll.tick() => {
                 if !ctx.shutting_down() {
                     ctx.hooks.reconcile_camera_mount();
+                    ctx.hooks.cameras_refresh();
                 }
             }
             // `published N messages` (`worker.ts:1286-1289`).
