@@ -77,9 +77,11 @@ use crate::recording::hooks::{BootConfigTextFn, StreamHardwareSnapshot};
 
 /// How long a changed summary waits before a config report is requested,
 /// to begin with: longer than the capture stable window (15 s) plus the
-/// default spawn stagger of the second camera (4 s), so a boot that
-/// reported `starting` settles into ONE more report (`streaming` for both
-/// cameras), and a flap inside the window asks for nothing.
+/// default spawn stagger of the second camera (4 s). The first hold is
+/// armed at the first change AFTER the boot report went out (never
+/// before: the boot report carries the block as it is then), so a boot
+/// that reported `starting` settles into ONE more report (`streaming` for
+/// both cameras), and a flap inside the window asks for nothing.
 pub const REPORT_HOLD_MS: u64 = 20_000;
 
 /// Where the camera report exists: where the hardware reconcile runs (real
@@ -126,6 +128,10 @@ pub struct CameraTruthOptions {
     /// "List the cameras again" (`PhaseHooks::hardware_recheck`): the
     /// hardware reconcile through the `hardware_changed` path, quiet.
     pub recheck: Box<dyn Fn() + Send + Sync>,
+    /// Is this stream's capture wanted at all (media on, the camera not
+    /// disabled in `recording.video.cameras`)? A held port nobody wants is
+    /// not re-listed. Read on [`CameraTruth::refresh`] (it may do I/O).
+    pub capture_wanted: Box<dyn Fn(&str) -> bool + Send + Sync>,
     /// [`REPORT_HOLD_MS`] (a test seam).
     pub hold_ms: u64,
 }
@@ -137,6 +143,8 @@ struct Statics {
     nodes: Option<Vec<PortNode>>,
     /// Stream key → its `.gst` is the bridged kind (`None` = no `.gst`).
     bridged: HashMap<String, Option<bool>>,
+    /// The stream keys whose capture is not wanted (`capture_wanted`).
+    unwanted: Vec<String>,
 }
 
 /// One camera's settled capture state.
@@ -158,6 +166,10 @@ struct St {
     offered: Option<Vec<String>>,
     /// The summary of the block the last SENT config report carried.
     reported: Option<Vec<String>>,
+    /// Some config report has been sent. Before the first one (the boot
+    /// report, at connect) nothing is "out of date": that report will carry
+    /// the block as it is then, so no hold is armed until it has gone.
+    sent_once: bool,
     /// A report-request timer is pending.
     hold_armed: bool,
     /// The hold of the next request (grows with every request).
@@ -233,7 +245,8 @@ fn build_block(
             .as_deref()
             .and_then(|n| node_for_port(n, &video.connector))
             .is_some_and(|n| n.driver.is_some());
-        needs_relist |= port_needs_relist(held, driver_bound);
+        needs_relist |=
+            port_needs_relist(held, driver_bound) && !statics.unwanted.contains(&video.key);
         let live_state = capture_truth(live, held);
         let prev = settled.get(&video.key).copied();
         // The restart grace: how long a camera that was streaming has read
@@ -278,7 +291,10 @@ fn build_block(
             "{}|{}|{}",
             summarise_port(&video.key, &port),
             u8::from(relisted && driver_bound && listed.is_none()),
-            u8::from(failing && live.is_some_and(|l| l.stalled_preset.is_some())),
+            u8::from(
+                failing
+                    && live.is_some_and(|l| l.stalled_preset.is_some() && l.last_error.is_none())
+            ),
         ));
         ports.insert(
             video.key.as_str(),
@@ -305,6 +321,7 @@ impl CameraTruth {
                     current: None,
                     offered: None,
                     reported: None,
+                    sent_once: false,
                     hold_armed: false,
                     hold_ms,
                     last_request: None,
@@ -340,6 +357,12 @@ impl CameraTruth {
             boot_text: (o.boot_config)(),
             nodes: (o.port_nodes)(block.platform),
             bridged,
+            unwanted: block
+                .video
+                .iter()
+                .filter(|v| !(o.capture_wanted)(&v.key))
+                .map(|v| v.key.clone())
+                .collect(),
         };
         lock(&self.inner.st).statics = Some(statics);
         self.tick();
@@ -373,7 +396,7 @@ impl CameraTruth {
             }
             let moved = built.block.as_ref().map(|n| &n.0) != st.current.as_ref().map(|c| &c.0);
             st.current = built.block;
-            let stale = st.current.as_ref().map(|c| &c.1) != st.reported.as_ref();
+            let stale = st.sent_once && st.current.as_ref().map(|c| &c.1) != st.reported.as_ref();
             let arm = (stale && !st.hold_armed).then(|| {
                 st.hold_armed = true;
                 // A long quiet spell: the hold starts over.
@@ -440,6 +463,7 @@ impl CameraTruth {
     pub fn report_sent(&self) {
         let mut st = lock(&self.inner.st);
         st.reported = st.offered.clone();
+        st.sent_once = true;
     }
 
     /// The current block without marking it reported (tests, diagnostics).
@@ -516,6 +540,8 @@ mod tests {
         cam0_driver: Arc<Mutex<Option<String>>>,
         /// When (ms after the rig was built) a re-listing was asked for.
         rechecks: Arc<Mutex<Vec<u64>>>,
+        /// The stream keys whose capture is not wanted.
+        unwanted: Arc<Mutex<Vec<String>>>,
     }
 
     /// What a config report does: read the block, then mark it sent.
@@ -539,6 +565,8 @@ mod tests {
             changes.clone(),
         );
         let (d, rc, h2) = (cam0_driver.clone(), rechecks.clone(), hw.clone());
+        let unwanted: Arc<Mutex<Vec<String>>> = Arc::default();
+        let uw = unwanted.clone();
         let t0 = tokio::time::Instant::now();
         let truth = CameraTruth::new(CameraTruthOptions {
             hardware: Box::new(|| Some(block())),
@@ -571,6 +599,7 @@ mod tests {
                 rc.lock().unwrap().push(t0.elapsed().as_millis() as u64);
                 h2.lock().unwrap().passes += 1;
             }),
+            capture_wanted: Box::new(move |k| !uw.lock().unwrap().iter().any(|u| u == k)),
             hold_ms: REPORT_HOLD_MS,
         });
         Rig {
@@ -581,6 +610,7 @@ mod tests {
             changes,
             cam0_driver,
             rechecks,
+            unwanted,
         }
     }
 
@@ -961,6 +991,96 @@ mod tests {
         assert_eq!(r.changes.load(Ordering::SeqCst), 4);
         wait(1_100).await;
         assert_eq!(r.changes.load(Ordering::SeqCst), 5);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A two-camera boot makes ONE settle report, not two: no hold is armed
+    /// before the boot report has gone (it carries the block as it is
+    /// then), and the first hold, armed at the first change after it,
+    /// outlasts the second camera's stagger.
+    #[tokio::test(start_paused = true)]
+    async fn a_two_camera_boot_settles_in_one_report() {
+        let dir = scratch("boot2");
+        let r = rig(&dir);
+        {
+            // Both cameras listed.
+            let mut hw = r.hw.lock().unwrap();
+            hw.statuses
+                .insert("cam0".to_string(), StreamHardwareStatus::Ok);
+            hw.cameras.as_mut().unwrap().push(EnumeratedCamera {
+                camera_name: "/base/axi/pcie@1000120000/rp1/i2c@88000/imx335@1a".into(),
+                sensor: "imx335".into(),
+                connector: Some("csi0".into()),
+            });
+        }
+        let state = |t: u64, spawn: u64| {
+            if t < spawn {
+                None
+            } else if t < spawn + 15 {
+                Some(live(CaptureState::Starting, None, false))
+            } else {
+                Some(live(
+                    CaptureState::Running,
+                    Some((t - spawn - 15) * 1000),
+                    false,
+                ))
+            }
+        };
+        r.truth.refresh();
+        let mut asked_at = Vec::new();
+        for t in 1..=120u64 {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            // cam0 spawns at 1 s, cam1 4 s later (the default stagger).
+            *r.capture.lock().unwrap() = [("cam0", state(t, 1)), ("cam1", state(t, 5))]
+                .into_iter()
+                .filter_map(|(k, l)| l.map(|l| (k.to_string(), l)))
+                .collect();
+            r.truth.tick();
+            let before = r.changes.load(Ordering::SeqCst);
+            tokio::task::yield_now().await;
+            if t == 3 {
+                // The boot report (MQTT connected): both still `starting`.
+                assert_eq!(before, 0, "nothing is asked before the boot report");
+                let v = reported(&r).unwrap();
+                assert_eq!(v["cam0"]["capture"]["state"], "starting");
+                assert_eq!(v["cam1"]["capture"]["state"], "off");
+            }
+            if r.changes.load(Ordering::SeqCst) > asked_at.len() {
+                asked_at.push(t);
+                // The report that answers it.
+                let v = reported(&r).unwrap();
+                assert_eq!(v["cam0"]["capture"]["state"], "streaming");
+                assert_eq!(v["cam1"]["capture"]["state"], "streaming");
+            }
+        }
+        // cam1 `starting` at 5 s is the first change after the boot report:
+        // the hold runs to 25 s, by when both cameras stream (16 s, 20 s).
+        assert_eq!(asked_at, [25], "ONE settle report");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A held port whose capture nobody wants (the camera is disabled, or
+    /// media is off) is not re-listed; it is once it is wanted again.
+    #[tokio::test(start_paused = true)]
+    async fn an_unwanted_held_port_is_not_relisted() {
+        let dir = scratch("unwanted");
+        let r = rig(&dir);
+        *r.cam0_driver.lock().unwrap() = Some("imx335".into());
+        r.unwanted.lock().unwrap().push("cam0".to_string());
+        r.truth.refresh();
+        for _ in 0..400 {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            r.truth.tick();
+        }
+        assert!(r.rechecks.lock().unwrap().is_empty());
+        // Enabled again: the 60 s refresh sees it, the schedule resumes.
+        r.unwanted.lock().unwrap().clear();
+        r.truth.refresh();
+        for _ in 0..300 {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            r.truth.tick();
+        }
+        assert_eq!(r.rechecks.lock().unwrap().clone(), [660_000]);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

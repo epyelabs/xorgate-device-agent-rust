@@ -366,8 +366,10 @@ fn camera_truth(
     let hw = ctx.hardware.clone();
     let (stream_hw, hooks, state) = (stream_hw.clone(), hooks.clone(), ctx.state.clone());
     let on_change = ops.camera_mount_on_change();
-    // `ctx.hooks` is the composed `OpsHooks` by now.
-    let recheck = ctx.hooks.clone();
+    // The Phase 3 hooks own the reconcile path (and do not own the camera
+    // report, so no reference cycle).
+    let recheck = hooks.clone();
+    let (settings, media_on) = (ctx.paths.settings.clone(), ctx.env.config.media.enabled);
     ct::CameraTruth::new(ct::CameraTruthOptions {
         hardware: Box::new(move || hw.borrow().clone()),
         stream_hw: Box::new(move || stream_hw.snapshot()),
@@ -385,7 +387,22 @@ fn camera_truth(
         on_change: Box::new(move || on_change()),
         // The B5 hold heals: list the cameras again through the
         // `hardware_changed` path (reconcile, bounce, reapply).
-        recheck: Box::new(move || recheck.hardware_recheck()),
+        recheck: Box::new(move || crate::ctx::PhaseHooks::hardware_recheck(recheck.as_ref())),
+        // Wanted = media on and the camera not turned off in
+        // `recording.video.cameras` (read on the 60 s refresh).
+        capture_wanted: Box::new(move |key: &str| {
+            media_on
+                && xorgate_core::recording_config::resolve_recording_config(
+                    xorgate_hal::settings_io::load_settings(&settings)
+                        .recording
+                        .as_ref(),
+                )
+                .video
+                .cameras
+                .get(key)
+                .copied()
+                .unwrap_or(true)
+        }),
         hold_ms: ct::REPORT_HOLD_MS,
     })
 }
