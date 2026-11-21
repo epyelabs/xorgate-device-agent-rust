@@ -234,6 +234,9 @@ impl PhaseHooks for OpsHooks {
     fn hardware_changed(&self) {
         self.rec.hardware_changed()
     }
+    fn hardware_recheck(&self) {
+        self.rec.hardware_recheck()
+    }
     fn reconcile_hardware_boot(&self) -> BoxFut<'_, Result<(), String>> {
         self.rec.reconcile_hardware_boot()
     }
@@ -273,9 +276,15 @@ impl PhaseHooks for OpsHooks {
         self.camera.get().and_then(|c| c.state())
     }
 
-    /// `effective.cameras` (Rust-only): the block, marked as reported.
+    /// `effective.cameras` (Rust-only): the block for the report being built.
     fn cameras_report(&self) -> Option<serde_json::Value> {
         self.cameras.get().and_then(|c| c.for_report())
+    }
+
+    fn cameras_report_sent(&self) {
+        if let Some(c) = self.cameras.get() {
+            c.report_sent();
+        }
     }
 
     /// The heartbeat's camera pass: verdicts from the live state, no I/O.

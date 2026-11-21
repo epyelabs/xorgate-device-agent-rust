@@ -8,8 +8,9 @@
 //!   a camera that IS listed is launched as before (the D86 back-off for one
 //!   that then fails at start is `tests/capture_absent_backoff.rs`).
 //! - B6: after a sensor change the reconcile re-renders OUR `.gst.direct`
-//!   (recognised by the camera name the file carries, software, hardware and
-//!   legacy renders alike) and never an operator's pipeline.
+//!   (recognised by the camera name the file carries: the software and the
+//!   hardware render, and a legacy x264enc one-liner) and never an
+//!   operator's pipeline, a hand-written v4l2h264enc one-liner included.
 //! - The mismatch warning compares with the declared sensor (config.txt
 //!   line, then model) and takes libcamera's variant names for the sensor.
 
@@ -279,7 +280,6 @@ async fn b6_a_sensor_change_rerenders_our_direct_backup() {
     for (what, old_direct) in [
         ("hardware render", &hw_exact),
         ("software render", &sw_exact),
-        ("legacy v4l2h264enc render (a CM4 file)", &legacy_hw),
         ("legacy x264enc render", &legacy_sw),
     ] {
         let _ = std::fs::remove_dir_all(&dir);
@@ -315,6 +315,10 @@ async fn b6_a_sensor_change_rerenders_our_direct_backup() {
         format!("libcamerasrc camera-name={IMX290_CM4} ! tee name=t\nt. ! x264enc ! appsink\n"),
         format!("libcamerasrc camera-name={IMX290_CM4} ! jpegenc ! appsink\n"),
         format!("videotestsrc camera-name={IMX290_CM4} ! x264enc ! appsink\n"),
+        // a hand-written CM4 one-liner (v4l2h264enc): the legacy clause is
+        // not widened to it
+        legacy_hw.clone(),
+        "libcamerasrc camera-name=/base/soc/i2c0mux/i2c@0/imx708@1a af-mode=continuous ! video/x-raw,width=1920,height=1080 ! videoconvert ! v4l2h264enc extra-controls=\"controls,video_bitrate=4000000\" ! video/x-h264,level=(string)4 ! appsink name=appsink-video\n".to_string(),
     ] {
         let _ = std::fs::remove_dir_all(&dir);
         write_trio(&dir, "cam0", IMX290_CM4, SHM);

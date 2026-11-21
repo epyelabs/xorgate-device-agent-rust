@@ -366,6 +366,8 @@ fn camera_truth(
     let hw = ctx.hardware.clone();
     let (stream_hw, hooks, state) = (stream_hw.clone(), hooks.clone(), ctx.state.clone());
     let on_change = ops.camera_mount_on_change();
+    // `ctx.hooks` is the composed `OpsHooks` by now.
+    let recheck = ctx.hooks.clone();
     ct::CameraTruth::new(ct::CameraTruthOptions {
         hardware: Box::new(move || hw.borrow().clone()),
         stream_hw: Box::new(move || stream_hw.snapshot()),
@@ -381,6 +383,9 @@ fn camera_truth(
         // Written with the next state flush (the 1 Hz tick or any event).
         publish: Box::new(move |cameras| state.set_cameras(cameras)),
         on_change: Box::new(move || on_change()),
+        // The B5 hold heals: list the cameras again through the
+        // `hardware_changed` path (reconcile, bounce, reapply).
+        recheck: Box::new(move || recheck.hardware_recheck()),
         hold_ms: ct::REPORT_HOLD_MS,
     })
 }
@@ -892,7 +897,7 @@ async fn run(args: &[String]) -> Result<i32> {
     // Phase 0): where the hardware reconcile runs (real mode, online). The
     // boot pass reads config.txt and sysfs once; the heartbeat keeps the
     // verdicts current and the 60 s poll re-reads the slow facts.
-    if cfg.mode == RunMode::Real && !cfg.offline {
+    if crate::ops::camera_truth::camera_report_enabled(cfg.mode, cfg.offline) {
         let truth = camera_truth(&ctx, &media_cfg.pipeline_dir, &stream_hw, &hooks, &ops);
         truth.refresh();
         ops.bind_cameras(truth);

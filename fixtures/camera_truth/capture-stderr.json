@@ -1,0 +1,114 @@
+{
+ "provenance": "RUST-ONLY fixture. The real stderr of capture children (`gst-launch-1.0 libcamerasrc \u2026`) taken from the agent journals of the support-other-camera-models bench sessions of 2026-11-21 (plan evidence: bench2-imx335-live part 5a and 5b, cm4-imx708 part 5), the `[video-capture camN] ` prefix removed, one child per case. `lastError` is the line the report must carry for that child: its first ERROR line that is not on the skip list (`camera_truth::ERROR_LINES_SKIPPED`). No device identifiers, coordinates or credentials: libcamera timestamps, thread ids and device-tree paths only.",
+ "cases": [
+  {
+   "name": "bench 2 (CM5), imx290 overlay on an IMX335: first child, the frame timeout and libcamera's two lines of advice",
+   "lines": [
+    "[0:00:12.220988381] [945]  INFO Camera camera.cpp:1215 configuring streams: (0) 1280x720-YUV420/Rec709",
+    "[0:00:12.221145455] [940]  INFO RPI pisp.cpp:1484 Sensor: /base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a - Selected sensor format: 1280x720-SRGGB12_1X12/RAW - Selected CFE format: 1280x720-PC1R/RAW",
+    "[0:00:13.417505695] [940]  WARN V4L2 v4l2_videodevice.cpp:2155 /dev/video12[19:cap]: Dequeue timer of 1000000.00us has expired!",
+    "[0:00:13.417539436] [940] ERROR RPI pipeline_base.cpp:1408 Camera frontend has timed out!",
+    "[0:00:13.417544158] [940] ERROR RPI pipeline_base.cpp:1409 Please check that your camera sensor connector is attached securely.",
+    "[0:00:13.417547992] [940] ERROR RPI pipeline_base.cpp:1410 Alternatively, try another cable and/or sensor."
+   ],
+   "lastError": "[0:00:13.417539436] [940] ERROR RPI pipeline_base.cpp:1408 Camera frontend has timed out!"
+  },
+  {
+   "name": "bench 2 (CM5), the same, a later child: its FIRST error line is about the OTHER camera (imx219, busy because it streams)",
+   "lines": [
+    "[0:00:19.158270951] [1114] ERROR V4L2 v4l2_device.cpp:390 'imx219 0-0010': Unable to set controls: Device or resource busy",
+    "[0:00:19.169223099] [1121]  INFO Camera camera.cpp:1215 configuring streams: (0) 1280x720-YUV420/Rec709",
+    "[0:00:19.169355359] [1114]  INFO RPI pisp.cpp:1484 Sensor: /base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a - Selected sensor format: 1280x720-SRGGB12_1X12/RAW - Selected CFE format: 1280x720-PC1R/RAW",
+    "[0:00:20.365494858] [1114]  WARN V4L2 v4l2_videodevice.cpp:2155 /dev/video12[19:cap]: Dequeue timer of 1000000.00us has expired!",
+    "[0:00:20.365528043] [1114] ERROR RPI pipeline_base.cpp:1408 Camera frontend has timed out!",
+    "[0:00:20.365532525] [1114] ERROR RPI pipeline_base.cpp:1409 Please check that your camera sensor connector is attached securely.",
+    "[0:00:20.365536228] [1114] ERROR RPI pipeline_base.cpp:1410 Alternatively, try another cable and/or sensor.",
+    "/usr/include/c++/12/bits/stl_queue.h:235: std::queue<_Tp, _Sequence>::reference std::queue<_Tp, _Sequence>::front() [with _Tp = std::unique_ptr<RequestWrap>; _Sequence = std::deque<std::unique_ptr<RequestWrap>, std::allocator<std::unique_ptr<RequestWrap> > >; reference = std::unique_ptr<RequestWrap>&]: Assertion "
+   ],
+   "lastError": "[0:00:20.365528043] [1114] ERROR RPI pipeline_base.cpp:1408 Camera frontend has timed out!"
+  },
+  {
+   "name": "bench 2 (CM5), a stale camera name (imx708 overlay, IMX335 attached), the busy-controls line first",
+   "lines": [
+    "[0:00:18.284932711] [1095] ERROR V4L2 v4l2_device.cpp:390 'imx219 0-0010': Unable to set controls: Device or resource busy",
+    "ERROR: from element /GstPipeline:pipeline0/GstLibcameraSrc:libcamerasrc0: Could not find a camera named '/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a'.",
+    "Additional debug info:",
+    "../src/gstreamer/gstlibcamerasrc.cpp(489): gst_libcamera_src_open (): /GstPipeline:pipeline0/GstLibcameraSrc:libcamerasrc0:",
+    "libcamera::CameraMananger::get() returned nullptr",
+    "ERROR: pipeline doesn't want to preroll.",
+    "ERROR: from element /GstPipeline:pipeline0/GstShmSink:shmsink0: Failed waiting on fd activity",
+    "Additional debug info:",
+    "../sys/shm/gstshmsink.c(842): pollthread_func (): /GstPipeline:pipeline0/GstShmSink:shmsink0:",
+    "gst_poll_wait returned -1, errno: 16",
+    "ERROR: pipeline doesn't want to preroll.",
+    "Failed to set pipeline to PAUSED."
+   ],
+   "lastError": "ERROR: from element /GstPipeline:pipeline0/GstLibcameraSrc:libcamerasrc0: Could not find a camera named '/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a'."
+  },
+  {
+   "name": "bench 2 (CM5), imx335 overlay on stock libcamera: no camera helper",
+   "lines": [
+    "[0:00:37.348646321] [1538]  INFO Camera camera_manager.cpp:330 libcamera v0.5.2+99-bfd68f78",
+    "[0:00:37.360536757] [1545]  INFO IPAProxy ipa_proxy.cpp:180 Using tuning file /usr/share/libcamera/ipa/rpi/pisp/imx335.json",
+    "[0:00:37.360572668] [1545] ERROR IPARPI ipa_base.cpp:152 Could not create camera helper for imx335",
+    "[0:00:37.360581090] [1545] ERROR RPI pipeline_base.cpp:814 Failed to load a suitable IPA library",
+    "[0:00:37.360585946] [1545] ERROR RPI pisp.cpp:947 Failed to register camera imx335 10-001a: -22",
+    "[0:00:37.362091627] [1545]  INFO IPAProxy ipa_proxy.cpp:180 Using tuning file /usr/share/libcamera/ipa/rpi/pisp/imx219.json",
+    "[0:00:37.368940790] [1545]  INFO Camera camera_manager.cpp:220 Adding camera '/base/axi/pcie@1000120000/rp1/i2c@70000/imx219@10' for pipeline handler rpi/pisp",
+    "[0:00:37.368957821] [1545]  INFO RPI pisp.cpp:1179 Registered camera /base/axi/pcie@1000120000/rp1/i2c@70000/imx219@10 to CFE device /dev/media3 and ISP device /dev/media2 using PiSP variant BCM2712_D0",
+    "ERROR: from element /GstPipeline:pipeline0/GstLibcameraSrc:libcamerasrc0: Could not find a camera named '/base/axi/pcie@1000120000/rp1/i2c@88000/imx335@1a'.",
+    "Additional debug info:",
+    "../src/gstreamer/gstlibcamerasrc.cpp(489): gst_libcamera_src_open (): /GstPipeline:pipeline0/GstLibcameraSrc:libcamerasrc0:",
+    "libcamera::CameraMananger::get() returned nullptr",
+    "ERROR: pipeline doesn't want to preroll.",
+    "ERROR: from element /GstPipeline:pipeline0/GstShmSink:shmsink0: Failed waiting on fd activity",
+    "Additional debug info:",
+    "../sys/shm/gstshmsink.c(842): pollthread_func (): /GstPipeline:pipeline0/GstShmSink:shmsink0:",
+    "gst_poll_wait returned -1, errno: 16",
+    "ERROR: pipeline doesn't want to preroll.",
+    "Failed to set pipeline to PAUSED."
+   ],
+   "lastError": "[0:00:37.360572668] [1545] ERROR IPARPI ipa_base.cpp:152 Could not create camera helper for imx335"
+  },
+  {
+   "name": "CM4, imx335 overlay on an IMX708, stock libcamera: no camera helper",
+   "lines": [
+    "[0:00:12.794902750] [739]  INFO Camera camera_manager.cpp:330 libcamera v0.5.2+99-bfd68f78",
+    "[0:00:12.849260120] [744]  INFO IPAProxy ipa_proxy.cpp:180 Using tuning file /usr/share/libcamera/ipa/rpi/vc4/imx335.json",
+    "[0:00:12.849394194] [744] ERROR IPARPI ipa_base.cpp:152 Could not create camera helper for imx335",
+    "[0:00:12.849421657] [744] ERROR RPI pipeline_base.cpp:814 Failed to load a suitable IPA library",
+    "[0:00:12.849436768] [744] ERROR RPI vc4.cpp:216 Failed to register camera imx335 0-001a: -22",
+    "ERROR: from element /GstPipeline:pipeline0/GstLibcameraSrc:libcamerasrc0: Could not find a camera named '/base/soc/i2c0mux/i2c@0/imx708@1a'.",
+    "Additional debug info:",
+    "../src/gstreamer/gstlibcamerasrc.cpp(489): gst_libcamera_src_open (): /GstPipeline:pipeline0/GstLibcameraSrc:libcamerasrc0:",
+    "libcamera::CameraMananger::get() returned nullptr",
+    "ERROR: pipeline doesn't want to preroll.",
+    "ERROR: from element /GstPipeline:pipeline0/GstShmSink:shmsink0: Failed waiting on fd activity",
+    "Additional debug info:",
+    "../sys/shm/gstshmsink.c(842): pollthread_func (): /GstPipeline:pipeline0/GstShmSink:shmsink0:",
+    "gst_poll_wait returned -1, errno: 16",
+    "ERROR: pipeline doesn't want to preroll.",
+    "Failed to set pipeline to PAUSED."
+   ],
+   "lastError": "[0:00:12.849394194] [744] ERROR IPARPI ipa_base.cpp:152 Could not create camera helper for imx335"
+  },
+  {
+   "name": "CM4, imx219 overlay on an IMX708: no camera at all, the stale name",
+   "lines": [
+    "[0:00:12.629934010] [708]  INFO Camera camera_manager.cpp:330 libcamera v0.5.2+99-bfd68f78",
+    "ERROR: from element /GstPipeline:pipeline0/GstLibcameraSrc:libcamerasrc0: Could not find a camera named '/base/soc/i2c0mux/i2c@0/imx708@1a'.",
+    "Additional debug info:",
+    "../src/gstreamer/gstlibcamerasrc.cpp(489): gst_libcamera_src_open (): /GstPipeline:pipeline0/GstLibcameraSrc:libcamerasrc0:",
+    "libcamera::CameraMananger::get() returned nullptr",
+    "ERROR: pipeline doesn't want to preroll.",
+    "ERROR: from element /GstPipeline:pipeline0/GstShmSink:shmsink0: Failed waiting on fd activity",
+    "Additional debug info:",
+    "../sys/shm/gstshmsink.c(842): pollthread_func (): /GstPipeline:pipeline0/GstShmSink:shmsink0:",
+    "gst_poll_wait returned -1, errno: 16",
+    "ERROR: pipeline doesn't want to preroll.",
+    "Failed to set pipeline to PAUSED."
+   ],
+   "lastError": "ERROR: from element /GstPipeline:pipeline0/GstLibcameraSrc:libcamerasrc0: Could not find a camera named '/base/soc/i2c0mux/i2c@0/imx708@1a'."
+  }
+ ]
+}

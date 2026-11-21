@@ -254,6 +254,57 @@ mod tests {
         let _ = std::fs::remove_dir_all(&r);
     }
 
+    /// The REAL `/sys/bus/i2c/devices` of a CM4 and two CM5, captured
+    /// read-only on the benches (`fixtures/camera_truth/sysfs-captures.json`):
+    /// the raw link texts, adapters and the lens driver included.
+    #[test]
+    fn captured_sysfs_listings_of_a_real_cm4_and_cm5() {
+        let doc: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/camera_truth/sysfs-captures.json"
+        ))
+        .unwrap();
+        let cases = doc["cases"].as_array().unwrap();
+        assert_eq!(cases.len(), 3);
+        let (mut adapters, mut lenses) = (0, 0);
+        for (i, c) in cases.iter().enumerate() {
+            let name = c["name"].as_str().unwrap();
+            let platform = Platform::parse(c["platform"].as_str().unwrap()).expect(name);
+            let r = scratch(&format!("captured-{i}"));
+            for d in c["devices"].as_array().unwrap() {
+                let dev = r.join("i2c").join(d["name"].as_str().unwrap());
+                std::fs::create_dir_all(&dev).unwrap();
+                adapters += usize::from(d["name"].as_str().unwrap().starts_with("i2c-"));
+                if let Some(link) = d["ofNode"].as_str() {
+                    symlink(link, dev.join("of_node")).unwrap();
+                    // The device-tree node the link names, with its `port`
+                    // child when the capture saw one.
+                    let rel = link.split("devicetree/base/").nth(1).expect(name);
+                    let node = r.join("dt").join(rel);
+                    std::fs::create_dir_all(&node).unwrap();
+                    if d["port"].as_bool().unwrap() {
+                        std::fs::create_dir_all(node.join("port")).unwrap();
+                    } else if !d["name"].as_str().unwrap().starts_with("i2c-") {
+                        lenses += 1;
+                    }
+                }
+                if let Some(link) = d["driver"].as_str() {
+                    symlink(link, dev.join("driver")).unwrap();
+                }
+            }
+            let got: Vec<serde_json::Value> = scan(platform, &r)
+                .expect(name)
+                .into_iter()
+                .map(|n| {
+                    serde_json::json!({"connector": n.connector, "node": n.node, "driver": n.driver})
+                })
+                .collect();
+            assert_eq!(serde_json::Value::from(got), c["nodes"], "{name}");
+            let _ = std::fs::remove_dir_all(&r);
+        }
+        assert!(adapters >= 15, "the captures keep the i2c-N adapters");
+        assert_eq!(lenses, 1, "the CM4 capture keeps the dw9817 lens node");
+    }
+
     #[test]
     fn no_sysfs_is_unknown_and_an_empty_one_is_no_node() {
         let r = scratch("none");

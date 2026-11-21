@@ -115,11 +115,17 @@ impl CaptureBackend for CapBackend {
             let e2 = e.clone();
             tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_millis(100)).await;
-                let _ = e2.tx.send(ChildEvent::Stderr(
+                // As on a two-camera bench: the child's first ERROR line is
+                // about the OTHER camera (skipped by the camera report), then
+                // the cause, then a consequence line.
+                for line in [
+                    "[0:00:19.158270951] [1114] ERROR V4L2 v4l2_device.cpp:390 'imx290 10-001a': Unable to set controls: Device or resource busy",
                     "ERROR: from element /GstPipeline:pipeline0/GstLibcameraSrc:libcamerasrc0: \
-                     Failed to start the camera: Remote I/O error"
-                        .into(),
-                ));
+                     Failed to start the camera: Remote I/O error",
+                    "ERROR: from element /GstPipeline:pipeline0/GstShmSink:shmsink0: Failed waiting on fd activity",
+                ] {
+                    let _ = e2.tx.send(ChildEvent::Stderr(line.into()));
+                }
                 e2.exit(Some(1));
             });
         } else if key == "cam1" && dies > 0 {
@@ -721,6 +727,9 @@ async fn camera_report_health_is_failing_through_the_ladder_and_streaming_after_
     assert_eq!(truth("cam1"), CaptureTruth::Failing);
     let h = health("cam1");
     assert!(h.unstable);
+    assert_eq!(h.stalled_preset, None, "a start failure, not a stall");
+    // The child's FIRST error line that is not on the skip list: not the
+    // other camera's busy-controls line before it, not shmsink's after it.
     assert_eq!(
         h.last_error.as_deref(),
         Some("ERROR: from element /GstPipeline:pipeline0/GstLibcameraSrc:libcamerasrc0: Failed to start the camera: Remote I/O error")

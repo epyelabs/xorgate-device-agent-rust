@@ -4,12 +4,13 @@
 //! and libcamera listed, whether capture delivers, and one verdict
 //! (`xorgate_core::camera_truth`).
 //!
-//! This module only gathers and publishes. It READS: the hardware block,
-//! the last hardware reconcile (the camera listing it already ran), the boot
+//! This module gathers and publishes. It READS: the hardware block, the
+//! last hardware reconcile (the camera listing it already ran), the boot
 //! config text, sysfs, the pipeline dir and the capture supervisor's state.
 //! It WRITES: `state.json`'s `cameras` (for `xorgate-rs status`) and the
-//! snapshot the config report carries as `effective.cameras`. It runs no
-//! process, calls no helper, never writes config.txt and cannot reboot.
+//! snapshot the config report carries as `effective.cameras`. It never
+//! writes config.txt, calls no helper and cannot reboot. The one thing it
+//! sets in motion is the re-listing below.
 //!
 //! When it runs:
 //! - [`CameraTruth::refresh`]: the slow facts (config.txt, the sysfs scan,
@@ -19,24 +20,43 @@
 //!   the live reconcile verdicts and capture state. Every heartbeat (1 s):
 //!   two short locks and no I/O.
 //!
-//! When it asks for a config report: only when what the cloud last got
-//! (the summary of the block handed to the last report,
-//! [`CameraTruth::for_report`]) differs from the current summary, and then
-//! after [`REPORT_HOLD_MS`] (20 s), so the two cameras of a device settling
-//! a few seconds apart make one report. The summary leaves out everything that
-//! moves with the capture ladder (the back-off step, the last error line),
-//! and the capture state itself is settled
+//! Re-listing (the B5 hold must heal without an agent restart). A stream
+//! held because its port listed no camera would stay held for ever: cameras
+//! are listed at boot and on a hardware-block change only. So while a port
+//! is held AND the kernel has a driver bound on it (the boot listing may
+//! simply have come too early), `tick` asks for the hardware reconcile to
+//! run again (`CameraTruthOptions::recheck`, the `hardware_changed` path)
+//! 15 s, 30 s and 60 s after the agent started, then every 5 minutes
+//! (`camera_truth::next_relist_ms`). When the camera then lists, the stream
+//! starts as it would at boot. A port with no bound driver is never
+//! re-listed: a driver binds at boot only. Each re-listing is one
+//! `rpicam-hello --list-cameras` run, which the JS agent does not make.
+//! Until one has run, a "driver bound, nothing listed" port is reported as
+//! an observation the agent is still checking, not as a libcamera finding.
+//!
+//! When it asks for a config report: only when what the cloud last got (the
+//! summary of the block of the last report that was SENT,
+//! [`CameraTruth::for_report`] + [`CameraTruth::report_sent`]) differs from
+//! the current summary, and then after a hold: [`REPORT_HOLD_MS`] (20 s), so
+//! the two cameras of a device settling a few seconds apart make one
+//! report; doubled after every request up to 10 minutes
+//! (`camera_truth::next_report_hold_ms`), so a camera that fails and
+//! recovers every couple of minutes costs a report per 10 minutes, not two
+//! per cycle; back to 20 s after 30 quiet minutes. The summary leaves out
+//! everything that moves with the capture ladder (the back-off step, the
+//! last error line), and the capture state itself is settled
 //! (`camera_truth::{capture_truth, settle_capture}`): a camera in its
 //! back-off stays `failing` however many steps it walks, and a streaming
 //! camera that is restarted on purpose stays `streaming` through the
 //! restart (`RESTART_GRACE_MS`).
 //!
-//! Lock rule (ConfigSync, `ctx.rs` `report_hints` doc): [`for_report`] is
-//! called under ConfigSync's mutex and takes only this module's own mutex,
-//! under which nothing calls out (the change callback and the state write
-//! run after it is released).
+//! Lock rule (ConfigSync, `ctx.rs` `report_hints` doc): [`for_report`] and
+//! [`report_sent`] are called under ConfigSync's mutex and take only this
+//! module's own mutex, under which nothing calls out (the change callback,
+//! the re-listing and the state write run after it is released).
 //!
 //! [`for_report`]: CameraTruth::for_report
+//! [`report_sent`]: CameraTruth::report_sent
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -45,20 +65,29 @@ use std::time::Duration;
 use indexmap::IndexMap;
 use serde_json::{Map, Value};
 use xorgate_core::camera_truth::{
-    boot_config_port, capture_truth, derive_port, settle_capture, summarise_port, CaptureLive,
-    CaptureTruth, PortFacts, PortNode,
+    capture_allowed, capture_truth, derive_port, next_relist_ms, next_report_hold_ms,
+    node_for_port, port_needs_relist, settle_capture, summarise_port, CaptureLive, CaptureTruth,
+    PortFacts, PortNode, RELIST_AFTER_START_MS, REPORT_HOLD_RESET_MS,
 };
 use xorgate_core::hardware_block::{DeviceHardwareBlock, Platform};
+use xorgate_core::telemetry::RunMode;
 use xorgate_core::video_capture::{is_bridged_pipeline, pipeline_file_for};
 
 use crate::recording::hooks::{BootConfigTextFn, StreamHardwareSnapshot};
 
-/// How long a changed summary waits before a config report is requested:
-/// longer than the capture stable window (15 s) plus the default spawn
-/// stagger of the second camera (4 s), so a boot that reported `starting`
-/// settles into ONE more report (`streaming` for both cameras), and a flap
-/// inside the window asks for nothing.
+/// How long a changed summary waits before a config report is requested,
+/// to begin with: longer than the capture stable window (15 s) plus the
+/// default spawn stagger of the second camera (4 s), so a boot that
+/// reported `starting` settles into ONE more report (`streaming` for both
+/// cameras), and a flap inside the window asks for nothing.
 pub const REPORT_HOLD_MS: u64 = 20_000;
+
+/// Where the camera report exists: where the hardware reconcile runs (real
+/// mode, online). In sim and replay mode and with `--offline` there is no
+/// `effective.cameras` and no `cameras` key in state.json.
+pub fn camera_report_enabled(mode: RunMode, offline: bool) -> bool {
+    mode == RunMode::Real && !offline
+}
 
 /// The sysfs scan (`xorgate_hal::camera_probe::scan_port_nodes`); `None` =
 /// it could not look.
@@ -75,7 +104,7 @@ pub fn real_port_nodes() -> PortNodesFn {
     })
 }
 
-/// What [`CameraTruth`] reads.
+/// What [`CameraTruth`] reads, and the two things it may ask for.
 pub struct CameraTruthOptions {
     /// The hardware block in force.
     pub hardware: Box<dyn Fn() -> Option<DeviceHardwareBlock> + Send + Sync>,
@@ -94,6 +123,9 @@ pub struct CameraTruthOptions {
     pub publish: Box<dyn Fn(Option<Value>) + Send + Sync>,
     /// "The cloud's copy is out of date": request a config report.
     pub on_change: Box<dyn Fn() + Send + Sync>,
+    /// "List the cameras again" (`PhaseHooks::hardware_recheck`): the
+    /// hardware reconcile through the `hardware_changed` path, quiet.
+    pub recheck: Box<dyn Fn() + Send + Sync>,
     /// [`REPORT_HOLD_MS`] (a test seam).
     pub hold_ms: u64,
 }
@@ -116,21 +148,29 @@ struct Settled {
     soft_since: Option<tokio::time::Instant>,
 }
 
-#[derive(Default)]
 struct St {
     statics: Option<Statics>,
     /// The capture state last derived per stream key (`settle_capture`).
     settled: HashMap<String, Settled>,
     /// The current block and its summary.
     current: Option<(Value, Vec<String>)>,
-    /// The summary of the block the last config report carried.
+    /// The summary of the block handed to the report being built.
+    offered: Option<Vec<String>>,
+    /// The summary of the block the last SENT config report carried.
     reported: Option<Vec<String>>,
     /// A report-request timer is pending.
     hold_armed: bool,
+    /// The hold of the next request (grows with every request).
+    hold_ms: u64,
+    /// When the last report was requested.
+    last_request: Option<tokio::time::Instant>,
+    /// The next re-listing, in ms after `Inner::started`.
+    next_relist_ms: u64,
 }
 
 struct Inner {
     opts: CameraTruthOptions,
+    started: tokio::time::Instant,
     st: Mutex<St>,
 }
 
@@ -144,10 +184,17 @@ fn lock(m: &Mutex<St>) -> MutexGuard<'_, St> {
     m.lock().unwrap_or_else(|p| p.into_inner())
 }
 
+/// What one evaluation produced.
+struct Built {
+    /// The block and its summary; `None` = nothing to report (no cameras in
+    /// the model, or no hardware reconcile has completed yet).
+    block: Option<(Value, Vec<String>)>,
+    /// Some port is held for lack of a camera while a driver is bound on it.
+    needs_relist: bool,
+}
+
 /// Build the block from the facts: stream key → port report (the block's
 /// `video` order; a repeated key keeps its first entry), plus its summary.
-/// `None` = nothing to report (no cameras in the model, or no hardware
-/// reconcile has completed yet).
 fn build_block(
     block: &DeviceHardwareBlock,
     hw: &StreamHardwareSnapshot,
@@ -155,10 +202,16 @@ fn build_block(
     capture: &[(String, CaptureLive)],
     settled: &mut HashMap<String, Settled>,
     now: tokio::time::Instant,
-) -> Option<(Value, Vec<String>)> {
+) -> Built {
     if hw.passes == 0 || block.video.is_empty() {
-        return None;
+        return Built {
+            block: None,
+            needs_relist: false,
+        };
     }
+    // The boot listing has been repeated at least once.
+    let relisted = hw.passes >= 2;
+    let mut needs_relist = false;
     let mut ports: IndexMap<&str, Value> = IndexMap::new();
     let mut summary = Vec::new();
     for video in &block.video {
@@ -174,10 +227,13 @@ fn build_block(
             .iter()
             .find(|(k, _)| *k == video.key)
             .map(|(_, l)| l);
-        let held = !xorgate_core::camera_truth::capture_allowed(
-            hw.armed,
-            hw.statuses.get(&video.key).copied(),
-        );
+        let held = !capture_allowed(hw.armed, hw.statuses.get(&video.key).copied());
+        let driver_bound = statics
+            .nodes
+            .as_deref()
+            .and_then(|n| node_for_port(n, &video.connector))
+            .is_some_and(|n| n.driver.is_some());
+        needs_relist |= port_needs_relist(held, driver_bound);
         let live_state = capture_truth(live, held);
         let prev = settled.get(&video.key).copied();
         // The restart grace: how long a camera that was streaming has read
@@ -199,12 +255,10 @@ fn build_block(
             stream_key: &video.key,
             connector: &video.connector,
             model_sensor: &video.sensor,
-            boot: statics
-                .boot_text
-                .as_deref()
-                .map(|t| boot_config_port(t, &video.connector)),
+            boot_text: statics.boot_text.as_deref(),
             nodes: statics.nodes.as_deref(),
             enumerated: hw.cameras.is_some(),
+            relisted,
             listed: listed.map(|c| (c.sensor.as_str(), c.camera_name.as_str())),
             capture: state,
             backoff_step: live.map_or(0, |l| l.backoff_step),
@@ -212,24 +266,50 @@ fn build_block(
             last_error: live
                 .filter(|_| failing)
                 .and_then(|l| l.last_error.as_deref()),
+            stalled_preset: live
+                .filter(|_| failing)
+                .and_then(|l| l.stalled_preset.as_deref()),
             unsupervised: statics.bridged.get(&video.key).copied().flatten() == Some(false),
         });
-        summary.push(summarise_port(&video.key, &port));
+        // The sentence of a "driver bound, nothing listed" port changes when
+        // the re-listing has confirmed it, and so does the summary; a stall
+        // reads differently from a start failure.
+        summary.push(format!(
+            "{}|{}|{}",
+            summarise_port(&video.key, &port),
+            u8::from(relisted && driver_bound && listed.is_none()),
+            u8::from(failing && live.is_some_and(|l| l.stalled_preset.is_some())),
+        ));
         ports.insert(
             video.key.as_str(),
             serde_json::to_value(&port).expect("a camera port serialises"),
         );
     }
     let map: Map<String, Value> = ports.into_iter().map(|(k, v)| (k.to_string(), v)).collect();
-    Some((Value::Object(map), summary))
+    Built {
+        block: Some((Value::Object(map), summary)),
+        needs_relist,
+    }
 }
 
 impl CameraTruth {
     pub fn new(opts: CameraTruthOptions) -> Self {
+        let hold_ms = opts.hold_ms;
         Self {
             inner: Arc::new(Inner {
                 opts,
-                st: Mutex::new(St::default()),
+                started: tokio::time::Instant::now(),
+                st: Mutex::new(St {
+                    statics: None,
+                    settled: HashMap::new(),
+                    current: None,
+                    offered: None,
+                    reported: None,
+                    hold_armed: false,
+                    hold_ms,
+                    last_request: None,
+                    next_relist_ms: RELIST_AFTER_START_MS[0],
+                }),
             }),
         }
     }
@@ -267,50 +347,74 @@ impl CameraTruth {
 
     /// Re-derive the verdicts from the cached slow facts and the live
     /// state; publish the block when it moved; arm the report request when
-    /// the cloud's copy is out of date. No I/O.
+    /// the cloud's copy is out of date; ask for a re-listing when one is
+    /// due. No I/O.
     pub fn tick(&self) {
         let o = &self.inner.opts;
         let block = (o.hardware)();
         let hw = (o.stream_hw)();
         let capture = (o.capture)();
-        let (publish, arm) = {
+        let now = tokio::time::Instant::now();
+        let since_start = now.duration_since(self.inner.started).as_millis() as u64;
+        let (publish, arm, relist) = {
             let mut g = lock(&self.inner.st);
             let st = &mut *g;
-            let next = match (&block, &st.statics) {
-                (Some(b), Some(statics)) => build_block(
-                    b,
-                    &hw,
-                    statics,
-                    &capture,
-                    &mut st.settled,
-                    tokio::time::Instant::now(),
-                ),
-                _ => None,
+            let built = match (&block, &st.statics) {
+                (Some(b), Some(statics)) => {
+                    build_block(b, &hw, statics, &capture, &mut st.settled, now)
+                }
+                _ => Built {
+                    block: None,
+                    needs_relist: false,
+                },
             };
-            if next.is_none() {
+            if built.block.is_none() {
                 st.settled.clear();
             }
-            let moved = next.as_ref().map(|n| &n.0) != st.current.as_ref().map(|c| &c.0);
-            st.current = next;
+            let moved = built.block.as_ref().map(|n| &n.0) != st.current.as_ref().map(|c| &c.0);
+            st.current = built.block;
             let stale = st.current.as_ref().map(|c| &c.1) != st.reported.as_ref();
-            let arm = stale && !st.hold_armed;
-            if arm {
+            let arm = (stale && !st.hold_armed).then(|| {
                 st.hold_armed = true;
+                // A long quiet spell: the hold starts over.
+                if st.last_request.is_none_or(|t| {
+                    now.duration_since(t).as_millis() as u64 >= REPORT_HOLD_RESET_MS
+                }) {
+                    st.hold_ms = o.hold_ms;
+                }
+                st.hold_ms
+            });
+            // A re-listing is due only while a held port has a bound driver;
+            // a time that passed while none was needed is not made up for.
+            let relist = built.needs_relist && since_start >= st.next_relist_ms;
+            if since_start >= st.next_relist_ms {
+                st.next_relist_ms = next_relist_ms(since_start);
             }
-            (moved.then(|| st.current.as_ref().map(|c| c.0.clone())), arm)
+            (
+                moved.then(|| st.current.as_ref().map(|c| c.0.clone())),
+                arm,
+                relist,
+            )
         };
         if let Some(value) = publish {
             (o.publish)(value);
         }
-        if arm {
+        if relist {
+            (o.recheck)();
+        }
+        if let Some(hold_ms) = arm {
             let inner = self.inner.clone();
-            let hold = Duration::from_millis(inner.opts.hold_ms);
             tokio::spawn(async move {
-                tokio::time::sleep(hold).await;
+                tokio::time::sleep(Duration::from_millis(hold_ms)).await;
                 let stale = {
                     let mut st = lock(&inner.st);
                     st.hold_armed = false;
-                    st.current.as_ref().map(|c| &c.1) != st.reported.as_ref()
+                    let stale = st.current.as_ref().map(|c| &c.1) != st.reported.as_ref();
+                    if stale {
+                        st.last_request = Some(tokio::time::Instant::now());
+                        st.hold_ms = next_report_hold_ms(st.hold_ms);
+                    }
+                    stale
                 };
                 if stale {
                     (inner.opts.on_change)();
@@ -320,12 +424,22 @@ impl CameraTruth {
     }
 
     /// The block for a config report (`effective.cameras`), `None` when
-    /// there is none. Marks it as what the cloud has. A snapshot read: safe
+    /// there is none. It counts as what the cloud has once
+    /// [`report_sent`](Self::report_sent) follows. A snapshot read: safe
     /// under ConfigSync's mutex (module doc).
     pub fn for_report(&self) -> Option<Value> {
         let mut st = lock(&self.inner.st);
-        st.reported = st.current.as_ref().map(|c| c.1.clone());
+        st.offered = st.current.as_ref().map(|c| c.1.clone());
         st.current.as_ref().map(|c| c.0.clone())
+    }
+
+    /// The report built from the last [`for_report`](Self::for_report) was
+    /// handed to the MQTT client (sent, or queued for the next connect). A
+    /// report whose publish failed is never marked, so the next hold asks
+    /// again.
+    pub fn report_sent(&self) {
+        let mut st = lock(&self.inner.st);
+        st.reported = st.offered.clone();
     }
 
     /// The current block without marking it reported (tests, diagnostics).
@@ -388,6 +502,7 @@ mod tests {
             stable_ms,
             backoff_step: 0,
             last_error: None,
+            stalled_preset: None,
         }
     }
 
@@ -397,6 +512,17 @@ mod tests {
         hw: Arc<Mutex<StreamHardwareSnapshot>>,
         published: Arc<Mutex<Vec<Option<Value>>>>,
         changes: Arc<AtomicUsize>,
+        /// The driver bound on csi0's `imx335@1a` (`None` = its probe failed).
+        cam0_driver: Arc<Mutex<Option<String>>>,
+        /// When (ms after the rig was built) a re-listing was asked for.
+        rechecks: Arc<Mutex<Vec<u64>>>,
+    }
+
+    /// What a config report does: read the block, then mark it sent.
+    fn reported(r: &Rig) -> Option<Value> {
+        let v = r.truth.for_report();
+        r.truth.report_sent();
+        v
     }
 
     fn rig(dir: &std::path::Path) -> Rig {
@@ -404,24 +530,28 @@ mod tests {
         let hw = Arc::new(Mutex::new(bench2_hw()));
         let published: Arc<Mutex<Vec<Option<Value>>>> = Arc::default();
         let changes = Arc::new(AtomicUsize::new(0));
+        let cam0_driver: Arc<Mutex<Option<String>>> = Arc::default();
+        let rechecks: Arc<Mutex<Vec<u64>>> = Arc::default();
         let (c, h, p, n) = (
             capture.clone(),
             hw.clone(),
             published.clone(),
             changes.clone(),
         );
+        let (d, rc, h2) = (cam0_driver.clone(), rechecks.clone(), hw.clone());
+        let t0 = tokio::time::Instant::now();
         let truth = CameraTruth::new(CameraTruthOptions {
             hardware: Box::new(|| Some(block())),
             stream_hw: Box::new(move || h.lock().unwrap().clone()),
             boot_config: Arc::new(|| {
                 Some("dtoverlay=imx335,cam0\ndtoverlay=imx219,cam1,rotation=180\n".to_string())
             }),
-            port_nodes: Arc::new(|_| {
+            port_nodes: Arc::new(move |_| {
                 Some(vec![
                     PortNode {
                         connector: "csi0".into(),
                         node: "imx335@1a".into(),
-                        driver: None,
+                        driver: d.lock().unwrap().clone(),
                     },
                     PortNode {
                         connector: "csi1".into(),
@@ -436,6 +566,11 @@ mod tests {
             on_change: Box::new(move || {
                 n.fetch_add(1, Ordering::SeqCst);
             }),
+            // A re-listing: note when, and count the pass it stands for.
+            recheck: Box::new(move || {
+                rc.lock().unwrap().push(t0.elapsed().as_millis() as u64);
+                h2.lock().unwrap().passes += 1;
+            }),
             hold_ms: REPORT_HOLD_MS,
         });
         Rig {
@@ -444,6 +579,8 @@ mod tests {
             hw,
             published,
             changes,
+            cam0_driver,
+            rechecks,
         }
     }
 
@@ -454,8 +591,12 @@ mod tests {
         d
     }
 
+    /// Let any pending report hold run out (the hold grows up to 10 min).
     async fn settle() {
-        tokio::time::sleep(Duration::from_millis(REPORT_HOLD_MS + 1)).await;
+        tokio::time::sleep(Duration::from_millis(
+            xorgate_core::camera_truth::REPORT_HOLD_MAX_MS + 1,
+        ))
+        .await;
         tokio::task::yield_now().await;
     }
 
@@ -486,7 +627,7 @@ mod tests {
         // state.json got exactly this block, once.
         assert_eq!(r.published.lock().unwrap().clone(), vec![Some(v.clone())]);
         // The report carries it.
-        assert_eq!(r.truth.for_report(), Some(v));
+        assert_eq!(reported(&r), Some(v));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -502,7 +643,7 @@ mod tests {
         set(live(CaptureState::Starting, None, false));
         r.truth.refresh();
         assert_eq!(
-            r.truth.for_report().unwrap()["cam1"]["capture"]["state"],
+            reported(&r).unwrap()["cam1"]["capture"]["state"],
             "starting"
         );
         settle().await;
@@ -516,7 +657,7 @@ mod tests {
         settle().await;
         assert_eq!(r.changes.load(Ordering::SeqCst), 1);
         assert_eq!(
-            r.truth.for_report().unwrap()["cam1"]["capture"]["state"],
+            reported(&r).unwrap()["cam1"]["capture"]["state"],
             "streaming"
         );
 
@@ -562,16 +703,13 @@ mod tests {
         );
         settle().await;
         assert_eq!(r.changes.load(Ordering::SeqCst), 2);
-        assert_eq!(
-            r.truth.for_report().unwrap()["cam1"]["capture"]["state"],
-            "off"
-        );
+        assert_eq!(reported(&r).unwrap()["cam1"]["capture"]["state"], "off");
         set(live(CaptureState::Running, Some(0), false));
         r.truth.tick();
         settle().await;
         assert_eq!(r.changes.load(Ordering::SeqCst), 3);
         assert_eq!(
-            r.truth.for_report().unwrap()["cam1"]["capture"]["state"],
+            reported(&r).unwrap()["cam1"]["capture"]["state"],
             "streaming"
         );
 
@@ -582,7 +720,7 @@ mod tests {
         r.truth.tick();
         settle().await;
         assert_eq!(r.changes.load(Ordering::SeqCst), 4);
-        let rep = r.truth.for_report().unwrap();
+        let rep = reported(&r).unwrap();
         assert_eq!(rep["cam1"]["verdict"], "no-frames");
         assert_eq!(rep["cam1"]["capture"]["lastError"], "ERROR a");
         let published_before = r.published.lock().unwrap().len();
@@ -627,18 +765,18 @@ mod tests {
     /// No hardware reconcile yet, or no model: no block at all (the key is
     /// absent from the report and from state.json).
     #[tokio::test(start_paused = true)]
-    async fn nothing_before_the_first_reconcile_and_unmanaged_without_a_listing() {
+    async fn nothing_before_the_first_reconcile_and_unchecked_without_a_listing() {
         let dir = scratch("none");
         let r = rig(&dir);
         r.hw.lock().unwrap().passes = 0;
         r.truth.refresh();
         assert_eq!(r.truth.current(), None);
-        assert_eq!(r.truth.for_report(), None);
+        assert_eq!(reported(&r), None);
         assert!(r.published.lock().unwrap().is_empty());
         settle().await;
         assert_eq!(r.changes.load(Ordering::SeqCst), 0);
 
-        // A pass that could not enumerate: every port is `unmanaged`.
+        // A pass that could not enumerate: every port is `unchecked`.
         {
             let mut hw = r.hw.lock().unwrap();
             hw.passes = 1;
@@ -648,15 +786,15 @@ mod tests {
         }
         r.truth.tick();
         let v = r.truth.current().unwrap();
-        assert_eq!(v["cam0"]["verdict"], "unmanaged");
-        assert_eq!(v["cam1"]["verdict"], "unmanaged");
+        assert_eq!(v["cam0"]["verdict"], "unchecked");
+        assert_eq!(v["cam1"]["verdict"], "unchecked");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A `.gst` that is not the bridged kind: the agent's capture never runs
     /// that camera, so it cannot say frames flow.
     #[tokio::test(start_paused = true)]
-    async fn a_direct_pipeline_is_unmanaged() {
+    async fn a_direct_pipeline_is_unchecked() {
         let dir = scratch("direct");
         std::fs::write(dir.join("cam1.gst"), "libcamerasrc ! my own ! appsink\n").unwrap();
         std::fs::write(
@@ -667,9 +805,172 @@ mod tests {
         let r = rig(&dir);
         r.truth.refresh();
         let v = r.truth.current().unwrap();
-        assert_eq!(v["cam1"]["verdict"], "unmanaged");
+        assert_eq!(v["cam1"]["verdict"], "unchecked");
         assert_eq!(v["cam1"]["capture"]["state"], "off");
         assert_eq!(v["cam0"]["verdict"], "not-detected");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The B5 hold heals without an agent restart: a held port with a bound
+    /// driver is listed again 15 s, 30 s and 60 s after the start, then
+    /// every 5 minutes; a held port with NO bound driver never is.
+    #[tokio::test(start_paused = true)]
+    async fn a_held_port_with_a_bound_driver_is_relisted_on_schedule() {
+        let dir = scratch("relist");
+        let r = rig(&dir);
+        r.truth.refresh();
+        // cam0 is held, its probe failed (no driver): nothing to wait for.
+        for _ in 0..400 {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            r.truth.tick();
+        }
+        assert!(r.rechecks.lock().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // The same port with the driver BOUND and nothing listed (the CM4
+        // `imx335` case, or a listing that came too early).
+        let dir = scratch("relist-bound");
+        let r = rig(&dir);
+        *r.cam0_driver.lock().unwrap() = Some("imx335".into());
+        r.truth.refresh();
+        // Boot: an observation, still being checked.
+        assert_eq!(
+            r.truth.current().unwrap()["cam0"]["detail"],
+            "The imx335 driver is bound on csi0, but libcamera did not list a camera there when the agent started. The agent is checking again."
+        );
+        assert_eq!(reported(&r).unwrap()["cam0"]["verdict"], "not-detected");
+        for i in 0..700 {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            r.truth.tick();
+            if i == 39 {
+                // The 15 s re-listing confirmed it: the sentence says so,
+                // and the cloud was asked to take it (once: the report
+                // that follows is what the cloud then has).
+                assert_eq!(
+                    r.truth.current().unwrap()["cam0"]["detail"],
+                    "The imx335 driver is bound on csi0 but libcamera lists no camera there (checked again after the agent started): libcamera on this device may not support this sensor. The imx335 driver only weakly checks which chip is attached, so the camera on this port may be a different sensor."
+                );
+                assert_eq!(r.changes.load(Ordering::SeqCst), 1);
+                reported(&r);
+            }
+        }
+        assert_eq!(
+            r.rechecks.lock().unwrap().clone(),
+            [15_000, 30_000, 60_000, 360_000, 660_000]
+        );
+        // The later re-listings found the same: nothing more to report.
+        assert_eq!(r.changes.load(Ordering::SeqCst), 1);
+
+        // The camera lists (the re-listing found it): the hold is over, and
+        // so is the re-listing.
+        {
+            let mut hw = r.hw.lock().unwrap();
+            hw.statuses
+                .insert("cam0".to_string(), StreamHardwareStatus::Rendered);
+            hw.cameras.as_mut().unwrap().push(EnumeratedCamera {
+                camera_name: "/base/axi/pcie@1000120000/rp1/i2c@88000/imx335@1a".into(),
+                sensor: "imx335".into(),
+                connector: Some("csi0".into()),
+            });
+        }
+        let before = r.rechecks.lock().unwrap().len();
+        for _ in 0..700 {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            r.truth.tick();
+        }
+        assert_eq!(r.rechecks.lock().unwrap().len(), before);
+        assert_eq!(r.truth.current().unwrap()["cam0"]["verdict"], "ok");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A port that starts being held late (a hardware-block change) is not
+    /// re-listed in a burst for the schedule points that already passed.
+    #[tokio::test(start_paused = true)]
+    async fn schedule_points_that_passed_unneeded_are_not_made_up_for() {
+        let dir = scratch("relist-late");
+        let r = rig(&dir);
+        r.truth.refresh();
+        for _ in 0..100 {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            r.truth.tick();
+        }
+        *r.cam0_driver.lock().unwrap() = Some("imx335".into());
+        r.truth.refresh();
+        for _ in 0..300 {
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            r.truth.tick();
+        }
+        assert_eq!(r.rechecks.lock().unwrap().clone(), [360_000]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The hold doubles with every request (20 s, 40 s, 80 s … 10 min) and
+    /// starts over after 30 quiet minutes; a report that was built but not
+    /// sent does not count as the cloud's copy.
+    #[tokio::test(start_paused = true)]
+    async fn the_hold_grows_with_repeats_and_a_failed_publish_is_asked_again() {
+        let dir = scratch("hold");
+        let r = rig(&dir);
+        let set = |l: CaptureLive| *r.capture.lock().unwrap() = vec![("cam1".to_string(), l)];
+        let up = || live(CaptureState::Running, Some(0), false);
+        let down = || live(CaptureState::Retrying, None, true);
+        let wait = |ms: u64| tokio::time::sleep(Duration::from_millis(ms));
+        set(up());
+        r.truth.refresh();
+        reported(&r);
+
+        // Change 1: asked after 20 s.
+        set(down());
+        r.truth.tick();
+        wait(19_000).await;
+        assert_eq!(r.changes.load(Ordering::SeqCst), 0);
+        wait(1_100).await;
+        assert_eq!(r.changes.load(Ordering::SeqCst), 1);
+        reported(&r);
+        // Change 2: 40 s.
+        set(up());
+        r.truth.tick();
+        wait(39_000).await;
+        assert_eq!(r.changes.load(Ordering::SeqCst), 1);
+        wait(1_100).await;
+        assert_eq!(r.changes.load(Ordering::SeqCst), 2);
+        reported(&r);
+        // Change 3: 80 s.
+        set(down());
+        r.truth.tick();
+        wait(79_000).await;
+        assert_eq!(r.changes.load(Ordering::SeqCst), 2);
+        wait(1_100).await;
+        assert_eq!(r.changes.load(Ordering::SeqCst), 3);
+
+        // The report of change 3 was built but its publish FAILED: not
+        // marked, so the next hold (160 s) asks again for the same block.
+        let _ = r.truth.for_report();
+        r.truth.tick();
+        wait(159_000).await;
+        assert_eq!(r.changes.load(Ordering::SeqCst), 3);
+        wait(1_100).await;
+        assert_eq!(r.changes.load(Ordering::SeqCst), 4);
+        reported(&r);
+
+        // 30 quiet minutes: the hold is 20 s again.
+        wait(xorgate_core::camera_truth::REPORT_HOLD_RESET_MS).await;
+        set(up());
+        r.truth.tick();
+        wait(19_000).await;
+        assert_eq!(r.changes.load(Ordering::SeqCst), 4);
+        wait(1_100).await;
+        assert_eq!(r.changes.load(Ordering::SeqCst), 5);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_report_exists_in_real_online_mode_only() {
+        assert!(camera_report_enabled(RunMode::Real, false));
+        assert!(!camera_report_enabled(RunMode::Real, true), "--offline");
+        assert!(!camera_report_enabled(RunMode::Sim, false));
+        assert!(!camera_report_enabled(RunMode::Sim, true));
+        assert!(!camera_report_enabled(RunMode::Replay, false));
+        assert!(!camera_report_enabled(RunMode::Replay, true));
     }
 }

@@ -444,9 +444,12 @@ pub fn render(st: &DaemonStatus, now: f64, ctx: &RenderCtx) -> Vec<String> {
 /// camera of the model shows its verdict instead of `idle`: a healthy
 /// camera shows what it is doing (`recording`, `streaming`, `starting`,
 /// `off`), any other shows the verdict (`not-detected`, `no-frames`,
-/// `mismatch`, `empty`, `unmanaged`) followed by one line with the report's
-/// sentence. A camera with no capture process (nothing detected) is listed
-/// too, which the TS line never did.
+/// `mismatch`, `empty` in yellow; `unchecked` in gray, it is not a fault)
+/// followed by one line with the report's sentence. The sentence is also
+/// printed under an `ok` camera whose port has several camera lines in
+/// config.txt. A camera with no capture process (nothing detected) is
+/// listed too, which the TS line never did. A verdict this build does not
+/// know (a newer agent wrote the file) prints as it is.
 fn video_lines(state: &Value, p: &Paint) -> Vec<String> {
     let streams: Vec<&Value> = state
         .get("latest")
@@ -471,7 +474,10 @@ fn video_lines(state: &Value, p: &Paint) -> Vec<String> {
             s.get("streamKey").and_then(Value::as_str) == Some(key.as_str())
                 && truthy(s.get("recording"))
         });
-        let word = if verdict != "ok" {
+        let word = if verdict == "unchecked" {
+            // "The agent cannot check": information, not a fault.
+            p.gray(verdict)
+        } else if verdict != "ok" {
             p.yellow(verdict)
         } else if recording {
             p.green("recording")
@@ -481,7 +487,15 @@ fn video_lines(state: &Value, p: &Paint) -> Vec<String> {
             p.gray(capture)
         };
         parts.push(format!("{key} {word}"));
-        if verdict != "ok" {
+        // The sentence: for every verdict but `ok`, and for an `ok` camera
+        // whose port has more than one camera line in config.txt (the
+        // sentence carries that note).
+        let lines = cam
+            .get("bootConfig")
+            .and_then(|b| b.get("lines"))
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        if verdict != "ok" || lines > 1 {
             if let Some(d) = cam.get("detail").and_then(Value::as_str) {
                 details.push(format!("             {key}: {d}"));
             }
@@ -726,6 +740,23 @@ mod tests {
                 "             cam0: why",
             ],
             "cam1 has no report: the TS wording for it"
+        );
+        // An `ok` camera on a port with two camera lines still shows the
+        // sentence (it carries the "2 camera lines" note); `unchecked` is
+        // gray, not a warning.
+        let mut two = cam("ok", "streaming", "imx708 on csi0 is detected and streaming. config.txt has 2 camera lines for csi0; only one can work unless they sit under different [section] filters: remove the stale one.");
+        two["bootConfig"] = serde_json::json!({"lines": 2});
+        let cameras = serde_json::json!({
+            "cam0": two,
+            "cam1": cam("unchecked", "off", "cam1 on csi1 cannot be checked: …")
+        });
+        assert_eq!(
+            video_lines(&state_with(serde_json::json!([]), Some(cameras)), &Paint(true)),
+            [
+                "  video      cam0 \x1b[32mstreaming\x1b[0m   cam1 \x1b[90munchecked\x1b[0m",
+                "             cam0: imx708 on csi0 is detected and streaming. config.txt has 2 camera lines for csi0; only one can work unless they sit under different [section] filters: remove the stale one.",
+                "             cam1: cam1 on csi1 cannot be checked: …",
+            ]
         );
         // Colours: a verdict that is not ok is yellow, streaming is green.
         let cameras = serde_json::json!({

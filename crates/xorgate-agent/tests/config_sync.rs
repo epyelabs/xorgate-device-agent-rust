@@ -953,6 +953,7 @@ async fn camera_report_rides_effective_and_reports_on_change_only() {
         stable_ms,
         backoff_step: step,
         last_error: unstable.then(|| format!("ERROR at step {step}")),
+        stalled_preset: None,
     };
     let capture: Arc<Mutex<CaptureLive>> =
         Arc::new(Mutex::new(live(CaptureState::Starting, None, false, 0)));
@@ -989,6 +990,7 @@ async fn camera_report_rides_effective_and_reports_on_change_only() {
                 sync.request(ReportOrigin::Boot);
             }
         }),
+        recheck: Box::new(|| {}),
         hold_ms: REPORT_HOLD_MS,
     });
     truth.refresh();
@@ -996,6 +998,8 @@ async fn camera_report_rides_effective_and_reports_on_change_only() {
     let mut o = harness(&h, &cap);
     let t = truth.clone();
     o.cameras = Some(Arc::new(move || t.for_report()));
+    let t = truth.clone();
+    o.cameras_sent = Some(Arc::new(move || t.report_sent()));
     let sync = ConfigSync::new(o);
     let _ = sync_cell.set(sync.clone());
     let reports = || -> Vec<Value> {
@@ -1004,7 +1008,8 @@ async fn camera_report_rides_effective_and_reports_on_change_only() {
             .map(|s| serde_json::from_str::<Value>(s).unwrap())
             .collect()
     };
-    let hold = REPORT_HOLD_MS + 50;
+    // Longer than any hold (it doubles with every request, up to 10 min).
+    let hold = xorgate_core::camera_truth::REPORT_HOLD_MAX_MS + 50;
 
     // The boot report carries the block, last in `effective`.
     sync.request(ReportOrigin::Boot);

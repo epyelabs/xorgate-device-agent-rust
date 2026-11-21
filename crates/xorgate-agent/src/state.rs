@@ -382,6 +382,41 @@ mod tests {
         let _ = std::fs::remove_dir_all(&h);
     }
 
+    /// The camera report in state.json (Rust-only): `cameras` is the LAST
+    /// key, after `recording` and `obd`, whatever order they were set in;
+    /// absent until set and after it is cleared; its own keys keep their
+    /// order.
+    #[test]
+    fn cameras_is_the_last_key_of_state_json() {
+        let h = home("cameras");
+        let p = h.join("state.json");
+        let store = StateHandle::new(snap(), p.clone());
+        store.flush(1, true);
+        let keys = |p: &Path| -> Vec<String> {
+            let text = std::fs::read_to_string(p).unwrap();
+            let v: serde_json::Map<String, Value> = serde_json::from_str(&text).unwrap();
+            v.keys().cloned().collect()
+        };
+        assert!(!keys(&p).contains(&"cameras".to_string()));
+        store.set_cameras(Some(serde_json::json!({
+            "cam1": {"verdict": "ok"}, "cam0": {"verdict": "empty"}
+        })));
+        store.set_recording(xorgate_core::telemetry::RecordingStatus::all_off());
+        store.flush(2, true);
+        let k = keys(&p);
+        assert_eq!(k.last().map(String::as_str), Some("cameras"), "{k:?}");
+        assert_eq!(k[k.len() - 2], "recording");
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(
+            text.ends_with(r#","cameras":{"cam1":{"verdict":"ok"},"cam0":{"verdict":"empty"}}}"#),
+            "{text}"
+        );
+        store.set_cameras(None);
+        store.flush(3, true);
+        assert!(!keys(&p).contains(&"cameras".to_string()));
+        let _ = std::fs::remove_dir_all(&h);
+    }
+
     /// Serde exactness: key order of the worker's initial literal
     /// (`worker.ts:356-377`), `mediaEnabled` after `mode`, `recording` absent.
     #[test]

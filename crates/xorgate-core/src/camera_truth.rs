@@ -173,26 +173,53 @@ pub struct BootConfigPort {
     /// With several lines the LAST one is reported (the later overlay
     /// rewrites the port's endpoint, clock and regulator).
     pub overlay: Option<String>,
-    /// That line as written in the file (trimmed).
+    /// That line as written in the file (trimmed, at most
+    /// [`BOOT_LINE_MAX`] characters).
     pub line: Option<String>,
     /// How many camera lines target the port. More than one is a fault.
     pub lines: usize,
 }
 
-/// The camera lines of `text` (a config.txt) that target `connector`.
-/// Commented lines are skipped and `[section]` filters are not interpreted,
-/// exactly like [`parse_overlay_lines`].
+/// The longest config.txt line the report carries.
+pub const BOOT_LINE_MAX: usize = 200;
+
+/// The camera lines of `text` (a config.txt) that target `connector`, for
+/// the overlays in the table only. Commented lines are skipped and
+/// `[section]` filters are not interpreted, exactly like
+/// [`parse_overlay_lines`].
 pub fn boot_config_port(text: &str, connector: &str) -> BootConfigPort {
+    boot_config_port_with(text, connector, &[])
+}
+
+/// [`boot_config_port`], also counting a line whose overlay is NOT in the
+/// table when something else says it is this port's camera line: it
+/// carries the `cam0` selector (csi0), or its overlay is one of `hints`,
+/// the sensor names the kernel bound or libcamera lists on the port.
+/// Without this a device on, say, `dtoverlay=ov5647,cam0` would read "no
+/// line for this port" and the model would be taken for the declarer.
+pub fn boot_config_port_with(text: &str, connector: &str, hints: &[&str]) -> BootConfigPort {
     let lines = parse_overlay_lines(text);
     let mine: Vec<&OverlayLine> = lines
         .iter()
-        .filter(|l| port_of_line(l) == Some(connector))
+        .filter(|l| line_targets(l, connector, hints))
         .collect();
     BootConfigPort {
         overlay: mine.last().map(|l| l.name.clone()),
-        line: mine.last().map(|l| l.text.trim().to_string()),
+        line: mine
+            .last()
+            .map(|l| l.text.trim().chars().take(BOOT_LINE_MAX).collect()),
         lines: mine.len(),
     }
+}
+
+/// Does `line` configure `connector`'s camera? (See [`boot_config_port_with`].)
+fn line_targets(line: &OverlayLine, connector: &str, hints: &[&str]) -> bool {
+    if let Some(port) = port_of_line(line) {
+        return port == connector;
+    }
+    let cam0 = line.params.iter().any(|p| p == "cam0");
+    let port = if cam0 { "csi0" } else { "csi1" };
+    port == connector && (cam0 || hints.contains(&line.name.as_str()))
 }
 
 // ---------------------------------------------------------------------------
@@ -360,8 +387,12 @@ pub struct CaptureLive {
     pub stable_ms: Option<u64>,
     /// The start-failure back-off step (D86), 0 outside it.
     pub backoff_step: u32,
-    /// The last error line a failed child printed.
+    /// The error line of the last child that printed one
+    /// ([`first_error_line`]).
     pub last_error: Option<String>,
+    /// The last failure was a STALL (the child ran, wrote nothing and the
+    /// progress watchdog killed it): the video preset it ran.
+    pub stalled_preset: Option<String>,
 }
 
 /// Has a run recovered from its failures? (The supervisor clears `unstable`
@@ -431,19 +462,39 @@ pub fn settle_capture(
 /// The longest error line the report carries.
 pub const LAST_ERROR_MAX: usize = 240;
 
-/// Is this child output line worth keeping as "the last error line"?
-/// libcamera and gst-launch both mark theirs with `ERROR`. Returns the line
-/// trimmed and cut to [`LAST_ERROR_MAX`] characters.
+/// `ERROR` lines of a capture child that are never the cause, as
+/// substrings. DATA: extend it with evidence (a real log), never by guess.
+///
+/// - `Unable to set controls: Device or resource busy`: libcamera, about the
+///   OTHER camera of a two-camera device, printed FIRST by every child
+///   while that camera streams (bench 2, 2026-11-21: `'imx219 0-0010'` in
+///   cam0's child).
+/// - `pipeline doesn't want to preroll.`: gst-launch's follow-up to the
+///   real error.
+pub const ERROR_LINES_SKIPPED: &[&str] = &[
+    "Unable to set controls: Device or resource busy",
+    "pipeline doesn't want to preroll.",
+];
+
+/// Is this child output line an error line worth reporting? libcamera and
+/// gst-launch both mark theirs with `ERROR`; the ones on
+/// [`ERROR_LINES_SKIPPED`] are not. Returns the line trimmed and cut to
+/// [`LAST_ERROR_MAX`] characters.
 pub fn error_line(line: &str) -> Option<String> {
     let t = line.trim();
-    if !t.contains("ERROR") {
-        return None;
-    }
-    // gst-launch's follow-up after the real error says nothing by itself.
-    if t.ends_with("pipeline doesn't want to preroll.") {
+    if !t.contains("ERROR") || ERROR_LINES_SKIPPED.iter().any(|s| t.contains(s)) {
         return None;
     }
     Some(t.chars().take(LAST_ERROR_MAX).collect())
+}
+
+/// The line that stands for one child's failure: its FIRST error line
+/// ([`error_line`]). The later ones are advice ("Please check that your
+/// camera sensor connector is attached securely.") and consequences
+/// (shmsink's "Failed waiting on fd activity"), so the last line is never
+/// the cause on a real log.
+pub fn first_error_line<'a>(lines: impl IntoIterator<Item = &'a str>) -> Option<String> {
+    lines.into_iter().find_map(error_line)
 }
 
 /// The wire `capture`.
@@ -470,9 +521,10 @@ pub fn capture_allowed(armed: bool, status: Option<StreamHardwareStatus>) -> boo
 // verdict
 // ---------------------------------------------------------------------------
 
-/// The wire `verdict`. Phase 0 produces these six; later phases add
-/// `reboot-required`, `requirements-missing` and `unknown-sensor` (a reader
-/// must tolerate a value it does not know).
+/// The wire `verdict`. Phase 0 produces these six. Later phases add
+/// `reboot-required`, `requirements-missing`, `unknown-sensor` and
+/// `unmanaged` (Phase 2: no sensor setting for the port), so a reader must
+/// tolerate a value it does not know.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CameraVerdict {
@@ -482,13 +534,14 @@ pub enum CameraVerdict {
     Mismatch,
     /// The port is configured, yet libcamera lists no camera on it.
     NotDetected,
-    /// A camera is listed, but its capture process keeps failing.
+    /// A camera is there, but its capture process keeps failing or stalls.
     NoFrames,
     /// Nothing is configured on the port and nothing is there.
     Empty,
-    /// The agent cannot judge the port: it cannot list cameras on this
-    /// device, or the stream's pipeline is not one it supervises.
-    Unmanaged,
+    /// The agent cannot check the port: it cannot list cameras on this
+    /// device (and the camera is not streaming), or the stream's pipeline
+    /// is not one it supervises. Not a fault by itself.
+    Unchecked,
 }
 
 impl CameraVerdict {
@@ -499,7 +552,7 @@ impl CameraVerdict {
             CameraVerdict::NotDetected => "not-detected",
             CameraVerdict::NoFrames => "no-frames",
             CameraVerdict::Empty => "empty",
-            CameraVerdict::Unmanaged => "unmanaged",
+            CameraVerdict::Unchecked => "unchecked",
         }
     }
 }
@@ -511,18 +564,25 @@ pub struct PortFacts<'a> {
     pub connector: &'a str,
     /// The model's sensor for the port (`hardware.video[].sensor`).
     pub model_sensor: &'a str,
-    /// config.txt's view; `None` = the file could not be found or read.
-    pub boot: Option<BootConfigPort>,
+    /// The text of config.txt; `None` = it could not be found or read.
+    pub boot_text: Option<&'a str>,
     /// The sysfs scan; `None` = it could not run.
     pub nodes: Option<&'a [PortNode]>,
     /// A reconcile pass could list cameras (`false` = `rpicam-hello` is
     /// missing or libcamera is broken).
     pub enumerated: bool,
+    /// Cameras were listed AGAIN after the boot listing. Until then "the
+    /// driver is bound and libcamera lists nothing" is a boot-time
+    /// observation the agent is still re-checking, not a finding.
+    pub relisted: bool,
     /// The camera libcamera lists on this port: `(sensor, path)`.
     pub listed: Option<(&'a str, &'a str)>,
     pub capture: CaptureTruth,
     pub backoff_step: u32,
     pub last_error: Option<&'a str>,
+    /// The capture fails by STALLING (it runs, writes nothing and the
+    /// progress watchdog kills it): the video preset it runs.
+    pub stalled_preset: Option<&'a str>,
     /// The stream's `.gst` exists and is not the bridged kind: the KVS
     /// master owns the camera and the agent's capture never runs it.
     pub unsupervised: bool,
@@ -543,26 +603,29 @@ pub struct CameraPort {
     pub detail: String,
 }
 
-/// The identity note of the driver in use on a port: the boot config's
-/// overlay, else the device-tree node's sensor, else what libcamera lists.
-/// `None` when no driver is in use there (or the overlay is not in the table).
+/// How far the driver IN USE on a port proves the chip: the driver bound to
+/// the port's node first (that is what runs, whatever config.txt says now),
+/// else the boot config's overlay, else what libcamera lists. `None` when
+/// no driver is in use there, or the overlay is not in the table.
 fn identity_of(
-    boot: Option<&BootConfigPort>,
     node: Option<&PortNode>,
+    boot: Option<&BootConfigPort>,
     listed: Option<&str>,
 ) -> Option<Identity> {
-    boot.and_then(|b| b.overlay.as_deref())
-        .or(node.map(|n| node_sensor(&n.node)))
+    node.filter(|n| n.driver.is_some())
+        .map(|n| node_sensor(&n.node))
+        .or(boot.and_then(|b| b.overlay.as_deref()))
         .or(listed.map(sensor_base))
         .and_then(camera_overlay)
         .map(|o| o.identity)
 }
 
-/// What to add to a sentence about a driver that cannot prove the chip.
+/// What to add to a sentence about a driver that cannot prove the chip. A
+/// driver without any identity check lists a camera on an EMPTY port too.
 fn identity_note(identity: Option<Identity>, driver: &str) -> String {
     match identity {
         Some(Identity::None) => format!(
-            " The {driver} driver cannot confirm which chip is attached, so the camera on this port may be a different sensor."
+            " The {driver} driver cannot confirm which chip is attached, so the camera on this port may be a different sensor, or nothing may be attached."
         ),
         Some(Identity::Weak) => format!(
             " The {driver} driver only weakly checks which chip is attached, so the camera on this port may be a different sensor."
@@ -571,38 +634,99 @@ fn identity_note(identity: Option<Identity>, driver: &str) -> String {
     }
 }
 
+/// The facts of one port, resolved once for [`verdict_of`].
+struct Resolved<'a> {
+    f: &'a PortFacts<'a>,
+    boot: Option<&'a BootConfigPort>,
+    declared: Option<&'a Declared>,
+    /// The port's node to report (a bound one first).
+    node: Option<&'a PortNode>,
+    /// Every sensor node of the port.
+    port_nodes: &'a [&'a PortNode],
+    identity: Option<Identity>,
+}
+
+impl Resolved<'_> {
+    /// The driver the sentences name: the bound driver, else the node's
+    /// sensor, else what libcamera lists.
+    fn driver(&self) -> &str {
+        self.node
+            .and_then(|n| n.driver.as_deref())
+            .or(self.node.map(|n| node_sensor(&n.node)))
+            .or(self.f.listed.map(|(s, _)| sensor_base(s)))
+            .unwrap_or("camera")
+    }
+
+    /// config.txt was edited and the device not rebooted: the line declares
+    /// a sensor whose overlay is not in the running device tree, while
+    /// another overlay's node is. Returns that other overlay's sensor.
+    fn stale_overlay(&self) -> Option<&str> {
+        let d = self
+            .declared
+            .filter(|d| d.source == DeclaredSource::BootConfig)?;
+        let want = camera_overlay(&d.sensor).map_or(d.sensor.as_str(), |o| o.driver);
+        let node = self.node?;
+        let loaded = self.port_nodes.iter().any(|n| node_sensor(&n.node) == want);
+        (!loaded).then(|| node_sensor(&node.node))
+    }
+
+    /// "This agent build does not know the overlay of the port's line."
+    fn unknown_overlay_note(&self) -> String {
+        match self.boot.and_then(|b| b.overlay.as_deref()) {
+            Some(o) if camera_overlay(o).is_none() => format!(
+                " This agent build does not know the {o} overlay; the camera is used as found."
+            ),
+            _ => String::new(),
+        }
+    }
+}
+
 /// Derive one port's report from its facts. Pure; the table of cases:
 ///
 /// | cameras can be listed | listed on the port | else | verdict |
 /// |---|---|---|---|
-/// | no | — | — | `unmanaged` |
+/// | no | — | capture streaming | `ok` |
+/// | no | — | capture failing | `no-frames` |
+/// | no | — | otherwise | `unchecked` |
 /// | yes | a sensor other than the declared one | — | `mismatch` |
-/// | yes | the declared sensor | capture failing | `no-frames` |
-/// | yes | the declared sensor | pipeline not the agent's | `unmanaged` |
+/// | yes | the declared sensor | capture failing or stalling | `no-frames` |
+/// | yes | the declared sensor | pipeline not the agent's | `unchecked` |
 /// | yes | the declared sensor | otherwise | `ok` |
 /// | yes | nothing | a line in config.txt, or a sensor node in the live device tree | `not-detected` |
 /// | yes | nothing | config.txt unreadable AND the device tree unreadable | `not-detected` |
 /// | yes | nothing | no line (or config.txt unreadable) and no node (or the device tree unreadable), not both unreadable | `empty` |
 pub fn derive_port(f: &PortFacts<'_>) -> CameraPort {
-    let declared = declared_for(f.boot.as_ref(), f.model_sensor);
+    let port_nodes: Vec<&PortNode> = f
+        .nodes
+        .map(|n| n.iter().filter(|n| n.connector == f.connector).collect())
+        .unwrap_or_default();
     let node = f.nodes.and_then(|n| node_for_port(n, f.connector));
-    let identity = identity_of(f.boot.as_ref(), node, f.listed.map(|(s, _)| s));
+    let listed = f.listed.map(|(s, _)| s);
+    // What the kernel and libcamera say is on the port: a config.txt line
+    // naming one of these is the port's line even when its overlay is not
+    // in the table.
+    let mut hints: Vec<&str> = port_nodes.iter().map(|n| node_sensor(&n.node)).collect();
+    hints.extend(listed.map(sensor_base));
+    let boot = f
+        .boot_text
+        .map(|t| boot_config_port_with(t, f.connector, &hints));
+    let declared = declared_for(boot.as_ref(), f.model_sensor);
+    let identity = identity_of(node, boot.as_ref(), listed);
     let driver = f.nodes.map(|_| node.is_some_and(|n| n.driver.is_some()));
-    let bound = Bound {
-        driver,
-        node: node.map(|n| n.node.clone()),
-        listed: f.listed.map(|(s, _)| s.to_string()),
-        path: f.listed.map(|(_, p)| p.to_string()),
+    let (verdict, detail) = verdict_of(&Resolved {
+        f,
+        boot: boot.as_ref(),
+        declared: declared.as_ref(),
+        node,
+        port_nodes: &port_nodes,
         identity,
-    };
-    let (verdict, detail) = verdict_of(f, declared.as_ref(), node, identity);
-    let extra_lines = f
-        .boot
+    });
+    let extra_lines = boot
         .as_ref()
         .filter(|b| b.lines > 1)
         .map(|b| {
             format!(
-                " config.txt has {} camera lines for {}; only one can work: remove the stale one.",
+                " config.txt has {} camera lines for {}; only one can work unless they sit under different [section] filters: remove the stale one.",
                 b.lines, f.connector
             )
         })
@@ -610,8 +734,14 @@ pub fn derive_port(f: &PortFacts<'_>) -> CameraPort {
     CameraPort {
         connector: f.connector.to_string(),
         declared,
-        boot_config: f.boot.clone(),
-        bound,
+        bound: Bound {
+            driver,
+            node: node.map(|n| n.node.clone()),
+            listed: listed.map(str::to_string),
+            path: f.listed.map(|(_, p)| p.to_string()),
+            identity,
+        },
+        boot_config: boot,
         capture: CaptureInfo {
             state: f.capture,
             backoff_step: f.backoff_step,
@@ -622,88 +752,144 @@ pub fn derive_port(f: &PortFacts<'_>) -> CameraPort {
     }
 }
 
-fn verdict_of(
-    f: &PortFacts<'_>,
-    declared: Option<&Declared>,
-    node: Option<&PortNode>,
-    identity: Option<Identity>,
-) -> (CameraVerdict, String) {
+fn verdict_of(r: &Resolved<'_>) -> (CameraVerdict, String) {
+    let f = r.f;
     let (key, port) = (f.stream_key, f.connector);
     if !f.enumerated {
-        return (
-            CameraVerdict::Unmanaged,
-            format!(
-                "The agent cannot list cameras on this device (rpicam-hello is missing or libcamera is broken), so {key} on {port} cannot be checked. Install rpicam-apps and restart the agent."
-            ),
-        );
-    }
-    let driver_name = node
-        .and_then(|n| n.driver.as_deref())
-        .or(node.map(|n| node_sensor(&n.node)));
-
-    if let Some((listed, _)) = f.listed {
-        if let Some(d) = declared.filter(|d| !same_sensor(&d.sensor, listed)) {
-            return (
-                CameraVerdict::Mismatch,
-                format!(
-                    "{port} is declared as {} by {}, but the camera found there is {listed}. It is used as found; make the dtoverlay line in config.txt name the sensor that is really attached, then reboot.",
-                    d.sensor,
-                    d.source.words()
-                ),
-            );
-        }
-        let note = identity_note(identity, driver_name.unwrap_or(sensor_base(listed)));
+        const CANNOT: &str = "the agent cannot list cameras on this device (rpicam-hello is missing or libcamera is broken)";
         return match f.capture {
+            // Frames flow: that is the strongest evidence there is.
+            CaptureTruth::Streaming => (
+                CameraVerdict::Ok,
+                format!(
+                    "The camera on {port} is streaming. It could not be checked against the declared sensor: {CANNOT}. Install rpicam-apps."
+                ),
+            ),
             CaptureTruth::Failing => (
                 CameraVerdict::NoFrames,
                 format!(
-                    "{listed} is listed on {port} but delivers no frames: its capture process keeps failing.{note} Check the ribbon cable and that the dtoverlay line in config.txt names the sensor that is really attached."
+                    "The capture of {key} on {port} keeps failing, and {CANNOT}, so the port cannot be checked. Install rpicam-apps and restart the agent."
                 ),
             ),
+            _ => (
+                CameraVerdict::Unchecked,
+                format!(
+                    "{key} on {port} cannot be checked: {CANNOT}. Install rpicam-apps and restart the agent."
+                ),
+            ),
+        };
+    }
+    let drv = r.driver();
+
+    if let Some((listed, _)) = f.listed {
+        if let Some(d) = r.declared.filter(|d| !same_sensor(&d.sensor, listed)) {
+            // (b) config.txt edited, not rebooted.
+            if let Some(old) = r.stale_overlay() {
+                return (
+                    CameraVerdict::Mismatch,
+                    format!(
+                        "config.txt now declares {} on {port}, but the running kernel still has the {old} overlay loaded. Reboot to apply the config.txt change.",
+                        d.sensor
+                    ),
+                );
+            }
+            // (c) a driver that cannot prove the chip does not "find" a sensor.
+            let found = match r.identity {
+                Some(Identity::None) | Some(Identity::Weak) => format!(
+                    "the camera there is listed as {listed} by the {drv} driver, which cannot confirm which chip is attached"
+                ),
+                _ => format!("the camera found there is {listed}"),
+            };
+            return (
+                CameraVerdict::Mismatch,
+                match d.source {
+                    DeclaredSource::Model => format!(
+                        "The device model expects {} on {port}, but {found}. It is used as found.",
+                        d.sensor
+                    ),
+                    DeclaredSource::BootConfig => format!(
+                        "{port} is declared as {} by config.txt, but {found}. It is used as found; make the dtoverlay line in config.txt name the sensor that is really attached, then reboot.",
+                        d.sensor
+                    ),
+                },
+            );
+        }
+        let note = identity_note(r.identity, drv);
+        let unknown = r.unknown_overlay_note();
+        return match f.capture {
+            CaptureTruth::Failing => match f.stalled_preset {
+                Some(preset) => (
+                    CameraVerdict::NoFrames,
+                    format!(
+                        "{listed} on {port} starts, but its recording stalls at preset {preset}: the capture process runs, writes nothing and is restarted by the progress watchdog. Try another video preset; a stall of this kind is a known fault of some presets and does not point at the cable or the sensor."
+                    ),
+                ),
+                None => (
+                    CameraVerdict::NoFrames,
+                    format!(
+                        "{listed} is listed on {port} but delivers no frames: its capture process keeps failing.{note} Check the ribbon cable and that the dtoverlay line in config.txt names the sensor that is really attached."
+                    ),
+                ),
+            },
             _ if f.unsupervised => (
-                CameraVerdict::Unmanaged,
+                CameraVerdict::Unchecked,
                 format!(
                     "{listed} is detected on {port}, but {key} uses a custom pipeline that the agent does not supervise, so it cannot tell whether frames flow."
                 ),
             ),
             CaptureTruth::Streaming => (
                 CameraVerdict::Ok,
-                format!("{listed} on {port} is detected and streaming."),
+                format!("{listed} on {port} is detected and streaming.{unknown}"),
             ),
             CaptureTruth::Starting => (
                 CameraVerdict::Ok,
-                format!("{listed} on {port} is detected; capture is starting.{note}"),
+                format!("{listed} on {port} is detected; capture is starting.{note}{unknown}"),
             ),
             // `Absent` cannot go with a listed camera; worded like `Off`.
             CaptureTruth::Off | CaptureTruth::Absent => (
                 CameraVerdict::Ok,
                 format!(
-                    "{listed} on {port} is detected; capture is off (the camera is disabled, video is off, or capture has not begun).{note}"
+                    "{listed} on {port} is detected; capture is off (the camera is disabled, video is off, or capture has not begun).{note}{unknown}"
                 ),
             ),
         };
     }
 
     // Nothing listed on the port.
-    let has_line = f.boot.as_ref().is_some_and(|b| b.lines > 0);
-    let unknown = f.boot.is_none() && f.nodes.is_none();
-    let what = declared.map(|d| d.sensor.as_str()).unwrap_or("camera");
-    if let Some(n) = node.filter(|n| n.driver.is_some()) {
-        let drv = n.driver.as_deref().unwrap_or(what);
-        let note = identity_note(identity, drv);
+    let has_line = r.boot.is_some_and(|b| b.lines > 0);
+    let unknown = r.boot.is_none() && f.nodes.is_none();
+    let what = r.declared.map(|d| d.sensor.as_str()).unwrap_or("camera");
+    if let Some(old) = r.stale_overlay() {
         return (
             CameraVerdict::NotDetected,
             format!(
-                "The {drv} driver is bound on {port} but libcamera lists no camera there: libcamera on this device may not support this sensor.{note}"
+                "config.txt now declares {what} on {port}, but the running kernel still has the {old} overlay loaded, and no camera is listed there. Reboot to apply the config.txt change."
             ),
         );
     }
-    if node.is_some() {
+    if r.node.is_some_and(|n| n.driver.is_some()) {
+        if !f.relisted {
+            return (
+                CameraVerdict::NotDetected,
+                format!(
+                    "The {drv} driver is bound on {port}, but libcamera did not list a camera there when the agent started. The agent is checking again."
+                ),
+            );
+        }
+        let note = identity_note(r.identity, drv);
+        return (
+            CameraVerdict::NotDetected,
+            format!(
+                "The {drv} driver is bound on {port} but libcamera lists no camera there (checked again after the agent started): libcamera on this device may not support this sensor.{note}"
+            ),
+        );
+    }
+    if r.node.is_some() {
         return (
             CameraVerdict::NotDetected,
             format!(
                 "{port} is declared as {what} by {}, but no {what} answered on this port (the kernel driver did not bind). Check the ribbon cable and that the dtoverlay line in config.txt names the sensor that is really attached, then reboot.",
-                declared.map(|d| d.source.words()).unwrap_or("config.txt"),
+                r.declared.map(|d| d.source.words()).unwrap_or("config.txt"),
             ),
         );
     }
@@ -729,7 +915,7 @@ fn verdict_of(
     }
     // What is known to be missing: the line (config.txt was read), or, when
     // config.txt could not be read, the overlay in the running kernel.
-    let why = if f.boot.is_some() {
+    let why = if r.boot.is_some() {
         "config.txt has no camera dtoverlay line for it"
     } else {
         "no camera overlay is loaded for it in the running kernel"
@@ -778,6 +964,49 @@ pub fn status_word(p: &CameraPort) -> &'static str {
         CameraVerdict::Ok => p.capture.state.as_str(),
         v => v.as_str(),
     }
+}
+
+// ---------------------------------------------------------------------------
+// re-listing a held port, and the report hold
+// ---------------------------------------------------------------------------
+
+/// When cameras are listed again for a held port, in ms after the agent
+/// started: three early looks, then one every [`RELIST_EVERY_MS`].
+pub const RELIST_AFTER_START_MS: [u64; 3] = [15_000, 30_000, 60_000];
+/// The steady period of the re-listing after the early looks.
+pub const RELIST_EVERY_MS: u64 = 300_000;
+
+/// Does a port need its cameras listed again? Only a port that is HELD for
+/// lack of a camera (B5) while the kernel has a driver bound on it: the
+/// boot listing may simply have come too early, and without a re-listing
+/// the hold would last until the agent restarts. A port with no bound
+/// driver gets none: a driver binds at boot only, so nothing can appear.
+pub fn port_needs_relist(held_no_camera: bool, driver_bound: bool) -> bool {
+    held_no_camera && driver_bound
+}
+
+/// The first re-listing time strictly after `now_ms` (both in ms after the
+/// agent started): 15 s, 30 s, 60 s, then every 5 minutes.
+pub fn next_relist_ms(now_ms: u64) -> u64 {
+    if let Some(t) = RELIST_AFTER_START_MS.iter().find(|t| **t > now_ms) {
+        return *t;
+    }
+    let last = RELIST_AFTER_START_MS[RELIST_AFTER_START_MS.len() - 1];
+    let periods = (now_ms - last) / RELIST_EVERY_MS + 1;
+    last + periods * RELIST_EVERY_MS
+}
+
+/// The longest a changed report waits before it is sent.
+pub const REPORT_HOLD_MAX_MS: u64 = 600_000;
+/// With no camera report requested for this long, the hold is the base again.
+pub const REPORT_HOLD_RESET_MS: u64 = 1_800_000;
+
+/// The hold before the NEXT change is reported, after one was just
+/// requested with `current_ms`: doubled, up to [`REPORT_HOLD_MAX_MS`]. A
+/// camera that fails and recovers every couple of minutes would otherwise
+/// cost two reports per cycle for ever.
+pub fn next_report_hold_ms(current_ms: u64) -> u64 {
+    current_ms.saturating_mul(2).min(REPORT_HOLD_MAX_MS)
 }
 
 #[cfg(test)]
@@ -947,6 +1176,7 @@ mod tests {
             stable_ms: None,
             backoff_step: 0,
             last_error: None,
+            stalled_preset: None,
         }
     }
 
@@ -1059,17 +1289,17 @@ mod tests {
     }
 
     #[test]
-    fn error_lines_are_the_ones_marked_error() {
-        // CM4, `imx335` overlay on an IMX708 (2026-11-21).
-        assert_eq!(
-            error_line("[0:00:12.849394194] [744] ERROR IPARPI ipa_base.cpp:152 Could not create camera helper for imx335").as_deref(),
-            Some("[0:00:12.849394194] [744] ERROR IPARPI ipa_base.cpp:152 Could not create camera helper for imx335")
-        );
+    fn error_lines_are_the_ones_marked_error_and_not_on_the_skip_list() {
         assert_eq!(
             error_line("ERROR: from element /GstPipeline:pipeline0/GstLibcameraSrc:libcamerasrc0: Could not find a camera named '/base/soc/i2c0mux/i2c@0/imx708@1a'.\n").as_deref(),
             Some("ERROR: from element /GstPipeline:pipeline0/GstLibcameraSrc:libcamerasrc0: Could not find a camera named '/base/soc/i2c0mux/i2c@0/imx708@1a'.")
         );
+        // The skip list: never the cause.
         assert_eq!(error_line("ERROR: pipeline doesn't want to preroll."), None);
+        assert_eq!(
+            error_line("[0:00:19.158270951] [1114] ERROR V4L2 v4l2_device.cpp:390 'imx219 0-0010': Unable to set controls: Device or resource busy"),
+            None
+        );
         assert_eq!(error_line("Additional debug info:"), None);
         assert_eq!(
             error_line("[0:00:12.794902750] [739]  INFO Camera camera_manager.cpp:330 libcamera v0.5.2+99-bfd68f78"),
@@ -1077,6 +1307,43 @@ mod tests {
         );
         let long = format!("ERROR {}", "x".repeat(500));
         assert_eq!(error_line(&long).unwrap().chars().count(), LAST_ERROR_MAX);
+    }
+
+    /// The REAL stderr of capture children on the benches: the line kept is
+    /// the child's first error that is not on the skip list. Keeping the
+    /// LAST one would report libcamera's advice ("Alternatively, try another
+    /// cable and/or sensor.") or gst-launch's consequence lines; keeping the
+    /// plain first one would report the OTHER camera's busy-controls line on
+    /// a two-camera device.
+    #[test]
+    fn real_capture_stderr_keeps_the_cause() {
+        let doc: serde_json::Value = serde_json::from_str(include_str!(
+            "../../../fixtures/camera_truth/capture-stderr.json"
+        ))
+        .unwrap();
+        let cases = doc["cases"].as_array().unwrap();
+        assert_eq!(cases.len(), 6);
+        let (mut busy_first, mut advice) = (0, 0);
+        for c in cases {
+            let name = c["name"].as_str().unwrap();
+            let lines: Vec<&str> = c["lines"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|l| l.as_str().unwrap())
+                .collect();
+            assert_eq!(
+                first_error_line(lines.iter().copied()).as_deref(),
+                c["lastError"].as_str(),
+                "{name}"
+            );
+            let errors: Vec<&&str> = lines.iter().filter(|l| l.contains("ERROR")).collect();
+            busy_first += usize::from(errors[0].contains("Device or resource busy"));
+            advice += usize::from(errors.iter().any(|l| l.contains("Alternatively, try")));
+        }
+        assert!(busy_first >= 2, "the fixture holds the two-camera case");
+        assert!(advice >= 2, "the fixture holds the frame-timeout advice");
+        assert_eq!(first_error_line(["INFO x", "WARN y"]), None);
     }
 
     fn node(connector: &str, node: &str, driver: Option<&str>) -> PortNode {
@@ -1092,29 +1359,35 @@ mod tests {
             stream_key: key,
             connector,
             model_sensor: "imx290",
-            boot: None,
+            boot_text: None,
             nodes: None,
             enumerated: true,
+            relisted: false,
             listed: None,
             capture: CaptureTruth::Off,
             backoff_step: 0,
             last_error: None,
+            stalled_preset: None,
             unsupervised: false,
         }
     }
+
+    const IMX290_CM5: (&str, &str) = (
+        "imx290",
+        "/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a",
+    );
 
     #[test]
     fn verdict_ok_cm4_imx708_declared_in_config_model_says_imx290() {
         let nodes = [node("csi0", "imx708@1a", Some("imx708"))];
         let p = derive_port(&PortFacts {
-            boot: Some(boot_config_port(CM4, "csi0")),
+            boot_text: Some(CM4),
             nodes: Some(&nodes),
             listed: Some(("imx708", "/base/soc/i2c0mux/i2c@0/imx708@1a")),
             capture: CaptureTruth::Streaming,
             ..facts("cam0", "csi0")
         });
         assert_eq!(p.verdict, CameraVerdict::Ok);
-        assert_eq!(p.detail, "imx708 on csi0 is detected and streaming.");
         assert_eq!(
             serde_json::to_string(&p).unwrap(),
             r#"{"connector":"csi0","declared":{"sensor":"imx708","source":"boot-config"},"bootConfig":{"overlay":"imx708","line":"dtoverlay=imx708,cam0,rotation=180","lines":1},"bound":{"driver":true,"node":"imx708@1a","listed":"imx708","path":"/base/soc/i2c0mux/i2c@0/imx708@1a","identity":"chip-id"},"capture":{"state":"streaming","backoffStep":0,"lastError":null},"verdict":"ok","detail":"imx708 on csi0 is detected and streaming."}"#
@@ -1126,12 +1399,9 @@ mod tests {
     fn verdict_ok_wording_follows_capture_and_identity() {
         let nodes = [node("csi0", "imx290@1a", Some("imx290"))];
         let base = PortFacts {
-            boot: Some(boot_config_port(BENCH1, "csi0")),
+            boot_text: Some(BENCH1),
             nodes: Some(&nodes),
-            listed: Some((
-                "imx290",
-                "/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a",
-            )),
+            listed: Some(IMX290_CM5),
             ..facts("cam0", "csi0")
         };
         let starting = derive_port(&PortFacts {
@@ -1141,7 +1411,7 @@ mod tests {
         assert_eq!(starting.verdict, CameraVerdict::Ok);
         assert_eq!(
             starting.detail,
-            "imx290 on csi0 is detected; capture is starting. The imx290 driver cannot confirm which chip is attached, so the camera on this port may be a different sensor."
+            "imx290 on csi0 is detected; capture is starting. The imx290 driver cannot confirm which chip is attached, so the camera on this port may be a different sensor, or nothing may be attached."
         );
         assert_eq!(starting.bound.identity, Some(Identity::None));
         assert_eq!(status_word(&starting), "starting");
@@ -1159,37 +1429,43 @@ mod tests {
     }
 
     #[test]
-    fn verdict_no_frames_imx290_overlay_on_another_sensor() {
-        // CM4 2026-11-20: IMX708 under `dtoverlay=imx290`: a camera is
-        // listed, then "Camera frontend has timed out".
+    fn verdict_no_frames_start_failures_and_stalls_read_differently() {
+        // A start failure or a frame timeout under the `imx290` driver: the
+        // port may hold another sensor, or NOTHING (the single-camera fleet
+        // device with two `imx290` lines).
         let nodes = [node("csi0", "imx290@1a", Some("imx290"))];
-        let p = derive_port(&PortFacts {
-            boot: Some(boot_config_port(
-                "dtoverlay=imx290,cam0,rotation=180\n",
-                "csi0",
-            )),
+        let failing = PortFacts {
+            boot_text: Some(BENCH1),
             nodes: Some(&nodes),
-            listed: Some(("imx290", "/base/soc/i2c0mux/i2c@0/imx290@1a")),
+            listed: Some(IMX290_CM5),
             capture: CaptureTruth::Failing,
             backoff_step: 2,
-            last_error: Some("ERROR RPI pipeline_base.cpp:1354 Camera frontend has timed out!"),
+            last_error: Some("ERROR RPI pipeline_base.cpp:1408 Camera frontend has timed out!"),
             ..facts("cam0", "csi0")
+        };
+        let p = derive_port(&failing);
+        assert_eq!(p.verdict, CameraVerdict::NoFrames);
+        assert_eq!(
+            p.detail,
+            "imx290 is listed on csi0 but delivers no frames: its capture process keeps failing. The imx290 driver cannot confirm which chip is attached, so the camera on this port may be a different sensor, or nothing may be attached. Check the ribbon cable and that the dtoverlay line in config.txt names the sensor that is really attached."
+        );
+        assert_eq!(p.capture.backoff_step, 2);
+        assert_eq!(status_word(&p), "no-frames");
+        // The known 1080p30 recording stall on a HEALTHY camera: it names
+        // the preset and does not send the reader to the ribbon cable.
+        let p = derive_port(&PortFacts {
+            stalled_preset: Some("1080p30-4mbps"),
+            ..failing
         });
         assert_eq!(p.verdict, CameraVerdict::NoFrames);
         assert_eq!(
             p.detail,
-            "imx290 is listed on csi0 but delivers no frames: its capture process keeps failing. The imx290 driver cannot confirm which chip is attached, so the camera on this port may be a different sensor. Check the ribbon cable and that the dtoverlay line in config.txt names the sensor that is really attached."
+            "imx290 on csi0 starts, but its recording stalls at preset 1080p30-4mbps: the capture process runs, writes nothing and is restarted by the progress watchdog. Try another video preset; a stall of this kind is a known fault of some presets and does not point at the cable or the sensor."
         );
-        assert_eq!(p.capture.backoff_step, 2);
-        assert_eq!(
-            p.capture.last_error.as_deref(),
-            Some("ERROR RPI pipeline_base.cpp:1354 Camera frontend has timed out!")
-        );
-        assert_eq!(status_word(&p), "no-frames");
-        // A chip-ID driver gets no such caveat.
+        // A chip-ID driver gets no identity caveat.
         let nodes = [node("csi1", "imx219@10", Some("imx219"))];
         let p = derive_port(&PortFacts {
-            boot: Some(boot_config_port(BENCH2, "csi1")),
+            boot_text: Some(BENCH2),
             nodes: Some(&nodes),
             listed: Some((
                 "imx219",
@@ -1205,15 +1481,15 @@ mod tests {
     }
 
     #[test]
-    fn verdict_not_detected_three_shapes() {
-        // (1) Bench 2, 2026-11-21: `imx335,cam0`, the sensor does not answer
+    fn verdict_not_detected_shapes() {
+        // (1) Bench 2: `imx335,cam0`, the sensor does not answer
         // (`probe with driver imx335 failed`): node present, no driver.
         let nodes = [
             node("csi0", "imx335@1a", None),
             node("csi1", "imx219@10", Some("imx219")),
         ];
         let p = derive_port(&PortFacts {
-            boot: Some(boot_config_port(BENCH2, "csi0")),
+            boot_text: Some(BENCH2),
             nodes: Some(&nodes),
             capture: CaptureTruth::Absent,
             ..facts("cam0", "csi0")
@@ -1224,35 +1500,40 @@ mod tests {
             "csi0 is declared as imx335 by config.txt, but no imx335 answered on this port (the kernel driver did not bind). Check the ribbon cable and that the dtoverlay line in config.txt names the sensor that is really attached, then reboot."
         );
         assert_eq!(p.bound.driver, Some(false));
-        assert_eq!(p.bound.node.as_deref(), Some("imx335@1a"));
-        assert_eq!(p.bound.listed, None);
-        assert_eq!(p.capture.state, CaptureTruth::Absent);
+        assert_eq!(p.bound.identity, Some(Identity::Weak), "the line's overlay");
         assert_eq!(status_word(&p), "not-detected");
 
-        // (2) CM4, 2026-11-21: `imx335,cam0` on an IMX708 with stock
-        // libcamera: the driver BINDS, libcamera lists nothing.
+        // (2) CM4: `imx335,cam0` on an IMX708 with stock libcamera: the
+        // driver BINDS, libcamera lists nothing. At boot that is only an
+        // observation: nothing is concluded about libcamera …
         let nodes = [node("csi0", "imx335@1a", Some("imx335"))];
-        let p = derive_port(&PortFacts {
-            boot: Some(boot_config_port(
-                "dtoverlay=imx335,cam0,rotation=180\n",
-                "csi0",
-            )),
+        let bound = PortFacts {
+            boot_text: Some("dtoverlay=imx335,cam0,rotation=180\n"),
             nodes: Some(&nodes),
             capture: CaptureTruth::Absent,
             ..facts("cam0", "csi0")
-        });
+        };
+        let p = derive_port(&bound);
         assert_eq!(p.verdict, CameraVerdict::NotDetected);
         assert_eq!(p.bound.driver, Some(true));
-        assert_eq!(p.bound.identity, Some(Identity::Weak));
         assert_eq!(
             p.detail,
-            "The imx335 driver is bound on csi0 but libcamera lists no camera there: libcamera on this device may not support this sensor. The imx335 driver only weakly checks which chip is attached, so the camera on this port may be a different sensor."
+            "The imx335 driver is bound on csi0, but libcamera did not list a camera there when the agent started. The agent is checking again."
+        );
+        // … until a second listing has confirmed it.
+        let p = derive_port(&PortFacts {
+            relisted: true,
+            ..bound
+        });
+        assert_eq!(
+            p.detail,
+            "The imx335 driver is bound on csi0 but libcamera lists no camera there (checked again after the agent started): libcamera on this device may not support this sensor. The imx335 driver only weakly checks which chip is attached, so the camera on this port may be a different sensor."
         );
 
-        // (3) A line in config.txt whose overlay is not in the running
-        // device tree (edited, not rebooted).
+        // (3) A line whose overlay is not in the running device tree, and
+        // no other camera node on the port.
         let p = derive_port(&PortFacts {
-            boot: Some(boot_config_port("dtoverlay=imx219\n", "csi1")),
+            boot_text: Some("dtoverlay=imx219\n"),
             nodes: Some(&[]),
             ..facts("cam1", "csi1")
         });
@@ -1261,15 +1542,12 @@ mod tests {
             p.detail,
             "csi1 is declared as imx219 by config.txt, but that overlay is not loaded in the running kernel. Reboot if config.txt was edited; otherwise check the dtoverlay line."
         );
-        assert_eq!(p.bound.driver, Some(false));
-        assert_eq!(p.bound.node, None);
+        assert_eq!((p.bound.driver, p.bound.node.clone()), (Some(false), None));
 
-        // Neither config.txt nor sysfs could be read: still "not detected",
-        // by the model's word.
+        // Neither config.txt nor sysfs could be read: by the model's word.
         let p = derive_port(&facts("cam1", "csi1"));
         assert_eq!(p.verdict, CameraVerdict::NotDetected);
-        assert_eq!(p.bound.driver, None);
-        assert_eq!(p.boot_config, None);
+        assert_eq!((p.bound.driver, p.boot_config.clone()), (None, None));
         assert_eq!(
             p.declared,
             Some(Declared {
@@ -1279,12 +1557,64 @@ mod tests {
         );
     }
 
+    /// config.txt edited, device not rebooted: the port still carries the
+    /// OLD overlay's node. The reader is told to reboot, not to fix a line
+    /// that is already right; and `bound.identity` is the bound driver's.
+    #[test]
+    fn an_edit_without_a_reboot_says_reboot_and_identity_is_the_bound_drivers() {
+        let nodes = [node("csi0", "imx290@1a", Some("imx290"))];
+        let p = derive_port(&PortFacts {
+            boot_text: Some("dtoverlay=imx708,cam0\n"),
+            nodes: Some(&nodes),
+            listed: Some(("imx290", "/base/soc/i2c0mux/i2c@0/imx290@1a")),
+            capture: CaptureTruth::Failing,
+            ..facts("cam0", "csi0")
+        });
+        assert_eq!(p.verdict, CameraVerdict::Mismatch);
+        assert_eq!(
+            p.detail,
+            "config.txt now declares imx708 on csi0, but the running kernel still has the imx290 overlay loaded. Reboot to apply the config.txt change."
+        );
+        assert_eq!(
+            p.boot_config.as_ref().unwrap().overlay.as_deref(),
+            Some("imx708")
+        );
+        assert_eq!(p.bound.node.as_deref(), Some("imx290@1a"));
+        assert_eq!(
+            p.bound.identity,
+            Some(Identity::None),
+            "the bound imx290 driver, not the line's imx708"
+        );
+        // The same edit with nothing listed (the old overlay's probe failed).
+        let nodes = [node("csi0", "imx219@10", None)];
+        let p = derive_port(&PortFacts {
+            boot_text: Some("dtoverlay=imx708,cam0\n"),
+            nodes: Some(&nodes),
+            ..facts("cam0", "csi0")
+        });
+        assert_eq!(p.verdict, CameraVerdict::NotDetected);
+        assert_eq!(
+            p.detail,
+            "config.txt now declares imx708 on csi0, but the running kernel still has the imx219 overlay loaded, and no camera is listed there. Reboot to apply the config.txt change."
+        );
+        // An overlay served by the SAME driver is not a stale edit.
+        let nodes = [node("csi0", "imx290@1a", Some("imx290"))];
+        let p = derive_port(&PortFacts {
+            boot_text: Some("dtoverlay=imx462,cam0\n"),
+            nodes: Some(&nodes),
+            listed: Some(("imx290", "/base/soc/i2c0mux/i2c@0/imx290@1a")),
+            capture: CaptureTruth::Streaming,
+            ..facts("cam0", "csi0")
+        });
+        assert_eq!(p.verdict, CameraVerdict::Ok);
+    }
+
     #[test]
     fn verdict_empty_no_line_and_no_node() {
         // The CM4's config.txt has no line for csi1.
         let nodes = [node("csi0", "imx708@1a", Some("imx708"))];
         let p = derive_port(&PortFacts {
-            boot: Some(boot_config_port(CM4, "csi1")),
+            boot_text: Some(CM4),
             nodes: Some(&nodes),
             ..facts("cam1", "csi1")
         });
@@ -1319,7 +1649,7 @@ mod tests {
         // config.txt read (no line), the device tree unreadable: `empty` by
         // config.txt's word.
         let p = derive_port(&PortFacts {
-            boot: Some(boot_config_port(CM4, "csi1")),
+            boot_text: Some(CM4),
             ..facts("cam1", "csi1")
         });
         assert_eq!(p.verdict, CameraVerdict::Empty);
@@ -1327,8 +1657,9 @@ mod tests {
     }
 
     #[test]
-    fn verdict_mismatch_names_both_sensors_and_the_source() {
-        // config.txt unreadable: the model's word against the listing.
+    fn verdict_mismatch_blames_the_right_thing() {
+        // The model is the only declarer (config.txt unreadable): the
+        // sentence does not point at config.txt.
         let p = derive_port(&PortFacts {
             listed: Some(("imx708_wide", "/base/soc/i2c0mux/i2c@0/imx708@1a")),
             capture: CaptureTruth::Streaming,
@@ -1337,16 +1668,16 @@ mod tests {
         assert_eq!(p.verdict, CameraVerdict::Mismatch);
         assert_eq!(
             p.detail,
-            "csi0 is declared as imx290 by the device model, but the camera found there is imx708_wide. It is used as found; make the dtoverlay line in config.txt name the sensor that is really attached, then reboot."
+            "The device model expects imx290 on csi0, but the camera found there is imx708_wide. It is used as found."
         );
-        // Two lines on one port: the last one is declared, the other bound.
-        let two = "dtoverlay=imx219,cam0\ndtoverlay=imx708,cam0\n";
+        // Two lines on one port, both overlays loaded, a chip-ID driver
+        // bound: the last line is declared, the other one found.
         let nodes = [
             node("csi0", "imx219@10", Some("imx219")),
             node("csi0", "imx708@1a", None),
         ];
         let p = derive_port(&PortFacts {
-            boot: Some(boot_config_port(two, "csi0")),
+            boot_text: Some("dtoverlay=imx219,cam0\ndtoverlay=imx708,cam0\n"),
             nodes: Some(&nodes),
             listed: Some(("imx219", "/base/soc/i2c0mux/i2c@0/imx219@10")),
             capture: CaptureTruth::Streaming,
@@ -1355,12 +1686,33 @@ mod tests {
         assert_eq!(p.verdict, CameraVerdict::Mismatch);
         assert_eq!(
             p.detail,
-            "csi0 is declared as imx708 by config.txt, but the camera found there is imx219. It is used as found; make the dtoverlay line in config.txt name the sensor that is really attached, then reboot. config.txt has 2 camera lines for csi0; only one can work: remove the stale one."
+            "csi0 is declared as imx708 by config.txt, but the camera found there is imx219. It is used as found; make the dtoverlay line in config.txt name the sensor that is really attached, then reboot. config.txt has 2 camera lines for csi0; only one can work unless they sit under different [section] filters: remove the stale one."
         );
         assert_eq!(p.bound.node.as_deref(), Some("imx219@10"), "the bound one");
+        assert_eq!(p.bound.identity, Some(Identity::ChipId));
+        // `imx290,cam0` then `imx708,cam0`: the imx290 driver is the one
+        // bound, so the identity is `none` (not the last line's `chip-id`)
+        // and "imx290" is not stated as a finding.
+        let nodes = [
+            node("csi0", "imx290@1a", Some("imx290")),
+            node("csi0", "imx708@1a", None),
+        ];
+        let p = derive_port(&PortFacts {
+            boot_text: Some("dtoverlay=imx290,cam0\ndtoverlay=imx708,cam0\n"),
+            nodes: Some(&nodes),
+            listed: Some(("imx290", "/base/soc/i2c0mux/i2c@0/imx290@1a")),
+            capture: CaptureTruth::Streaming,
+            ..facts("cam0", "csi0")
+        });
+        assert_eq!(p.verdict, CameraVerdict::Mismatch);
+        assert_eq!(p.bound.identity, Some(Identity::None));
+        assert_eq!(
+            p.detail,
+            "csi0 is declared as imx708 by config.txt, but the camera there is listed as imx290 by the imx290 driver, which cannot confirm which chip is attached. It is used as found; make the dtoverlay line in config.txt name the sensor that is really attached, then reboot. config.txt has 2 camera lines for csi0; only one can work unless they sit under different [section] filters: remove the stale one."
+        );
         // A variant of the declared sensor is not a mismatch.
         let p = derive_port(&PortFacts {
-            boot: Some(boot_config_port(CM4, "csi0")),
+            boot_text: Some(CM4),
             listed: Some(("imx708_wide_noir", "/base/soc/i2c0mux/i2c@0/imx708@1a")),
             capture: CaptureTruth::Streaming,
             ..facts("cam0", "csi0")
@@ -1368,32 +1720,137 @@ mod tests {
         assert_eq!(p.verdict, CameraVerdict::Ok);
     }
 
+    /// A camera overlay outside the table (`ov5647`): its line IS the port's
+    /// line when it carries `cam0`, or when the kernel / libcamera name the
+    /// same sensor on the port. The model does not become the declarer and
+    /// nobody is told to fix a line that is right.
     #[test]
-    fn verdict_unmanaged_cannot_list_or_not_the_agents_pipeline() {
+    fn an_overlay_outside_the_table_is_still_the_ports_line() {
+        let path = "/base/soc/i2c0mux/i2c@0/ov5647@36";
+        let nodes = [node("csi0", "ov5647@36", Some("ov5647"))];
         let p = derive_port(&PortFacts {
-            enumerated: false,
+            boot_text: Some("dtoverlay=vc4-kms-v3d\ndtoverlay=ov5647,cam0\n"),
+            nodes: Some(&nodes),
+            listed: Some(("ov5647", path)),
+            capture: CaptureTruth::Streaming,
             ..facts("cam0", "csi0")
         });
-        assert_eq!(p.verdict, CameraVerdict::Unmanaged);
+        assert_eq!(p.verdict, CameraVerdict::Ok);
         assert_eq!(
             p.detail,
-            "The agent cannot list cameras on this device (rpicam-hello is missing or libcamera is broken), so cam0 on csi0 cannot be checked. Install rpicam-apps and restart the agent."
+            "ov5647 on csi0 is detected and streaming. This agent build does not know the ov5647 overlay; the camera is used as found."
         );
+        assert_eq!(
+            p.boot_config,
+            Some(BootConfigPort {
+                overlay: Some("ov5647".into()),
+                line: Some("dtoverlay=ov5647,cam0".into()),
+                lines: 1
+            })
+        );
+        assert_eq!(
+            p.declared,
+            Some(Declared {
+                sensor: "ov5647".into(),
+                source: DeclaredSource::BootConfig
+            })
+        );
+        assert_eq!(p.bound.identity, None);
+        // csi1 has no token: the line counts because the listing names it.
         let p = derive_port(&PortFacts {
-            boot: Some(boot_config_port(BENCH1, "csi0")),
-            listed: Some((
-                "imx290",
-                "/base/axi/pcie@1000120000/rp1/i2c@88000/imx290@1a",
-            )),
+            boot_text: Some("dtoverlay=ov5647\n"),
+            listed: Some(("ov5647", "/base/soc/i2c0mux/i2c@1/ov5647@36")),
+            capture: CaptureTruth::Streaming,
+            ..facts("cam1", "csi1")
+        });
+        assert_eq!(p.verdict, CameraVerdict::Ok);
+        assert_eq!(p.boot_config.as_ref().unwrap().lines, 1);
+        // With nothing saying it is a camera, an unknown overlay without a
+        // `cam0` token is not taken for one …
+        assert_eq!(
+            boot_config_port_with("dtoverlay=ov5647\n", "csi1", &[]).lines,
+            0
+        );
+        // … and a non-camera overlay never is, whatever the hints.
+        assert_eq!(
+            boot_config_port_with(
+                "dtoverlay=vc4-kms-v3d\ndtoverlay=dwc2,dr_mode=host\n",
+                "csi1",
+                &["imx290"]
+            )
+            .lines,
+            0
+        );
+        // A hint does not move a `cam0` line to csi1, nor a bare one to csi0.
+        assert_eq!(
+            boot_config_port_with("dtoverlay=ov5647,cam0\n", "csi1", &["ov5647"]).lines,
+            0
+        );
+        assert_eq!(
+            boot_config_port_with("dtoverlay=ov5647\n", "csi0", &["ov5647"]).lines,
+            0
+        );
+    }
+
+    #[test]
+    fn the_reported_line_is_capped() {
+        let long = format!("dtoverlay=imx290,cam0,{}\n", "x".repeat(500));
+        let b = boot_config_port(&long, "csi0");
+        assert_eq!(b.line.unwrap().chars().count(), BOOT_LINE_MAX);
+        assert_eq!(b.overlay.as_deref(), Some("imx290"));
+    }
+
+    /// `unchecked` is "the agent cannot check", never a camera that works:
+    /// a device without `rpicam-hello` whose camera streams reads `ok`.
+    #[test]
+    fn verdict_unchecked_and_the_device_that_cannot_list_cameras() {
+        let cannot = PortFacts {
+            enumerated: false,
+            ..facts("cam0", "csi0")
+        };
+        let p = derive_port(&cannot);
+        assert_eq!(p.verdict, CameraVerdict::Unchecked);
+        assert_eq!(
+            p.detail,
+            "cam0 on csi0 cannot be checked: the agent cannot list cameras on this device (rpicam-hello is missing or libcamera is broken). Install rpicam-apps and restart the agent."
+        );
+        assert_eq!(status_word(&p), "unchecked");
+        let p = derive_port(&PortFacts {
+            capture: CaptureTruth::Streaming,
+            ..cannot.clone()
+        });
+        assert_eq!(p.verdict, CameraVerdict::Ok);
+        assert_eq!(
+            p.detail,
+            "The camera on csi0 is streaming. It could not be checked against the declared sensor: the agent cannot list cameras on this device (rpicam-hello is missing or libcamera is broken). Install rpicam-apps."
+        );
+        assert_eq!(status_word(&p), "streaming");
+        let p = derive_port(&PortFacts {
+            capture: CaptureTruth::Failing,
+            ..cannot
+        });
+        assert_eq!(p.verdict, CameraVerdict::NoFrames);
+        assert_eq!(
+            p.detail,
+            "The capture of cam0 on csi0 keeps failing, and the agent cannot list cameras on this device (rpicam-hello is missing or libcamera is broken), so the port cannot be checked. Install rpicam-apps and restart the agent."
+        );
+        // A pipeline the agent does not supervise.
+        let p = derive_port(&PortFacts {
+            boot_text: Some(BENCH1),
+            listed: Some(IMX290_CM5),
             unsupervised: true,
             ..facts("cam0", "csi0")
         });
-        assert_eq!(p.verdict, CameraVerdict::Unmanaged);
+        assert_eq!(p.verdict, CameraVerdict::Unchecked);
         assert_eq!(
             p.detail,
             "imx290 is detected on csi0, but cam0 uses a custom pipeline that the agent does not supervise, so it cannot tell whether frames flow."
         );
-        assert_eq!(status_word(&p), "unmanaged");
+        // The wire word.
+        assert_eq!(
+            serde_json::to_string(&CameraVerdict::Unchecked).unwrap(),
+            "\"unchecked\""
+        );
     }
 
     /// The wire shape, one real case per Phase 0 verdict (`ok` is pinned by
@@ -1411,7 +1868,7 @@ mod tests {
         ];
         assert_eq!(
             wire(&PortFacts {
-                boot: Some(boot_config_port(BENCH2, "csi0")),
+                boot_text: Some(BENCH2),
                 nodes: Some(&nodes),
                 capture: CaptureTruth::Absent,
                 ..facts("cam0", "csi0")
@@ -1419,26 +1876,23 @@ mod tests {
             r#"{"connector":"csi0","declared":{"sensor":"imx335","source":"boot-config"},"bootConfig":{"overlay":"imx335","line":"dtoverlay=imx335,cam0","lines":1},"bound":{"driver":false,"node":"imx335@1a","listed":null,"path":null,"identity":"weak"},"capture":{"state":"absent","backoffStep":0,"lastError":null},"verdict":"not-detected","detail":"csi0 is declared as imx335 by config.txt, but no imx335 answered on this port (the kernel driver did not bind). Check the ribbon cable and that the dtoverlay line in config.txt names the sensor that is really attached, then reboot."}"#
         );
 
-        // no-frames: the CM4 with an IMX708 under `dtoverlay=imx290`
-        // (2026-11-20): a camera is listed, the frontend times out, the
-        // capture is in its D86 back-off.
+        // no-frames: an IMX708 under `dtoverlay=imx290` (2026-11-20): a
+        // camera is listed, the frontend times out, the capture is in its
+        // D86 back-off.
         let nodes = [node("csi0", "imx290@1a", Some("imx290"))];
         assert_eq!(
             wire(&PortFacts {
-                boot: Some(boot_config_port(
-                    "dtoverlay=imx290,cam0,rotation=180\n",
-                    "csi0"
-                )),
+                boot_text: Some("dtoverlay=imx290,cam0,rotation=180\n"),
                 nodes: Some(&nodes),
                 listed: Some(("imx290", "/base/soc/i2c0mux/i2c@0/imx290@1a")),
                 capture: CaptureTruth::Failing,
                 backoff_step: 2,
                 last_error: Some(
-                    "[0:01:02.345678901] [812] ERROR RPI pipeline_base.cpp:1354 Camera frontend has timed out!"
+                    "[0:00:13.417539436] [940] ERROR RPI pipeline_base.cpp:1408 Camera frontend has timed out!"
                 ),
                 ..facts("cam0", "csi0")
             }),
-            r#"{"connector":"csi0","declared":{"sensor":"imx290","source":"boot-config"},"bootConfig":{"overlay":"imx290","line":"dtoverlay=imx290,cam0,rotation=180","lines":1},"bound":{"driver":true,"node":"imx290@1a","listed":"imx290","path":"/base/soc/i2c0mux/i2c@0/imx290@1a","identity":"none"},"capture":{"state":"failing","backoffStep":2,"lastError":"[0:01:02.345678901] [812] ERROR RPI pipeline_base.cpp:1354 Camera frontend has timed out!"},"verdict":"no-frames","detail":"imx290 is listed on csi0 but delivers no frames: its capture process keeps failing. The imx290 driver cannot confirm which chip is attached, so the camera on this port may be a different sensor. Check the ribbon cable and that the dtoverlay line in config.txt names the sensor that is really attached."}"#
+            r#"{"connector":"csi0","declared":{"sensor":"imx290","source":"boot-config"},"bootConfig":{"overlay":"imx290","line":"dtoverlay=imx290,cam0,rotation=180","lines":1},"bound":{"driver":true,"node":"imx290@1a","listed":"imx290","path":"/base/soc/i2c0mux/i2c@0/imx290@1a","identity":"none"},"capture":{"state":"failing","backoffStep":2,"lastError":"[0:00:13.417539436] [940] ERROR RPI pipeline_base.cpp:1408 Camera frontend has timed out!"},"verdict":"no-frames","detail":"imx290 is listed on csi0 but delivers no frames: its capture process keeps failing. The imx290 driver cannot confirm which chip is attached, so the camera on this port may be a different sensor, or nothing may be attached. Check the ribbon cable and that the dtoverlay line in config.txt names the sensor that is really attached."}"#
         );
 
         // mismatch: a swap that left two lines on one port.
@@ -1448,16 +1902,13 @@ mod tests {
         ];
         assert_eq!(
             wire(&PortFacts {
-                boot: Some(boot_config_port(
-                    "dtoverlay=imx219,cam0\ndtoverlay=imx708,cam0\n",
-                    "csi0"
-                )),
+                boot_text: Some("dtoverlay=imx219,cam0\ndtoverlay=imx708,cam0\n"),
                 nodes: Some(&nodes),
                 listed: Some(("imx219", "/base/soc/i2c0mux/i2c@0/imx219@10")),
                 capture: CaptureTruth::Streaming,
                 ..facts("cam0", "csi0")
             }),
-            r#"{"connector":"csi0","declared":{"sensor":"imx708","source":"boot-config"},"bootConfig":{"overlay":"imx708","line":"dtoverlay=imx708,cam0","lines":2},"bound":{"driver":true,"node":"imx219@10","listed":"imx219","path":"/base/soc/i2c0mux/i2c@0/imx219@10","identity":"chip-id"},"capture":{"state":"streaming","backoffStep":0,"lastError":null},"verdict":"mismatch","detail":"csi0 is declared as imx708 by config.txt, but the camera found there is imx219. It is used as found; make the dtoverlay line in config.txt name the sensor that is really attached, then reboot. config.txt has 2 camera lines for csi0; only one can work: remove the stale one."}"#
+            r#"{"connector":"csi0","declared":{"sensor":"imx708","source":"boot-config"},"bootConfig":{"overlay":"imx708","line":"dtoverlay=imx708,cam0","lines":2},"bound":{"driver":true,"node":"imx219@10","listed":"imx219","path":"/base/soc/i2c0mux/i2c@0/imx219@10","identity":"chip-id"},"capture":{"state":"streaming","backoffStep":0,"lastError":null},"verdict":"mismatch","detail":"csi0 is declared as imx708 by config.txt, but the camera found there is imx219. It is used as found; make the dtoverlay line in config.txt name the sensor that is really attached, then reboot. config.txt has 2 camera lines for csi0; only one can work unless they sit under different [section] filters: remove the stale one."}"#
         );
 
         // empty: a two-camera model on a device whose config.txt has a
@@ -1465,7 +1916,7 @@ mod tests {
         let nodes = [node("csi0", "imx708@1a", Some("imx708"))];
         assert_eq!(
             wire(&PortFacts {
-                boot: Some(boot_config_port(CM4, "csi1")),
+                boot_text: Some(CM4),
                 nodes: Some(&nodes),
                 capture: CaptureTruth::Absent,
                 ..facts("cam1", "csi1")
@@ -1473,16 +1924,56 @@ mod tests {
             r#"{"connector":"csi1","declared":{"sensor":"imx290","source":"model"},"bootConfig":{"overlay":null,"line":null,"lines":0},"bound":{"driver":false,"node":null,"listed":null,"path":null,"identity":null},"capture":{"state":"absent","backoffStep":0,"lastError":null},"verdict":"empty","detail":"No camera is configured on csi1: config.txt has no camera dtoverlay line for it (the device model expects imx290). Add the line for the attached sensor and reboot, or leave it if the port is unused."}"#
         );
 
-        // unmanaged: a device without `rpicam-hello` (a fresh Lite image).
+        // unchecked: a device without `rpicam-hello` (a fresh Lite image),
+        // capture not running.
         let nodes = [node("csi0", "imx290@1a", Some("imx290"))];
         assert_eq!(
             wire(&PortFacts {
-                boot: Some(boot_config_port(BENCH1, "csi0")),
+                boot_text: Some(BENCH1),
                 nodes: Some(&nodes),
                 enumerated: false,
                 ..facts("cam0", "csi0")
             }),
-            r#"{"connector":"csi0","declared":{"sensor":"imx290","source":"boot-config"},"bootConfig":{"overlay":"imx290","line":"dtoverlay=imx290,cam0","lines":1},"bound":{"driver":true,"node":"imx290@1a","listed":null,"path":null,"identity":"none"},"capture":{"state":"off","backoffStep":0,"lastError":null},"verdict":"unmanaged","detail":"The agent cannot list cameras on this device (rpicam-hello is missing or libcamera is broken), so cam0 on csi0 cannot be checked. Install rpicam-apps and restart the agent."}"#
+            r#"{"connector":"csi0","declared":{"sensor":"imx290","source":"boot-config"},"bootConfig":{"overlay":"imx290","line":"dtoverlay=imx290,cam0","lines":1},"bound":{"driver":true,"node":"imx290@1a","listed":null,"path":null,"identity":"none"},"capture":{"state":"off","backoffStep":0,"lastError":null},"verdict":"unchecked","detail":"cam0 on csi0 cannot be checked: the agent cannot list cameras on this device (rpicam-hello is missing or libcamera is broken). Install rpicam-apps and restart the agent."}"#
+        );
+    }
+
+    #[test]
+    fn the_relist_schedule_is_three_early_looks_then_every_five_minutes() {
+        let mut t = 0;
+        let mut times = Vec::new();
+        for _ in 0..6 {
+            t = next_relist_ms(t);
+            times.push(t);
+        }
+        assert_eq!(times, [15_000, 30_000, 60_000, 360_000, 660_000, 960_000]);
+        // Strictly after `now`, wherever `now` falls.
+        assert_eq!(next_relist_ms(14_999), 15_000);
+        assert_eq!(next_relist_ms(15_000), 30_000);
+        assert_eq!(next_relist_ms(60_000), 360_000);
+        assert_eq!(next_relist_ms(359_999), 360_000);
+        assert_eq!(next_relist_ms(360_000), 660_000);
+        assert_eq!(next_relist_ms(5_000_000), 5_160_000);
+        // Only a held port with a bound driver is looked at again.
+        assert!(port_needs_relist(true, true));
+        assert!(
+            !port_needs_relist(true, false),
+            "a driver binds at boot only"
+        );
+        assert!(!port_needs_relist(false, true));
+    }
+
+    #[test]
+    fn the_report_hold_doubles_up_to_ten_minutes() {
+        let mut h = 20_000;
+        let mut seen = Vec::new();
+        for _ in 0..7 {
+            h = next_report_hold_ms(h);
+            seen.push(h);
+        }
+        assert_eq!(
+            seen,
+            [40_000, 80_000, 160_000, 320_000, 600_000, 600_000, 600_000]
         );
     }
 
@@ -1490,7 +1981,7 @@ mod tests {
     fn the_summary_ignores_the_ladder_and_the_wording() {
         let nodes = [node("csi0", "imx290@1a", Some("imx290"))];
         let base = PortFacts {
-            boot: Some(boot_config_port(BENCH1, "csi0")),
+            boot_text: Some(BENCH1),
             nodes: Some(&nodes),
             listed: Some((
                 "imx290",

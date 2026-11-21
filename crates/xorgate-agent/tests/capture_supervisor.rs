@@ -619,6 +619,21 @@ async fn parks_after_three_consecutive_stalls_instead_of_hot_looping() {
     assert_eq!(sup.status()[0].state, CaptureState::Failed);
     assert!(!sup.status()[0].recording);
     assert_eq!(be.len(), 3); // three children, not a spawn storm
+                             // Camera report (Rust-only): the health says this failure is a STALL
+                             // and at which preset, so the report does not send the reader to the
+                             // ribbon cable for the known 1080p30 recording stall.
+    let (key, health) = sup.health().remove(0);
+    assert_eq!(key, "cam0");
+    assert!(health.unstable);
+    assert_eq!(
+        health.stalled_preset.as_deref(),
+        Some("1080p15-2mbps"),
+        "a watchdog kill, with the preset it ran"
+    );
+    assert_eq!(
+        xorgate_core::camera_truth::capture_truth(Some(&health), false),
+        xorgate_core::camera_truth::CaptureTruth::Failing
+    );
     sup.stop();
 }
 

@@ -148,13 +148,16 @@ pub fn is_recognized_direct_render(content: &str, stream_key: &str, camera_name:
 /// `camera-name=`. Here the name is read out of the file, and the content
 /// must then be, for THAT name:
 ///
-/// - exactly the software or the hardware direct render of this stream, or
-/// - a legacy install's render: one line, `libcamerasrc` first, an H.264
-///   encoder element (`x264enc`, or `v4l2h264enc` as a CM4 file has it: the
-///   JS clause asks for `x264enc` only) and `appsink`.
+/// - exactly the software or the hardware direct render of this stream
+///   (every render the agent itself ever wrote, CM4 ones included), or
+/// - a legacy install's render, by the JS clause unchanged: one line,
+///   `libcamerasrc` first, `x264enc` and `appsink`.
 ///
-/// Anything else (no `camera-name=`, several lines, another source or sink)
-/// is an operator's pipeline: `None`, never overwritten.
+/// Anything else (no `camera-name=`, several lines, another source or sink,
+/// a hand-written `v4l2h264enc` one-liner) is an operator's pipeline:
+/// `None`, never overwritten. The legacy clause is deliberately NOT widened
+/// to `v4l2h264enc`: no installer ever wrote such a file, so the only
+/// one-liners of that shape are hand-written.
 pub fn own_direct_render_camera(content: &str, stream_key: &str) -> Option<String> {
     let t = js_trim(content);
     let name = crate::video_capture::extract_camera_name(t).filter(|n| !n.is_empty())?;
@@ -165,7 +168,7 @@ pub fn own_direct_render_camera(content: &str, stream_key: &str) -> Option<Strin
     }
     let legacy = !t.contains('\n')
         && t.starts_with("libcamerasrc")
-        && (t.contains("x264enc") || t.contains("v4l2h264enc"))
+        && t.contains("x264enc")
         && t.contains("appsink");
     legacy.then_some(name)
 }
@@ -189,29 +192,31 @@ mod tests {
                 own_direct_render_camera(&file, "cam0").as_deref(),
                 Some(old)
             );
-            // Another stream's exact render is not this stream's.
+            // Another stream's render is not this stream's exact render. The
+            // software one is still adopted by the legacy clause (as the JS
+            // rule adopts it); the hardware one is not.
             assert_eq!(
                 own_direct_render_camera(&file, "cam1"),
-                // (the sw/hw templates carry `name=<key>`; the legacy clause
-                // still adopts a single-line libcamerasrc → encoder → appsink)
-                Some(old.to_string())
+                (enc == EncoderToken::SwH264).then(|| old.to_string())
             );
         }
-        // Legacy single-line renders: x264enc (CM5) and v4l2h264enc (CM4).
+        // A legacy install's single-line x264enc render.
         let legacy_sw = format!("libcamerasrc camera-name={old} ! video/x-raw ! x264enc ! appsink");
-        let legacy_hw = format!(
-            "libcamerasrc camera-name={old} ! video/x-raw ! videoconvert ! v4l2h264enc ! appsink"
-        );
         assert_eq!(
             own_direct_render_camera(&legacy_sw, "cam0").as_deref(),
             Some(old)
         );
+        // A hand-written CM4 one-liner (v4l2h264enc) is the operator's: the
+        // legacy clause is not widened to it. The reviewer's example:
+        let hand_written = "libcamerasrc camera-name=/base/soc/i2c0mux/i2c@0/imx708@1a af-mode=continuous ! video/x-raw,width=1920,height=1080 ! videoconvert ! v4l2h264enc extra-controls=\"controls,video_bitrate=4000000\" ! video/x-h264,level=(string)4 ! appsink name=appsink-video";
+        assert_eq!(own_direct_render_camera(hand_written, "cam0"), None);
         assert_eq!(
-            own_direct_render_camera(&legacy_hw, "cam0").as_deref(),
-            Some(old)
+            own_direct_render_camera(
+                &format!("libcamerasrc camera-name={old} ! video/x-raw ! videoconvert ! v4l2h264enc ! appsink"),
+                "cam0"
+            ),
+            None
         );
-        // The JS legacy clause never took the v4l2h264enc file.
-        assert!(!is_recognized_direct_render(&legacy_hw, "cam0", old));
         // A quoted name is read without its quotes.
         assert_eq!(
             own_direct_render_camera(
