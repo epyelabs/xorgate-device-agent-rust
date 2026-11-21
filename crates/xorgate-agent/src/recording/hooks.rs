@@ -50,11 +50,27 @@ pub trait HardwareReconciler: Send + Sync {
     /// bound on it. HEAL-ONLY: it may turn a held port into a found one and
     /// nothing else (never a found port into a held one; a listing that
     /// cannot enumerate changes nothing), it is skipped while another pass
-    /// runs, and it journals only the streams it healed. Default: the plain
-    /// pass.
-    fn recheck(&self) -> BoxFut<'_, Result<Vec<String>, String>> {
-        self.reconcile()
+    /// runs, and it journals only the streams it healed. `capturing` = the
+    /// streams whose capture runs now (named in the heal's journal line:
+    /// they are restarted so the new camera can be acquired). Default: the
+    /// plain pass, healing nothing.
+    fn recheck(&self, _capturing: Vec<String>) -> BoxFut<'_, Result<Recheck, String>> {
+        Box::pin(async move {
+            Ok(Recheck {
+                changed: self.reconcile().await?,
+                healed: Vec::new(),
+            })
+        })
     }
+}
+
+/// What a re-listing did.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Recheck {
+    /// The streams whose `.gst` changed (their masters are bounced).
+    pub changed: Vec<String>,
+    /// The streams that were held for lack of a camera and now have one.
+    pub healed: Vec<String>,
 }
 
 /// `buildUploadOptions()` (`worker.ts:389-413`) — re-run on every re-arm, so
@@ -175,16 +191,17 @@ impl MediaReconciler {
     ///
     /// A full pass (boot, hardware-block change) replaces the snapshot
     /// wholesale, as the TS does.
-    async fn pass(&self, quiet: bool) -> Result<Vec<String>, String> {
+    async fn pass(&self, relist: Option<Vec<String>>) -> Result<Recheck, String> {
+        let quiet = relist.is_some();
         let cfg = &self.ctx.env.config;
         if !crate::ops::camera_truth::camera_report_enabled(cfg.mode, cfg.offline) {
-            return Ok(Vec::new());
+            return Ok(Recheck::default());
         }
         // One pass at a time (see `StreamHardware::pass_lock`).
         let _turn = if quiet {
             match self.stream_hw.pass_lock.try_lock() {
                 Ok(g) => g,
-                Err(_) => return Ok(Vec::new()),
+                Err(_) => return Ok(Recheck::default()),
             }
         } else {
             self.stream_hw.pass_lock.lock().await
@@ -193,7 +210,7 @@ impl MediaReconciler {
         // in force when ITS turn comes.
         let block = self.ctx.hardware.borrow().clone();
         let Some(block) = block else {
-            return Ok(Vec::new());
+            return Ok(Recheck::default());
         };
         let (state, clock) = (self.ctx.state.clone(), self.ctx.clock.clone());
         let emit = move |level: crate::media::ReconcileLevel, msg: &str| {
@@ -259,14 +276,17 @@ impl MediaReconciler {
             // above stay those of the last pass that could enumerate).
             g.passes += 1;
             g.cameras = res.cameras.clone();
-            return Ok(res.changed_streams);
+            return Ok(Recheck {
+                changed: res.changed_streams,
+                healed: Vec::new(),
+            });
         }
 
         // ---- A re-listing: heal-only.
         let Some(listed) = &res.cameras else {
             // It could not enumerate: not a check. Nothing changes.
             tracing::debug!("[hardware] re-listing could not enumerate cameras; ignored");
-            return Ok(Vec::new());
+            return Ok(Recheck::default());
         };
         let healed: Vec<String> = {
             let mut g = self
@@ -318,22 +338,45 @@ impl MediaReconciler {
                 emit(level, &msg);
             }
         }
+        // The heal's one line. A capture that was started before libcamera
+        // gained this camera still holds the media device (measured on
+        // bench 2: `Camera … is already in use`, for ever), so every capture
+        // already running is restarted once, then the healed one starts.
+        let capturing = relist.unwrap_or_default();
         for key in &healed {
-            emit(
-                crate::media::ReconcileLevel::Info,
-                &format!("{key}: a camera is enumerated now — starting the stream"),
-            );
+            let others: Vec<&str> = capturing
+                .iter()
+                .filter(|k| !healed.contains(k))
+                .map(String::as_str)
+                .collect();
+            emit(crate::media::ReconcileLevel::Info, &heal_line(key, &others));
         }
-        Ok(res.changed_streams)
+        Ok(Recheck {
+            changed: res.changed_streams,
+            healed,
+        })
+    }
+}
+
+/// The journal line of a heal: the stream that got its camera, and the
+/// captures restarted for it.
+pub fn heal_line(key: &str, restarted: &[&str]) -> String {
+    if restarted.is_empty() {
+        format!("{key}: a camera is enumerated now — starting the stream")
+    } else {
+        format!(
+            "{key}: a camera is enumerated now — restarting the capture of {} so the new camera can be acquired, then starting the stream",
+            restarted.join(", ")
+        )
     }
 }
 
 impl HardwareReconciler for MediaReconciler {
     fn reconcile(&self) -> BoxFut<'_, Result<Vec<String>, String>> {
-        Box::pin(self.pass(false))
+        Box::pin(async move { Ok(self.pass(None).await?.changed) })
     }
-    fn recheck(&self) -> BoxFut<'_, Result<Vec<String>, String>> {
-        Box::pin(self.pass(true))
+    fn recheck(&self, capturing: Vec<String>) -> BoxFut<'_, Result<Recheck, String>> {
+        Box::pin(self.pass(Some(capturing)))
     }
 }
 
@@ -412,11 +455,21 @@ impl RecordingHooks {
         let media = self.media.clone();
         tokio::spawn(async move {
             let pass = if recheck {
-                hw.recheck().await
+                // The streams whose capture runs now (named in the heal line).
+                let capturing = m
+                    .video_status()
+                    .streams
+                    .into_iter()
+                    .map(|c| c.stream_key)
+                    .collect();
+                hw.recheck(capturing).await
             } else {
-                hw.reconcile().await
+                hw.reconcile().await.map(|changed| Recheck {
+                    changed,
+                    healed: Vec::new(),
+                })
             };
-            let changed = match pass {
+            let done = match pass {
                 Ok(c) => c,
                 Err(e) => {
                     // `console.error(a, b)` joins its arguments with one space.
@@ -425,11 +478,19 @@ impl RecordingHooks {
                 }
             };
             if let Some(media) = &media {
-                for key in &changed {
+                for key in &done.changed {
                     media.restart_channel(key);
                 }
             }
-            if let Err(e) = m.reapply() {
+            // A heal restarts every running capture once (the manager's
+            // normal Replace), then starts the healed one; anything else is
+            // the plain `reapply`.
+            let applied = if done.healed.is_empty() {
+                m.reapply()
+            } else {
+                m.restart_capture()
+            };
+            if let Err(e) = applied {
                 tracing::error!("[agent] hardware reconcile failed {e}");
             }
         });

@@ -27,8 +27,10 @@
 //! simply have come too early), `tick` asks for the hardware reconcile to
 //! run again (`CameraTruthOptions::recheck`, the `hardware_changed` path)
 //! 15 s, 30 s and 60 s after the agent started, then every 5 minutes
-//! (`camera_truth::next_relist_ms`). When the camera then lists, the stream
-//! starts as it would at boot. A port with no bound driver is never
+//! (`camera_truth::next_relist_ms`). When the camera then lists, every
+//! capture already running is restarted once (a capture started before
+//! libcamera gained the camera keeps the media device, and the new camera
+//! could never be acquired), then the stream starts as it would at boot. A port with no bound driver is never
 //! re-listed: a driver binds at boot only. Each re-listing is one
 //! `rpicam-hello --list-cameras` run, which the JS agent does not make.
 //! Until one has run, a "driver bound, nothing listed" port is reported as
@@ -66,8 +68,8 @@ use indexmap::IndexMap;
 use serde_json::{Map, Value};
 use xorgate_core::camera_truth::{
     capture_allowed, capture_truth, derive_port, next_relist_ms, next_report_hold_ms,
-    node_for_port, port_needs_relist, settle_capture, summarise_port, CaptureLive, CaptureTruth,
-    PortFacts, PortNode, RELIST_AFTER_START_MS, REPORT_HOLD_RESET_MS,
+    node_for_port, port_needs_relist, settle_capture, summarise_port, CaptureLive, CaptureOff,
+    CaptureTruth, PortFacts, PortNode, RELIST_AFTER_START_MS, REPORT_HOLD_RESET_MS,
 };
 use xorgate_core::hardware_block::{DeviceHardwareBlock, Platform};
 use xorgate_core::telemetry::RunMode;
@@ -106,6 +108,9 @@ pub fn real_port_nodes() -> PortNodesFn {
     })
 }
 
+/// Why a stream's capture is not wanted (`None` = it is wanted).
+pub type CaptureOffFn = Box<dyn Fn(&str) -> Option<CaptureOff> + Send + Sync>;
+
 /// What [`CameraTruth`] reads, and the two things it may ask for.
 pub struct CameraTruthOptions {
     /// The hardware block in force.
@@ -128,10 +133,12 @@ pub struct CameraTruthOptions {
     /// "List the cameras again" (`PhaseHooks::hardware_recheck`): the
     /// hardware reconcile through the `hardware_changed` path, quiet.
     pub recheck: Box<dyn Fn() + Send + Sync>,
-    /// Is this stream's capture wanted at all (media on, the camera not
-    /// disabled in `recording.video.cameras`)? A held port nobody wants is
-    /// not re-listed. Read on [`CameraTruth::refresh`] (it may do I/O).
-    pub capture_wanted: Box<dyn Fn(&str) -> bool + Send + Sync>,
+    /// Why this stream's capture is not wanted, if it is not: the camera is
+    /// disabled in `recording.video.cameras`, or media is off. `None` =
+    /// wanted. A held port nobody wants is not re-listed, and the reason is
+    /// what the sentence of an `ok` camera with capture off says. Read on
+    /// [`CameraTruth::refresh`] (it may do I/O).
+    pub capture_off: CaptureOffFn,
     /// [`REPORT_HOLD_MS`] (a test seam).
     pub hold_ms: u64,
 }
@@ -143,8 +150,8 @@ struct Statics {
     nodes: Option<Vec<PortNode>>,
     /// Stream key → its `.gst` is the bridged kind (`None` = no `.gst`).
     bridged: HashMap<String, Option<bool>>,
-    /// The stream keys whose capture is not wanted (`capture_wanted`).
-    unwanted: Vec<String>,
+    /// The streams whose capture is not wanted, and why (`capture_off`).
+    unwanted: HashMap<String, CaptureOff>,
 }
 
 /// One camera's settled capture state.
@@ -246,7 +253,7 @@ fn build_block(
             .and_then(|n| node_for_port(n, &video.connector))
             .is_some_and(|n| n.driver.is_some());
         needs_relist |=
-            port_needs_relist(held, driver_bound) && !statics.unwanted.contains(&video.key);
+            port_needs_relist(held, driver_bound) && !statics.unwanted.contains_key(&video.key);
         let live_state = capture_truth(live, held);
         let prev = settled.get(&video.key).copied();
         // The restart grace: how long a camera that was streaming has read
@@ -283,18 +290,25 @@ fn build_block(
                 .filter(|_| failing)
                 .and_then(|l| l.stalled_preset.as_deref()),
             unsupervised: statics.bridged.get(&video.key).copied().flatten() == Some(false),
+            off_reason: statics
+                .unwanted
+                .get(&video.key)
+                .copied()
+                .unwrap_or(CaptureOff::NotBegun),
         });
         // The sentence of a "driver bound, nothing listed" port changes when
         // the re-listing has confirmed it, and so does the summary; a stall
         // reads differently from a start failure.
         summary.push(format!(
-            "{}|{}|{}",
+            "{}|{}|{}|{}",
             summarise_port(&video.key, &port),
             u8::from(relisted && driver_bound && listed.is_none()),
             u8::from(
                 failing
                     && live.is_some_and(|l| l.stalled_preset.is_some() && l.last_error.is_none())
             ),
+            // The reason an `off` capture is off is part of its sentence.
+            statics.unwanted.get(&video.key).map_or(0, |r| *r as u8 + 1),
         ));
         ports.insert(
             video.key.as_str(),
@@ -360,8 +374,7 @@ impl CameraTruth {
             unwanted: block
                 .video
                 .iter()
-                .filter(|v| !(o.capture_wanted)(&v.key))
-                .map(|v| v.key.clone())
+                .filter_map(|v| Some((v.key.clone(), (o.capture_off)(&v.key)?)))
                 .collect(),
         };
         lock(&self.inner.st).statics = Some(statics);
@@ -599,7 +612,13 @@ mod tests {
                 rc.lock().unwrap().push(t0.elapsed().as_millis() as u64);
                 h2.lock().unwrap().passes += 1;
             }),
-            capture_wanted: Box::new(move |k| !uw.lock().unwrap().iter().any(|u| u == k)),
+            capture_off: Box::new(move |k| {
+                uw.lock()
+                    .unwrap()
+                    .iter()
+                    .any(|u| u == k)
+                    .then_some(CaptureOff::Disabled)
+            }),
             hold_ms: REPORT_HOLD_MS,
         });
         Rig {
@@ -878,7 +897,7 @@ mod tests {
                 // that follows is what the cloud then has).
                 assert_eq!(
                     r.truth.current().unwrap()["cam0"]["detail"],
-                    "The imx335 driver is bound on csi0 but libcamera lists no camera there (checked again after the agent started): libcamera on this device may not support this sensor. The imx335 driver only weakly checks which chip is attached, so the camera on this port may be a different sensor."
+                    "The imx335 driver is bound on csi0 but libcamera lists no camera there (checked again after the agent started): libcamera on this device may not support this sensor."
                 );
                 assert_eq!(r.changes.load(Ordering::SeqCst), 1);
                 reported(&r);

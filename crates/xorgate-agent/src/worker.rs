@@ -388,20 +388,24 @@ fn camera_truth(
         // The B5 hold heals: list the cameras again through the
         // `hardware_changed` path (reconcile, bounce, reapply).
         recheck: Box::new(move || crate::ctx::PhaseHooks::hardware_recheck(recheck.as_ref())),
-        // Wanted = media on and the camera not turned off in
+        // Not wanted = media off, or the camera turned off in
         // `recording.video.cameras` (read on the 60 s refresh).
-        capture_wanted: Box::new(move |key: &str| {
-            media_on
-                && xorgate_core::recording_config::resolve_recording_config(
-                    xorgate_hal::settings_io::load_settings(&settings)
-                        .recording
-                        .as_ref(),
-                )
-                .video
-                .cameras
-                .get(key)
-                .copied()
-                .unwrap_or(true)
+        capture_off: Box::new(move |key: &str| {
+            use xorgate_core::camera_truth::CaptureOff;
+            if !media_on {
+                return Some(CaptureOff::VideoOff);
+            }
+            let on = xorgate_core::recording_config::resolve_recording_config(
+                xorgate_hal::settings_io::load_settings(&settings)
+                    .recording
+                    .as_ref(),
+            )
+            .video
+            .cameras
+            .get(key)
+            .copied()
+            .unwrap_or(true);
+            (!on).then_some(CaptureOff::Disabled)
         }),
         hold_ms: ct::REPORT_HOLD_MS,
     })

@@ -619,7 +619,7 @@ Plan: `plans/device-agent-js-to-rust/phase-7c-rust-imu.md` §Design 6 (R6: the r
 ## Camera report (support-other-camera-models, Phase 0): Rust-only, lanes on camera tapes differ by construction
 
 Since branch `camera/phase0-truth` the Rust agent does things on the camera path that the JS agent
-does not, on purpose (accepted divergences **D89–D94**, in the register
+does not, on purpose (accepted divergences **D89–D94** and **D105**, in the register
 `plans/done/device-agent-js-to-rust/phase-1/evidence/accepted-divergences.md`). Orchestrator ruling
 (provisional, 2026-11-21): the plan does not gate on JS-vs-Rust lanes for tapes with a camera
 hardware block. **No tolerance matcher was built and no tolerance row was widened**, so on those
@@ -638,6 +638,7 @@ What differs, where the agent runs in real mode, online, with a hardware block t
 | 5 | end snapshot `etc/pipelines/<key>.gst.direct` | only on a tape with a sensor change | D92 |
 | 6 | events | the `hardware: … using it anyway` warning, only where config.txt and the model disagree or a variant name is listed | D93 |
 | 7 | `exec` | extra `rpicam-hello --list-cameras` runs (15 s, 30 s, 60 s, then every 5 min), only while a port is held AND the rig host's `/sys/bus/i2c/devices` shows a driver bound on it (never on the rig as it is) | D94 |
+| 8 | events | the hold line `<key>: no camera enumerated on <csiN> (expected <sensor>) …` names config.txt's sensor instead of the model's, only on a tape whose config.txt line and model disagree for a camera-less port | D105 |
 
 Affected synthetic scenarios (rows 1–3; the others need inputs no synthetic tape has): every one
 that carries the `media-hw` track: `media`, `rec-boot-defer`, `rec-shed-uv`, `rec-shed-thermal`,

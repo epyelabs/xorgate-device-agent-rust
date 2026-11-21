@@ -676,6 +676,76 @@ async fn reaps_the_killed_childs_orphaned_shmsink_segments_and_only_its_own() {
     sup.stop();
 }
 
+/// Camera report (Rust-only, bench 2 2026-11-21): a child that printed a
+/// fatal line (`Camera frontend has timed out!`, here with libcamera's
+/// colour codes) and stays ALIVE is not delivering. The report reads it as
+/// failing from that moment, with that line as the error, in plain text.
+/// The supervisor itself does nothing different: the child is not
+/// signalled, it is still promoted to `running` at the stable window, and
+/// no event, restart or counter moves.
+#[tokio::test(start_paused = true)]
+async fn a_live_child_that_printed_a_fatal_line_is_not_streaming_for_the_report() {
+    use xorgate_core::camera_truth::{capture_truth, CaptureTruth};
+    let truth = |sup: &VideoCaptureSupervisor| {
+        let (_, h) = sup.health().remove(0);
+        (capture_truth(Some(&h), false), h)
+    };
+    let home = Home::new("fatal");
+    let be = Arc::new(FakeBackend::default());
+    let ev = Events::default();
+    let mut o = opts(&home, cam0(), false, be.clone(), &ev);
+    o.stable_ms = 50;
+    let sup = VideoCaptureSupervisor::new(o);
+    sup.start();
+    delay(10).await;
+    assert_eq!(truth(&sup).0, CaptureTruth::Starting);
+    let events_before = ev.lock().unwrap().len();
+    // One second after start on the bench; here before the stable window.
+    be.get(0).stdout(
+        "[0:00:23.561531467] [1236] \u{1b}[1;31mERROR \u{1b}[1;37mRPI \u{1b}[1;34mpipeline_base.cpp:1408 \u{1b}[0mCamera frontend has timed out!",
+    );
+    // … and its two lines of advice, which must not replace it.
+    be.get(0).stdout("[0:00:23.561544158] [1236] ERROR RPI pipeline_base.cpp:1409 Please check that your camera sensor connector is attached securely.");
+    be.get(0).stdout("[0:00:23.561547992] [1236] ERROR RPI pipeline_base.cpp:1410 Alternatively, try another cable and/or sensor.");
+    delay(5).await;
+    let (state, h) = truth(&sup);
+    assert_eq!(
+        state,
+        CaptureTruth::Failing,
+        "from the moment it is printed"
+    );
+    assert_eq!(
+        h.last_error.as_deref(),
+        Some("[0:00:23.561531467] [1236] ERROR RPI pipeline_base.cpp:1408 Camera frontend has timed out!"),
+        "plain text, the fatal line"
+    );
+    // Long past the stable window and past the recovery time: the child is
+    // alive, the supervisor calls it `running`, the report still does not.
+    delay(200_000).await;
+    assert_eq!(sup.status()[0].state, CaptureState::Running);
+    assert_eq!(be.get(0).stopped(), None, "the child is not signalled");
+    assert_eq!(be.len(), 1, "no restart");
+    assert_eq!(ev.lock().unwrap().len(), events_before, "no ladder event");
+    let (state, h) = truth(&sup);
+    assert_eq!(state, CaptureTruth::Failing);
+    assert_eq!(h.stable_ms, None);
+    assert!(h.unstable);
+    sup.stop();
+
+    // The control: the same child without the line reads `streaming`.
+    let home = Home::new("fatal-control");
+    let be = Arc::new(FakeBackend::default());
+    let mut o = opts(&home, cam0(), false, be.clone(), &ev);
+    o.stable_ms = 50;
+    let sup = VideoCaptureSupervisor::new(o);
+    sup.start();
+    be.get(0)
+        .stdout("[0:00:23.5] [1236]  INFO Camera camera.cpp:1215 configuring streams");
+    delay(200).await;
+    assert_eq!(truth(&sup).0, CaptureTruth::Streaming);
+    sup.stop();
+}
+
 #[tokio::test(start_paused = true)]
 async fn bridge_only_mode_has_no_disk_signal_and_is_never_watchdogged() {
     let home = Home::new("bridgewd");
