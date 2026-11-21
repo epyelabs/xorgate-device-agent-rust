@@ -49,7 +49,9 @@ use xorgate_core::boot_config::{
     ScopedLine, BOOT_CONFIG_CANDIDATES, CAMCFG_ALLOW_LIST, CAMCFG_HELPER, PROC_DEVICE_TREE,
 };
 use xorgate_core::camera_catalog::Catalog;
-use xorgate_core::camera_truth::{rotation_write_block, CaptureTruth, PortFacts, PortNode};
+use xorgate_core::camera_truth::{
+    rotation_write_block, CaptureOff, CaptureTruth, PortFacts, PortNode,
+};
 use xorgate_core::cameras::EnumeratedCamera;
 use xorgate_core::clock::Clock;
 use xorgate_core::clock_step::EventLevel;
@@ -247,7 +249,8 @@ pub struct WriteMemo {
     /// Warnings already logged (`<key>|<reason>`): logged once, not on
     /// every 60 s pass.
     warned: HashSet<String>,
-    /// `dtoverlay -h` answers that could be read, per overlay name.
+    /// `dtoverlay -h` answers of this agent run, per overlay name (a
+    /// failed probe included).
     probes: HashMap<String, OverlayProbeResult>,
 }
 
@@ -269,9 +272,11 @@ pub struct ReconcileCameraMountOptions {
     pub apply_rotation: Arc<dyn RotationWriter>,
     /// The sensor catalog (`camera_catalog::catalog()`).
     pub catalog: &'static Catalog,
-    /// What is on the ports (the B7 gate); `PortEvidence::default()` = the
-    /// agent could not look at all, and the gate stays open.
-    pub evidence: PortEvidence,
+    /// What is on the ports (the B7 gate), read only when a line is about
+    /// to be edited (no sysfs scan on a pass that writes nothing, or with
+    /// the namespace absent); `PortEvidence::default()` = the agent could
+    /// not look at all, and the gate stays open.
+    pub evidence: Arc<dyn Fn() -> PortEvidence + Send + Sync>,
     pub memo: Arc<Mutex<WriteMemo>>,
 }
 
@@ -294,9 +299,10 @@ struct OverlayFacts {
 /// The rotation IN FORCE for an enumerated camera, as a MOUNT rotation:
 /// what the live device tree says at the camera's node, minus the default
 /// of the sensor that node belongs to. A node WITHOUT a `rotation` property
-/// runs the overlay's default, which is mount 0 by definition (an `imx290`
-/// node on some kernels; never "unreadable"). `None` = no camera was
-/// enumerated for the stream, or its node cannot be read.
+/// is read as the kernel reads it: rotation 0 (an `imx290` node on some
+/// kernels, where that is mount 0; on a default-180 sensor it is mount
+/// 180). It is never "unreadable". `None` = no camera was enumerated for
+/// the stream, or its node cannot be read.
 fn in_force_mount(
     o: &ReconcileCameraMountOptions,
     stream_key: &str,
@@ -312,7 +318,8 @@ fn in_force_mount(
         .unwrap_or(0);
     match dt_rotation_state(&name, &o.dt_root) {
         DtRotation::Value(v) => Some(f64::from(mount_of_rotation(default, v))),
-        DtRotation::Absent => Some(0.0),
+        // As the kernel reads it: no property = rotation 0.
+        DtRotation::Absent => Some(f64::from(mount_of_rotation(default, 0))),
         DtRotation::Unknown => None,
     }
 }
@@ -437,14 +444,11 @@ pub async fn reconcile_camera_mount(o: ReconcileCameraMountOptions) -> Option<Ca
         // the line says. Mount 0 is what it shows; 180 cannot be had.
         if !facts.can_flip {
             lock(&o.memo).failed.remove(stream_key);
+            // Mount 0 is the only picture it has; reported only where a
+            // camera was actually read on the port.
+            let shown = in_force_deg.map(|_| 0.0);
             if mount == 0 {
-                push(
-                    &mut out,
-                    Some(0.0),
-                    Some(0.0),
-                    CameraMountVerdict::Applied,
-                    None,
-                );
+                push(&mut out, shown, shown, CameraMountVerdict::Applied, None);
             } else {
                 let detail = if facts.catalog {
                     format!(
@@ -455,8 +459,8 @@ pub async fn reconcile_camera_mount(o: ReconcileCameraMountOptions) -> Option<Ca
                 };
                 push(
                     &mut out,
-                    Some(0.0),
-                    Some(0.0),
+                    shown,
+                    shown,
                     CameraMountVerdict::Unsupported,
                     Some(detail),
                 );
@@ -554,10 +558,19 @@ pub async fn reconcile_camera_mount(o: ReconcileCameraMountOptions) -> Option<Ca
 
             let res = o.apply_rotation.apply(port, &overlay, wanted).await;
             if !res.ok {
-                let detail = format!(
-                    "could not edit {path}: {} (the agent needs the xorgate-camcfg helper — run `sudo xorgate-rs update`)",
-                    res.detail
-                );
+                // The update hint only where an update is the remedy: sudo
+                // itself refused the call (no grant: "sudo: a password is
+                // required"; no helper: "sudo: …: command not found"). A
+                // refusal by the helper (exit 4, 5) or a failed write is not
+                // cured by an update.
+                let detail = if res.detail.starts_with("sudo:") {
+                    format!(
+                        "could not edit {path}: {} (the agent needs the xorgate-camcfg helper — run `sudo xorgate-rs update`)",
+                        res.detail
+                    )
+                } else {
+                    format!("could not edit {path}: {}", res.detail)
+                };
                 lock(&o.memo)
                     .failed
                     .insert(stream_key.clone(), (asked, at, detail.clone()));
@@ -605,6 +618,22 @@ pub async fn reconcile_camera_mount(o: ReconcileCameraMountOptions) -> Option<Ca
         }
 
         let boot_deg = Some(desired_deg);
+        // The overlay's default could not be asked (outside the catalog,
+        // `dtoverlay -h` failing): 0 was assumed, as the TS always did. An
+        // "in force" that agrees is reported; one that does not is not
+        // turned into "reboot required" on the strength of an assumption.
+        if facts.probe_failed && in_force_deg != Some(desired_deg) {
+            push(
+                &mut out,
+                in_force_deg,
+                boot_deg,
+                CameraMountVerdict::Unsupported,
+                Some(format!(
+                    "could not ask dtoverlay whether {overlay} supports rotation"
+                )),
+            );
+            continue;
+        }
         match in_force_deg {
             None => push(
                 &mut out,
@@ -659,10 +688,10 @@ async fn overlay_facts(o: &ReconcileCameraMountOptions, overlay: &str) -> Overla
     let answer = match cached {
         Some(a) => a,
         None => {
+            // Asked once per agent run, whatever the answer (a failing
+            // `dtoverlay -h` is not run again every 60 s).
             let a = o.probe.probe(overlay).await;
-            if a.ok {
-                lock(&o.memo).probes.insert(overlay.to_string(), a);
-            }
+            lock(&o.memo).probes.insert(overlay.to_string(), a);
             a
         }
     };
@@ -690,7 +719,8 @@ fn write_block(
         .video
         .iter()
         .find(|v| v.key == stream_key)?;
-    let listed = o.evidence.cameras.as_deref().and_then(|cams| {
+    let evidence = (o.evidence)();
+    let listed = evidence.cameras.as_deref().and_then(|cams| {
         cams.iter()
             .find(|c| c.connector.as_deref() == Some(video.connector.as_str()))
     });
@@ -700,15 +730,16 @@ fn write_block(
         model_sensor: &video.sensor,
         boot_text: Some(text),
         board,
-        nodes: o.evidence.nodes.as_deref(),
-        enumerated: o.evidence.cameras.is_some(),
-        relisted: o.evidence.relisted,
+        nodes: evidence.nodes.as_deref(),
+        enumerated: evidence.cameras.is_some(),
+        relisted: evidence.relisted,
         listed: listed.map(|c| (c.sensor.as_str(), c.camera_name.as_str())),
         capture: CaptureTruth::Off,
         backoff_step: 0,
         last_error: None,
         stalled_preset: None,
         unsupervised: false,
+        off_reason: CaptureOff::NotBegun,
     })
 }
 
@@ -822,9 +853,10 @@ impl CameraMountReconciler {
             let pass = tokio::spawn(async move {
                 let o = &task.opts;
                 let hardware = (o.hardware)();
+                let (reader, block) = (task.clone(), hardware.clone());
                 let opts = ReconcileCameraMountOptions {
                     settings: (o.settings)(),
-                    evidence: (o.evidence)(hardware.as_ref()),
+                    evidence: Arc::new(move || (reader.opts.evidence)(block.as_ref())),
                     hardware,
                     catalog: o.catalog,
                     memo: task.memo.clone(),

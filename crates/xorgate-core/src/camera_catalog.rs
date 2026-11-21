@@ -192,6 +192,25 @@ impl Sensor {
         Ok(format!("{}={value}", opt.param))
     }
 
+    /// The parameter NAMES a camera line of this sensor may carry besides
+    /// the port token and `rotation`: those of its fixed parameters, then
+    /// those of its options, each once. The helper's `set` writes no other
+    /// name for this overlay (its allow-list is rendered from this).
+    pub fn param_names(&self) -> Vec<&str> {
+        let fixed = self
+            .fixed_params
+            .iter()
+            .map(|p| p.split('=').next().unwrap_or(p));
+        let options = self.options.iter().map(|o| o.param.as_str());
+        let mut out: Vec<&str> = Vec::new();
+        for name in fixed.chain(options) {
+            if !out.contains(&name) {
+                out.push(name);
+            }
+        }
+        out
+    }
+
     /// The reason this sensor cannot run `preset`, if it cannot.
     pub fn preset_unsupported(&self, preset: &str) -> Option<&str> {
         self.unsupported_presets
@@ -318,6 +337,13 @@ pub fn valid_overlay_param(s: &str) -> bool {
     }
 }
 
+/// A parameter name the camera-line owner writes itself and never takes
+/// from a caller or from the catalog: the port tokens, and `rotation` in
+/// any form (`rotation`, `rotation-x`…).
+pub fn reserved_param_name(name: &str) -> bool {
+    name == "cam0" || name == "cam1" || name.starts_with("rotation")
+}
+
 fn parse_sensor(v: &Value) -> Result<Sensor, String> {
     let id = str_of(v, "id")?;
     let tier_s = str_of(v, "tier")?;
@@ -333,6 +359,14 @@ fn parse_sensor(v: &Value) -> Result<Sensor, String> {
     let fixed_params = strings_of(overlay, "fixedParams")?;
     if let Some(bad) = fixed_params.iter().find(|p| !valid_overlay_param(p)) {
         return Err(format!("fixed parameter \"{bad}\" is not a valid token"));
+    }
+    if let Some(bad) = fixed_params
+        .iter()
+        .find(|p| reserved_param_name(p.split('=').next().unwrap_or(p)))
+    {
+        return Err(format!(
+            "fixed parameter \"{bad}\" is written by the camera line owner itself"
+        ));
     }
     let default_rotation = match overlay.get("defaultRotation").and_then(Value::as_u64) {
         Some(0) => 0,
@@ -353,6 +387,11 @@ fn parse_sensor(v: &Value) -> Result<Sensor, String> {
         if !valid_overlay_name(param) {
             return Err(format!(
                 "option parameter \"{param}\" is outside [a-z0-9_-]"
+            ));
+        }
+        if reserved_param_name(param) {
+            return Err(format!(
+                "option parameter \"{param}\" is written by the camera line owner itself"
             ));
         }
         let values: Option<Vec<i64>> = o
@@ -581,19 +620,25 @@ impl Catalog {
     }
 
     /// The body of the helper's allow-list file
-    /// (`system/xorgate-camcfg.overlays`): the overlay names the helper may
-    /// write into a NEW or REPLACED camera line, one per line, in catalog
-    /// order. Generated: `tests/camera_catalog.rs` pins the committed file
-    /// to this text.
+    /// (`system/xorgate-camcfg.overlays`): per sensor, in catalog order, one
+    /// line holding the overlay name the helper may write into a NEW or
+    /// REPLACED camera line, then the parameter NAMES it may write for that
+    /// overlay ([`Sensor::param_names`]), separated by spaces. Generated:
+    /// `tests/camera_catalog.rs` pins the committed file to this text.
     pub fn helper_allow_list(&self) -> String {
         let mut out = String::from(
-            "# Camera overlay names xorgate-camcfg may write. GENERATED from\n\
+            "# Camera overlays xorgate-camcfg may write, and the parameter names it may\n\
+             # write for each: <overlay> [<param name>...]. GENERATED from\n\
              # crates/xorgate-core/data/camera-catalog.json (Catalog::helper_allow_list);\n\
-             # do not edit by hand. One name per line.\n",
+             # do not edit by hand.\n",
         );
         out.push_str(&format!("# catalogVersion {}\n", self.catalog_version));
         for s in &self.sensors {
             out.push_str(&s.overlay);
+            for name in s.param_names() {
+                out.push(' ');
+                out.push_str(name);
+            }
             out.push('\n');
         }
         out
@@ -817,7 +862,7 @@ mod tests {
 
     #[test]
     fn a_malformed_entry_costs_only_itself() {
-        let edits: [Edit; 7] = [
+        let edits: [Edit; 10] = [
             Box::new(|d: &mut Value| d["sensors"][2]["overlay"]["defaultRotation"] = 90.into()),
             Box::new(|d: &mut Value| d["sensors"][2]["overlay"]["name"] = "IMX708".into()),
             Box::new(|d: &mut Value| d["sensors"][2]["overlay"]["name"] = "imx708,cam0".into()),
@@ -829,6 +874,13 @@ mod tests {
             Box::new(|d: &mut Value| {
                 d["sensors"][2]["options"][0]["values"] = serde_json::json!(["450"])
             }),
+            // A parameter the camera line owner writes itself is never a
+            // catalog parameter (the helper's allow-list would carry it).
+            Box::new(|d: &mut Value| {
+                d["sensors"][2]["overlay"]["fixedParams"] = serde_json::json!(["cam0=on"])
+            }),
+            Box::new(|d: &mut Value| d["sensors"][2]["options"][0]["param"] = "rotation-x".into()),
+            Box::new(|d: &mut Value| d["sensors"][2]["options"][0]["param"] = "cam1".into()),
         ];
         for (i, edit) in edits.iter().enumerate() {
             let mut d = doc();
@@ -845,6 +897,29 @@ mod tests {
         let c = reparse(&d).unwrap();
         assert_eq!(c.sensors.len(), 4);
         assert_eq!(c.skipped[0].1, "duplicate id or overlay name");
+    }
+
+    /// The parameter names of an entry: fixed parameters first, then the
+    /// options, each once. The helper's allow-list is rendered from them.
+    #[test]
+    fn param_names_and_the_allow_list_text() {
+        let mut d = doc();
+        d["sensors"][0]["overlay"]["fixedParams"] =
+            serde_json::json!(["4lane", "clock-frequency=74250000", "media-controller=0"]);
+        let c = reparse(&d).unwrap();
+        assert_eq!(
+            c.by_id("imx290").unwrap().param_names(),
+            ["4lane", "clock-frequency", "media-controller"]
+        );
+        assert!(c
+            .helper_allow_list()
+            .contains("\nimx290 4lane clock-frequency media-controller\nimx219\nimx708 link-frequency\n"));
+        assert!(catalog()
+            .helper_allow_list()
+            .ends_with("# catalogVersion 3\nimx290 clock-frequency\nimx219\nimx708 link-frequency\nimx335 link-frequency\n"));
+        assert!(reserved_param_name("cam0") && reserved_param_name("cam1"));
+        assert!(reserved_param_name("rotation") && reserved_param_name("rotation-x"));
+        assert!(!reserved_param_name("cam0-reg") && !reserved_param_name("orientation"));
     }
 
     /// Rule 3: a value the entry does not list is rejected.

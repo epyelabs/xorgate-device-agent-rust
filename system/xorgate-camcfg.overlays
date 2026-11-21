@@ -1,8 +1,9 @@
-# Camera overlay names xorgate-camcfg may write. GENERATED from
+# Camera overlays xorgate-camcfg may write, and the parameter names it may
+# write for each: <overlay> [<param name>...]. GENERATED from
 # crates/xorgate-core/data/camera-catalog.json (Catalog::helper_allow_list);
-# do not edit by hand. One name per line.
+# do not edit by hand.
 # catalogVersion 3
-imx290
+imx290 clock-frequency
 imx219
-imx708
-imx335
+imx708 link-frequency
+imx335 link-frequency

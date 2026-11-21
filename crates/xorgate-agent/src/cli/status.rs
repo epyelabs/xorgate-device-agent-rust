@@ -407,7 +407,12 @@ pub fn render(st: &DaemonStatus, now: f64, ctx: &RenderCtx) -> Vec<String> {
                 // The `video` line: (state.latest?.media?.streams ?? [])
                 // .filter(s => s.recording !== undefined), plus (Rust-only)
                 // the per-port camera report when state.json carries one.
-                out.extend(video_lines(state, &p));
+                out.extend(mark_stale_cameras(
+                    video_lines(state, &p),
+                    g("cameras").is_some(),
+                    *state_fresh,
+                    &p,
+                ));
                 // `if (state.obd) console.log(\`  ${obdStatusLine(state.obd)}\`)`
                 // (`status.ts:116` @ 09da38d).
                 if let Some(obd) = g("obd").filter(|v| truthy(Some(v))).and_then(|v| {
@@ -522,6 +527,27 @@ fn video_lines(state: &Value, p: &Paint) -> Vec<String> {
     let mut out = vec![format!("  video      {}", parts.join("   "))];
     out.extend(details);
     out
+}
+
+/// A camera verdict read from a state.json that is not fresh is not
+/// current: the `video` line says so, as the `telemetry` line does for the
+/// snapshot as a whole (`(stale — worker may be wedged)`). With the daemon
+/// stopped `status` prints no state at all, so a previous run's verdict is
+/// never shown then; and the agent drops the `cameras` key from state.json
+/// when it starts (its first write), so a new run never shows the last
+/// run's block either.
+fn mark_stale_cameras(
+    mut lines: Vec<String>,
+    has_cameras: bool,
+    fresh: bool,
+    p: &Paint,
+) -> Vec<String> {
+    if has_cameras && !fresh {
+        if let Some(first) = lines.first_mut() {
+            first.push_str(&format!("   {}", p.yellow("(stale)")));
+        }
+    }
+    lines
 }
 
 /// `homePermissionDenied` (`status.ts:19-26`): the home exists but `R_OK|X_OK`
@@ -773,6 +799,49 @@ mod tests {
                 "             cam0: d",
             ]
         );
+    }
+
+    /// A stale snapshot's camera verdicts are marked, and only those: the
+    /// TS line (no camera report) is never touched.
+    #[test]
+    fn a_stale_camera_verdict_is_not_shown_as_current() {
+        let p = Paint(false);
+        let lines = || {
+            vec![
+                "  video      cam0 no-frames   cam1 streaming".to_string(),
+                "             cam0: why".to_string(),
+            ]
+        };
+        assert_eq!(mark_stale_cameras(lines(), true, true, &p), lines());
+        assert_eq!(
+            mark_stale_cameras(lines(), true, false, &p),
+            [
+                "  video      cam0 no-frames   cam1 streaming   (stale)",
+                "             cam0: why",
+            ]
+        );
+        assert_eq!(mark_stale_cameras(lines(), false, false, &p), lines());
+        assert!(mark_stale_cameras(vec![], true, false, &p).is_empty());
+        assert_eq!(
+            mark_stale_cameras(vec!["x".into()], true, false, &Paint(true)),
+            ["x   \x1b[33m(stale)\x1b[0m"]
+        );
+    }
+
+    /// With the daemon stopped (or its pidfile stale) `status` prints no
+    /// state at all: a `cameras` block left in state.json by the last run
+    /// is not presented.
+    #[test]
+    fn a_stopped_daemon_shows_no_camera_verdict() {
+        let ctx = RenderCtx {
+            color: false,
+            home: PathBuf::from("/h"),
+            home_denied: false,
+            build: "b".into(),
+        };
+        let out = render(&DaemonStatus::Stopped, NOW, &ctx).join("\n");
+        assert!(!out.contains("video"), "{out}");
+        assert_eq!(out.lines().count(), 2);
     }
 
     #[test]

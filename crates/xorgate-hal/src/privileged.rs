@@ -174,9 +174,8 @@ pub const EXECA_FORCE_KILL_AFTER: Duration = Duration::from_secs(5);
 
 /// [`run_argv`] with execa's `timeout` (`boot-config.ts:285-287`
 /// `{ timeoutMs: 20_000 }`, execa 9.6.1 `reject:false` — review-wp3 S2,
-/// PARITY): on expiry the child gets SIGTERM (`killSignal` default; sudo
-/// relays it to the helper, whose trap removes its temp file); if it is still
-/// alive after [`EXECA_FORCE_KILL_AFTER`] it gets SIGKILL. The result
+/// PARITY): on expiry the child gets SIGTERM (`killSignal` default); if it
+/// is still alive after [`EXECA_FORCE_KILL_AFTER`] it gets SIGKILL. The result
 /// resolves only once the child has exited AND both pipes have closed (a
 /// grandchild holding them delays it, as in execa), and keeps everything
 /// read: `failed: true` (timed out), `exitCode` = the child's own code if it
@@ -184,6 +183,19 @@ pub const EXECA_FORCE_KILL_AFTER: Duration = Duration::from_secs(5);
 /// stderr complete. The caller's `stderr || stdout || exit <code>` detail
 /// therefore matches the TS (pinned by `fixtures/camera_mount/exec-timeout.json`,
 /// dumped from the real `run()` by `wp3-tools/probe-exec-timeout.mts`).
+///
+/// WHAT THE SIGNALS REACH UNDER SUDO. The child is `sudo`, not the helper.
+/// An agent that runs as root can signal it, and sudo relays SIGTERM to the
+/// helper. An UNPRIVILEGED agent (the normal case: service user `pi`)
+/// almost certainly cannot: sudo runs with real and saved uid 0, and
+/// kill(2) lets a process signal only a target whose real or saved uid is
+/// its own, so both the SIGTERM and the SIGKILL fail with EPERM (ignored
+/// here) and this function then simply waits for sudo to exit. That is by
+/// the kernel's rule, not measured on a device. Nothing depends on the
+/// signal arriving: the result is `failed` either way, and the camera
+/// helper bounds itself (`system/xorgate-camcfg`: `flock -w 15`, then a few
+/// small file operations) and leaves config.txt whole whenever it is
+/// stopped (one rename at its very end).
 async fn run_argv_timeout(program: &str, args: &[&str], timeout: Duration) -> RunResult {
     run_argv_timeout_grace(program, args, timeout, EXECA_FORCE_KILL_AFTER).await
 }

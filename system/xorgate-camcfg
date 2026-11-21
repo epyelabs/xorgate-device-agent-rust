@@ -28,8 +28,11 @@
 #           others are deleted, so a sensor swap cannot leave two lines on one
 #           port) or, when the port has none, appends it under `[all]`. Also
 #           turns an uncommented `camera_auto_detect=<not 0>` into
-#           `camera_auto_detect=0`. <overlay> must be in the allow-list and
-#           overlays/<overlay>.dtbo must exist.
+#           `camera_auto_detect=0`. <overlay> must be in the allow-list,
+#           overlays/<overlay>.dtbo must exist, and every <param> must be
+#           `<name>=<value>` or `<name>` with a NAME the allow-list gives that
+#           overlay, at most once each. `cam0`, `cam1` and `rotation` in any
+#           form are never taken as a parameter: this helper writes them.
 #   remove  Delete the port's camera line(s).
 #
 #   exit 0  the file was changed
@@ -65,11 +68,24 @@
 #   it is never counted and never touched. A camera line under an UNKNOWN
 #   filter may or may not apply, so the helper refuses to edit the port.
 #
+# THE ALLOW-LIST (xorgate-camcfg.overlays, root-owned, beside this file)
+#   One camera overlay per line: its name, then the parameter NAMES `set` may
+#   write for it, separated by spaces. `#` starts a comment line. Generated
+#   from the agent's sensor catalog (each sensor's fixed parameters and
+#   options), never edited by hand:
+#       imx290 clock-frequency
+#       imx219
+#
 # WHAT IT REFUSES (exit 5)
 #   - rotate: several camera lines for the port; a line that names another
 #     overlay than the one asked for; a line holding a token outside the
 #     strict charset (it could not be written back unchanged);
 #   - any verb: a camera line of the port under a filter it cannot evaluate;
+#   - set (when it puts ANOTHER overlay on the line, or deletes a second
+#     line) and remove: a camera line that is followed by a `dtparam=` line.
+#     A `dtparam=` applies to the overlay loaded before it, so it would then
+#     apply to another overlay. "Followed" = the next line that is not
+#     blank, not a comment and not a [section] header;
 #   - a resulting line longer than 98 characters (the firmware's limit).
 #
 # THIS SCRIPT NEVER REBOOTS. A camera line is a device-tree matter, so a
@@ -77,9 +93,16 @@
 # call (the cloud shows "reboot required"). It never touches a line that is
 # not a camera line of the port it was asked about (`set` also fixes
 # `camera_auto_detect`), keeps one backup of the file as it was before its
-# first edit (config.txt.bak-camcfg, never overwritten) and replaces the file
-# by a rename, never in place.
+# first edit (config.txt.bak-camcfg, written whole or not at all, never
+# overwritten; no backup, no edit) and replaces the file by a rename, never
+# in place. Before the rename it checks that only camera lines differ.
 set -eu
+# No pathname expansion anywhere but the one sweep below that asks for it.
+set -f
+# A signal ends the run where it stands, with nothing written: the config is
+# only ever replaced by the one rename at the very end (and the EXIT trap set
+# further down removes the temp files).
+trap 'exit 1' INT TERM
 PATH=/usr/sbin:/usr/bin:/sbin:/bin
 LC_ALL=C
 export PATH LC_ALL
@@ -88,8 +111,14 @@ umask 022
 IFS=$(printf ' \t\n_')
 IFS=${IFS%_}
 
+# Every message goes through printf '%s\n': text that comes from config.txt
+# (a section name, an overlay name) must never be escape-processed on its way
+# to the caller (dash's `echo` expands backslashes).
+say() { printf '%s\n' "$*"; }
+err() { printf '%s\n' "$*" >&2; }
+
 usage() {
-  echo "usage: xorgate-camcfg rotate <cam0|cam1> <overlay> <0|180> | set <cam0|cam1> <overlay> [param...] rotation=<0|180> | remove <cam0|cam1>" >&2
+  err "usage: xorgate-camcfg rotate <cam0|cam1> <overlay> <0|180> | set <cam0|cam1> <overlay> [param...] rotation=<0|180> | remove <cam0|cam1>"
   exit 2
 }
 
@@ -131,6 +160,7 @@ esac
 overlay=""
 deg=""
 params=""
+pnames=" "
 case "$verb" in
   rotate )
     [ "$#" -eq 4 ] || usage
@@ -150,9 +180,14 @@ case "$verb" in
     # The LAST argument is the rotation; everything before it is a parameter.
     while [ "$#" -gt 1 ]; do
       valid_param "$1" || usage
-      case "$1" in
-        cam0 | cam1 | rotation | rotation=* ) usage ;;   # written by this helper, never taken
+      pn=${1%%=*}
+      case "$pn" in
+        cam0 | cam1 | rotation* ) usage ;;   # written by this helper, never taken, in any form
       esac
+      case "$pnames" in
+        *" $pn "* ) usage ;;                 # one value per parameter
+      esac
+      pnames="$pnames$pn "
       params="$params,$1"
       shift
     done
@@ -187,53 +222,77 @@ if [ -z "$config" ]; then
   [ -f "$config" ] || config=/boot/config.txt
 fi
 if [ ! -f "$config" ] || [ -L "$config" ]; then
-  echo "no config.txt found (looked in /boot/firmware and /boot)" >&2
+  err "no config.txt found (looked in /boot/firmware and /boot)"
   exit 2
 fi
 
-# The allow-list: one overlay name per line, `#` comments. Root-owned and not
-# writable by anyone else, or it is not trusted.
+# The allow-list (format in the header). Root-owned and not writable by
+# anyone else, or it is not trusted.
 if [ ! -f "$list" ] || [ -L "$list" ]; then
-  echo "no overlay allow-list at $list: run \`sudo xorgate-rs update\`" >&2
+  err "no overlay allow-list at $list: run \`sudo xorgate-rs update\`"
   exit 2
 fi
 if [ "$seams" = 0 ]; then
   case "$(stat -c '%u %a' "$list" 2>/dev/null || echo '? ?')" in
     '0 644' | '0 444' | '0 640' | '0 600' | '0 400' | '0 440' ) ;;
     * )
-      echo "the overlay allow-list $list is not a root-owned, root-only-writable file" >&2
+      err "the overlay allow-list $list is not a root-owned, root-only-writable file"
       exit 2
       ;;
   esac
 fi
-allow=" "
-while IFS= read -r name || [ -n "$name" ]; do
-  case "$name" in
+allow=" "    # " <overlay> <overlay> "
+pallow=" "   # " <overlay>:<param name> <overlay>:<param name> "
+while IFS= read -r entry || [ -n "$entry" ]; do
+  case "$entry" in
     '' | '#'* ) continue ;;
   esac
-  if ! valid_name "$name"; then
-    echo "the overlay allow-list $list holds a bad entry" >&2
-    exit 2
-  fi
-  allow="$allow$name "
+  ov=""
+  for w in $entry; do
+    if ! valid_name "$w"; then
+      err "the overlay allow-list $list holds a bad entry"
+      exit 2
+    fi
+    if [ -z "$ov" ]; then
+      ov=$w
+      allow="$allow$ov "
+    else
+      case "$w" in
+        cam0 | cam1 | rotation* )
+          err "the overlay allow-list $list holds a bad entry"
+          exit 2
+          ;;
+      esac
+      pallow="$pallow$ov:$w "
+    fi
+  done
 done < "$list"
 
 if [ "$verb" = set ]; then
   case "$allow" in
     *" $overlay "* ) ;;
     * )
-      echo "the overlay $overlay is not in the allow-list $list" >&2
+      err "the overlay $overlay is not in the allow-list $list"
       exit 2
       ;;
   esac
+  for pn in $pnames; do
+    case "$pallow" in
+      *" $overlay:$pn "* ) ;;
+      * )
+        err "the overlay $overlay takes no parameter $pn in the allow-list $list"
+        exit 2
+        ;;
+    esac
+  done
   dtbo="$(dirname -- "$config")/overlays/$overlay.dtbo"
   if [ ! -f "$dtbo" ]; then
-    echo "no overlay file $dtbo on this device" >&2
+    err "no overlay file $dtbo on this device"
     exit 2
   fi
   target="dtoverlay=$overlay,$port$params,rotation=$deg"
   if [ "${#target}" -gt 98 ]; then
-    echo "the line would be ${#target} characters; the firmware reads at most 98" >&2
+    err "the line would be ${#target} characters; the firmware reads at most 98"
     exit 2
   fi
 fi
@@ -249,10 +308,13 @@ fi
 
 # One writer at a time (two reconcile passes may overlap). Best effort: a
 # device without flock(1) runs unlocked, as xorgate-camrotate always did.
+# The lock file is root-only (0600): flock(2) works on a read-only
+# descriptor, so a file others could open would let any account hold it.
 if command -v flock >/dev/null 2>&1; then
-  if ( : > "$lock" ) 2>/dev/null; then
-    exec 9> "$lock"
-    flock -w 15 9 || { echo "another xorgate-camcfg is still running" >&2; exit 1; }
+  if ( umask 077; : >> "$lock" ) 2>/dev/null; then
+    chmod 600 "$lock" 2>/dev/null || true
+    exec 9>> "$lock"
+    flock -w 15 9 || { err "another xorgate-camcfg is still running"; exit 1; }
   fi
 fi
 
@@ -262,10 +324,12 @@ if [ -s "$config" ] && [ -n "$(tail -c 1 "$config")" ]; then nofinalnl=1; fi
 
 # Temp files a killed run (or a power cut) left beside the config: ours by
 # name, never read by the firmware, removed before a new one is made.
+set +f
 rm -f "$config".xorgate-camcfg.[0-9]* 2>/dev/null || true
+set -f
 
 tmp="$config.xorgate-camcfg.$$"
-trap 'rm -f "$tmp" "$tmp.verdict" "$tmp.diff"' EXIT INT TERM
+trap 'rm -f "$tmp" "$tmp.verdict" "$tmp.diff" "$tmp.old" "$tmp.new" "$tmp.bak"' EXIT
 
 # One awk pass (POSIX awk; the devices run mawk). It reads the whole file,
 # decides, and prints the new file on stdout and ONE verdict line on stderr:
@@ -300,6 +364,20 @@ awk -v verb="$verb" -v port="$port" -v overlay="$overlay" -v deg="$deg" \
   }
   function refuse(msg) {
     if (verdict == "") verdict = "REFUSED " msg
+  }
+  # Is line i followed by a `dtparam=` line? (The next line that is not
+  # blank, not a comment and not a [section] header.) Such a line applies to
+  # the overlay loaded before it.
+  function dtparam_follows(i,    j, t) {
+    for (j = i + 1; j <= n; j++) {
+      t = text[j]
+      if (t == "" || substr(t, 1, 1) == "#" || substr(t, 1, 1) == "[") continue
+      return (substr(t, 1, 8) == "dtparam=")
+    }
+    return 0
+  }
+  function refuse_dtparam() {
+    refuse("a dtparam= line follows the camera line of " port " and would then apply to another overlay; move it into the dtoverlay line or remove it first")
   }
   BEGIN {
     # Space, tab, CR, VT, FF: what may surround a token or a line.
@@ -394,13 +472,20 @@ awk -v verb="$verb" -v port="$port" -v overlay="$overlay" -v deg="$deg" \
         add[++nadd] = target
         changed = 1
       } else {
-        for (j = 1; j < nc; j++) { drop[cand[j]] = 1; changed = 1 }
+        for (j = 1; j < nc; j++) {
+          if (dtparam_follows(cand[j])) refuse_dtparam()
+          drop[cand[j]] = 1; changed = 1
+        }
         i = cand[nc]
+        if (tok[i, 1] != overlay && dtparam_follows(i)) refuse_dtparam()
         if (text[i] != target) { line[i] = target cr[i]; changed = 1 }
       }
     }
     if (verdict == "" && verb == "remove") {
-      for (j = 1; j <= nc; j++) { drop[cand[j]] = 1; changed = 1 }
+      for (j = 1; j <= nc; j++) {
+        if (dtparam_follows(cand[j])) refuse_dtparam()
+        drop[cand[j]] = 1; changed = 1
+      }
       msg = "no camera line"
     }
     if (verdict == "" && !changed) verdict = "SAME"
@@ -418,10 +503,10 @@ awk -v verb="$verb" -v port="$port" -v overlay="$overlay" -v deg="$deg" \
   }
 ' "$config" > "$tmp" 2> "$tmp.verdict" || rc=$?
 
-verdict=$(cat "$tmp.verdict" 2>/dev/null || echo "")
+verdict=$(cat "$tmp.verdict" 2>/dev/null || true)
 rm -f "$tmp.verdict"
 if [ "$rc" != 0 ]; then
-  echo "could not prepare the new $config (awk exit $rc)" >&2
+  err "could not prepare the new $config (awk exit $rc)"
   exit 1
 fi
 
@@ -430,16 +515,16 @@ case "$verdict" in
     exit 3
     ;;
   NOLINE )
-    echo "no camera dtoverlay line for $port in $config" >&2
+    err "no camera dtoverlay line for $port in $config"
     exit 4
     ;;
   "REFUSED "* )
-    echo "${verdict#REFUSED } ($config not changed)" >&2
+    err "${verdict#REFUSED } ($config not changed)"
     exit 5
     ;;
   "CHANGED "* ) ;;
   * )
-    echo "could not prepare the new $config (no verdict)" >&2
+    err "could not prepare the new $config (no verdict)"
     exit 1
     ;;
 esac
@@ -447,37 +532,80 @@ rest=${verdict#CHANGED }
 want_lines=${rest%% *}
 what=${rest#* }
 
-# Before the new file replaces the old one, check it is what was meant: the
-# line count awk reported, and that every line that differs from the old file
-# is a camera matter (`dtoverlay=`, `camera_auto_detect=`, the `[all]` this
-# helper adds). Anything else is a bug here, and the old file stays.
+# Before the new file replaces the old one, check it is what was meant. Any
+# doubt, a missing tool included, leaves the old file in place.
+# 1. The line count awk reported.
 have_lines=$(awk 'END { print NR }' "$tmp")
 if [ "$have_lines" != "$want_lines" ]; then
-  echo "the new $config is incomplete ($have_lines of $want_lines lines); not written" >&2
+  err "the new $config is incomplete ($have_lines of $want_lines lines); not written"
   exit 1
 fi
-if command -v diff >/dev/null 2>&1; then
-  diff -a "$config" "$tmp" > "$tmp.diff" 2>/dev/null || true
-  if grep -vE '^([0-9,]+[acd][0-9,]+|---|\\ .*|[<>] [[:space:]]*(dtoverlay=|camera_auto_detect=|\[all\]).*)$' "$tmp.diff" | grep -q .; then
-    echo "the new $config would change a line that is not a camera line; not written" >&2
-    exit 1
-  fi
-  rm -f "$tmp.diff"
+# 2. Every line that differs from the old file is a camera matter
+#    (`dtoverlay=`, `camera_auto_detect=`, the `[all]` this helper adds). Both
+#    files are compared with their last line terminated, so the newline a
+#    neighbouring line gains or loses is not a change of that line.
+if ! command -v diff >/dev/null 2>&1; then
+  err "cannot check the new $config (no diff on this device); not written"
+  exit 1
 fi
+if ! awk '{ print }' "$config" > "$tmp.old" || ! awk '{ print }' "$tmp" > "$tmp.new"; then
+  err "could not check the new $config; not written"
+  exit 1
+fi
+drc=0
+diff -a "$tmp.old" "$tmp.new" > "$tmp.diff" 2>/dev/null || drc=$?
+case "$drc" in
+  0 | 1 ) ;;
+  * )
+    err "could not check the new $config (diff exit $drc); not written"
+    exit 1
+    ;;
+esac
+grc=0
+foreign=$(grep -vcE '^([0-9,]+[acd][0-9,]+|---|[<>] [[:space:]]*(dtoverlay=|camera_auto_detect=|\[all\]).*)$' "$tmp.diff") || grc=$?
+case "$grc" in
+  0 | 1 ) ;;
+  * )
+    err "could not check the new $config (grep exit $grc); not written"
+    exit 1
+    ;;
+esac
+if [ "$foreign" != 0 ]; then
+  err "the new $config would change a line that is not a camera line; not written"
+  exit 1
+fi
+rm -f "$tmp.diff" "$tmp.old" "$tmp.new"
 
 # Keep one backup of the file as it was before this helper first edited it,
-# and never overwrite it: the first edit is the one worth going back to.
-[ -f "$config.bak-camcfg" ] || cp -p "$config" "$config.bak-camcfg" 2>/dev/null || true
+# and never overwrite it: the first edit is the one worth going back to. It
+# is copied under a temp name, compared, flushed, and only then renamed, so
+# a backup that exists is always whole. No backup, no edit.
+if [ -f "$config.bak-camcfg" ] && [ ! -L "$config.bak-camcfg" ]; then
+  : # the backup of the first edit is there
+elif [ -e "$config.bak-camcfg" ] || [ -L "$config.bak-camcfg" ]; then
+  err "$config.bak-camcfg is in the way (not a regular file): no backup can be kept; not written"
+  exit 1
+elif cp -p "$config" "$tmp.bak" 2>/dev/null && cmp -s "$config" "$tmp.bak" \
+     && sync "$tmp.bak" 2>/dev/null && mv -f "$tmp.bak" "$config.bak-camcfg" 2>/dev/null; then
+  :
+else
+  rm -f "$tmp.bak"
+  err "could not keep a backup of $config beside it; not written"
+  exit 1
+fi
 
 # /boot/firmware is FAT on a Pi, where rename is the only ordering primitive
-# available: write a sibling temp file and rename it over the target, so a
-# power cut during the swap leaves either the old file or the new one, never a
-# truncated config.txt on a device that then cannot boot.
+# available: write a sibling temp file, flush it, and rename it over the
+# target, so a power cut during the swap leaves either the old file or the
+# new one, never a truncated config.txt on a device that then cannot boot.
 chmod --reference="$config" "$tmp" 2>/dev/null || chmod 755 "$tmp"
-sync "$tmp" 2>/dev/null || true
+if ! sync "$tmp" 2>/dev/null; then
+  err "could not flush the new $config to disk; not written"
+  exit 1
+fi
 mv -f "$tmp" "$config"
-trap - EXIT INT TERM
+trap - EXIT
 sync 2>/dev/null || true
 
-echo "$config: $port: $what (applies on next boot)"
+say "$config: $port: $what (applies on next boot)"
 exit 0

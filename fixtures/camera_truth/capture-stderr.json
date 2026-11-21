@@ -1,5 +1,5 @@
 {
- "provenance": "RUST-ONLY fixture. The real stderr of capture children (`gst-launch-1.0 libcamerasrc \u2026`) taken from the agent journals of the support-other-camera-models bench sessions of 2026-11-21 (plan evidence: bench2-imx335-live part 5a and 5b, cm4-imx708 part 5), the `[video-capture camN] ` prefix removed, one child per case. `lastError` is the line the report must carry for that child: its first ERROR line that is not on the skip list (`camera_truth::ERROR_LINES_SKIPPED`). No device identifiers, coordinates or credentials: libcamera timestamps, thread ids and device-tree paths only.",
+ "provenance": "RUST-ONLY fixture. The real stderr of capture children (`gst-launch-1.0 libcamerasrc \u2026`) taken from the agent journals of the support-other-camera-models bench sessions of 2026-11-21 (plan evidence: bench2-imx335-live part 5a and 5b, cm4-imx708 part 5), the `[video-capture camN] ` prefix removed, one child per case. `lastError` is the line the report must carry for that child: its first ERROR line that is not on the skip list (`camera_truth::ERROR_LINES_SKIPPED`). No device identifiers, coordinates or credentials: libcamera timestamps, thread ids and device-tree paths only. `coloured`: capture error lines exactly as bench 2 reported them in `capture.lastError` on 2026-11-21 (plan evidence: phase0-bench, E-wrong-blind and E-two-lines), with libcamera's ANSI colour sequences (`raw`), and the plain text the report must carry (`plain`). `coloured`: capture error lines exactly as bench 2 reported them in `capture.lastError` on 2026-11-21 (plan evidence: phase0-bench, E-wrong-blind and E-two-lines), with libcamera's ANSI colour sequences (`raw`), and the plain text the report must carry (`plain`).",
  "cases": [
   {
    "name": "bench 2 (CM5), imx290 overlay on an IMX335: first child, the frame timeout and libcamera's two lines of advice",
@@ -109,6 +109,28 @@
     "Failed to set pipeline to PAUSED."
    ],
    "lastError": "ERROR: from element /GstPipeline:pipeline0/GstLibcameraSrc:libcamerasrc0: Could not find a camera named '/base/soc/i2c0mux/i2c@0/imx708@1a'."
+  }
+ ],
+ "coloured": [
+  {
+   "raw": "[0:00:23.561531467] [1236] \u001b[1;31mERROR \u001b[1;37mRPI \u001b[1;34mpipeline_base.cpp:1408 \u001b[0mCamera frontend has timed out!",
+   "plain": "[0:00:23.561531467] [1236] ERROR RPI pipeline_base.cpp:1408 Camera frontend has timed out!"
+  },
+  {
+   "raw": "[0:01:24.909585946] [2204] \u001b[1;31mERROR \u001b[1;37mRPI \u001b[1;34mpipeline_base.cpp:1408 \u001b[0mCamera frontend has timed out!",
+   "plain": "[0:01:24.909585946] [2204] ERROR RPI pipeline_base.cpp:1408 Camera frontend has timed out!"
+  },
+  {
+   "raw": "[0:03:39.765555708] [4220] \u001b[1;31mERROR \u001b[1;37mRPI \u001b[1;34mpipeline_base.cpp:1408 \u001b[0mCamera frontend has timed out!",
+   "plain": "[0:03:39.765555708] [4220] ERROR RPI pipeline_base.cpp:1408 Camera frontend has timed out!"
+  },
+  {
+   "raw": "[0:04:51.701566387] [5394] \u001b[1;31mERROR \u001b[1;37mRPI \u001b[1;34mpipeline_base.cpp:1408 \u001b[0mCamera frontend has timed out!",
+   "plain": "[0:04:51.701566387] [5394] ERROR RPI pipeline_base.cpp:1408 Camera frontend has timed out!"
+  },
+  {
+   "raw": "[0:01:08.725558885] [1980] \u001b[1;31mERROR \u001b[1;37mRPI \u001b[1;34mpipeline_base.cpp:1408 \u001b[0mCamera frontend has timed out!",
+   "plain": "[0:01:08.725558885] [1980] ERROR RPI pipeline_base.cpp:1408 Camera frontend has timed out!"
   }
  ]
 }

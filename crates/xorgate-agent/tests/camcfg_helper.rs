@@ -809,17 +809,6 @@ fn set_takes_allow_listed_overlays_that_exist_on_the_device() {
         .args(["rotate", "cam0", "imx290", "180"]));
     assert_eq!(r.code, 2);
     assert!(r.stderr.contains("holds a bad entry"), "{}", r.stderr);
-    // A line longer than the firmware reads.
-    let many: Vec<String> = (0..6).map(|i| format!("p{i:02}=12345678")).collect();
-    let mut args = vec!["set", "cam0", "imx290"];
-    args.extend(many.iter().map(String::as_str));
-    args.push("rotation=0");
-    let r = b.run(&args);
-    assert_eq!(r.code, 2);
-    assert_eq!(
-        r.stderr,
-        "the line would be 110 characters; the firmware reads at most 98\n"
-    );
     assert_eq!(b.read(), original, "none of it changed the file");
     assert_eq!(b.backup(), None);
     assert_eq!(b.litter(), vec!["bad-list".to_string()]);
@@ -907,6 +896,11 @@ fn hostile_arguments_are_refused_and_never_written() {
         vec!["set", "cam0", "imx290", "rotation=0", "rotation=180"],
         vec!["set", "cam0", "imx290", "cam0", "rotation=0"],
         vec!["set", "cam0", "imx290", "cam1", "rotation=0"],
+        vec!["set", "cam1", "imx290", "cam0=on", "rotation=0"],
+        vec!["set", "cam0", "imx290", "cam1=1", "rotation=0"],
+        vec!["set", "cam0", "imx290", "rotation-x=1", "rotation=0"],
+        vec!["set", "cam0", "imx290", "rotations=1", "rotation=0"],
+        vec!["set", "cam0", "imx290", "clock-frequency=1", "clock-frequency=2", "rotation=0"],
         vec!["set", "cam0", "imx290", "rotation", "rotation=0"],
         vec!["set", "cam0", "imx290", "a b", "rotation=0"],
         vec!["set", "cam0", "imx290", "x=1,y=2", "rotation=0"],
@@ -932,7 +926,7 @@ fn hostile_arguments_are_refused_and_never_written() {
         vec!["remove", "cam0", "cam1"],
         vec!["remove", "all"],
     ];
-    assert!(cases.len() >= 60);
+    assert!(cases.len() >= 65);
     for args in &cases {
         let r = b.run(args);
         assert_eq!(r.code, 2, "{args:?}: {} {}", r.stdout, r.stderr);
@@ -996,4 +990,312 @@ fn the_helper_never_contains_a_reboot() {
         hex::encode(Sha256::digest(&camrotate)),
         "9ae4f79b1764122a6ac2186d8feeb708f6d70e00830200b674e5a2bd57ccf8ac"
     );
+}
+
+// ---------------------------------------------------------------------------
+// the fix round after the security review (findings 1-9)
+// ---------------------------------------------------------------------------
+
+/// Finding 1: a config.txt whose last line has no trailing newline, whichever
+/// line is last. The newline a neighbouring line gains or loses is not a
+/// change of that line.
+#[test]
+fn a_file_without_a_trailing_newline_whichever_line_is_last() {
+    // A NON-camera last line: `set` appends, and terminates that line.
+    let b = Boot::new("dtparam=audio=on\nenable_uart=1", Some(MODEL_CM5));
+    let r = b.run(&["set", "cam0", "imx290", "rotation=0"]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(
+        b.read(),
+        "dtparam=audio=on\nenable_uart=1\ndtoverlay=imx290,cam0,rotation=0\n"
+    );
+    assert_eq!(b.backup().as_deref(), Some("dtparam=audio=on\nenable_uart=1"));
+    // …and `remove` takes the camera line away again (the file now ends in
+    // a newline, as `set` left it).
+    assert_eq!(b.run(&["remove", "cam0"]).code, 0);
+    assert_eq!(b.read(), "dtparam=audio=on\nenable_uart=1\n");
+    // The camera line is the unterminated last line: `remove` leaves the
+    // line before it as it was, unterminated in its turn.
+    let b = Boot::new("dtparam=audio=on\ndtoverlay=imx290,cam0", Some(MODEL_CM5));
+    let r = b.run(&["remove", "cam0"]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert_eq!(b.read(), "dtparam=audio=on");
+    // The camera line in the middle, a non-camera line last and unterminated:
+    // every verb, and the last line keeps its (missing) newline.
+    for (args, want) in [
+        (
+            vec!["rotate", "cam0", "imx290", "180"],
+            "# a\ndtoverlay=imx290,cam0,rotation=180\nenable_uart=1",
+        ),
+        (
+            vec!["set", "cam0", "imx708", "rotation=180"],
+            "# a\ndtoverlay=imx708,cam0,rotation=180\nenable_uart=1",
+        ),
+        (vec!["remove", "cam0"], "# a\nenable_uart=1"),
+        (
+            vec!["set", "cam1", "imx219", "rotation=0"],
+            "# a\ndtoverlay=imx290,cam0\nenable_uart=1\ndtoverlay=imx219,cam1,rotation=0\n",
+        ),
+    ] {
+        let b = Boot::new("# a\ndtoverlay=imx290,cam0\nenable_uart=1", Some(MODEL_CM5));
+        let r = b.run(&args);
+        assert_eq!(r.code, 0, "{args:?}: {}", r.stderr);
+        assert_eq!(b.read(), want, "{args:?}");
+        assert_eq!(b.litter(), Vec::<String>::new(), "{args:?}");
+    }
+    // CRLF, unterminated non-camera last line.
+    let b = Boot::new("dtoverlay=imx290,cam0\r\nenable_uart=1\r", Some(MODEL_CM5));
+    assert_eq!(b.run(&["remove", "cam0"]).code, 0);
+    assert_eq!(b.read(), "enable_uart=1\r");
+}
+
+/// Finding 2: `set` writes only parameter NAMES the allow-list gives the
+/// overlay (rendered from the catalog), each once, and never a port token or
+/// a `rotation` in any form: `cam0=on` would select CAM0 on a line filed as
+/// CAM1's.
+#[test]
+fn set_takes_only_the_parameter_names_of_the_overlay() {
+    let original = fixture(BENCH1);
+    let b = Boot::new(&original, Some(MODEL_CM5));
+    let list = repo().join("system/xorgate-camcfg.overlays");
+    for (overlay, param) in [
+        ("imx290", "4lane"),
+        ("imx290", "link-frequency=450000000"),
+        ("imx290", "media-controller=0"),
+        ("imx708", "clock-frequency=74250000"),
+        ("imx219", "vcm"),
+        ("imx335", "x=1"),
+    ] {
+        let r = b.run(&["set", "cam0", overlay, param, "rotation=0"]);
+        assert_eq!(r.code, 2, "{overlay} {param}");
+        let name = param.split('=').next().unwrap();
+        assert_eq!(
+            r.stderr,
+            format!(
+                "the overlay {overlay} takes no parameter {name} in the allow-list {}\n",
+                list.display()
+            )
+        );
+    }
+    // The port tokens and `rotation`, bare or with a value, and a name given
+    // twice: the usage line, before the allow-list is even read.
+    for param in [
+        vec!["cam0=on"],
+        vec!["cam0=1"],
+        vec!["cam1=on"],
+        vec!["rotation-x=1"],
+        vec!["rotations"],
+        vec!["rotation180"],
+        vec!["clock-frequency=37125000", "clock-frequency=74250000"],
+    ] {
+        let mut args = vec!["set", "cam1", "imx290"];
+        args.extend(param.iter());
+        args.push("rotation=0");
+        let r = b.run(&args);
+        assert_eq!((r.code, r.stderr.as_str()), (2, USAGE), "{param:?}");
+    }
+    assert_eq!(b.read(), original);
+    assert_eq!(b.backup(), None);
+    // What the catalog lists is written.
+    let r = b.run(&["set", "cam0", "imx290", "clock-frequency=74250000", "rotation=180"]);
+    assert_eq!(r.code, 0, "{}", r.stderr);
+    assert!(b
+        .read()
+        .contains("\ndtoverlay=imx290,cam0,clock-frequency=74250000,rotation=180\n"));
+    // `rotate` keeps whatever tokens the existing line has, listed or not.
+    let b = Boot::new("dtoverlay=imx290,cam0,4lane,mono,future=1\n", Some(MODEL_CM5));
+    assert_eq!(b.run(&["rotate", "cam0", "imx290", "180"]).code, 0);
+    assert_eq!(b.read(), "dtoverlay=imx290,cam0,4lane,mono,future=1,rotation=180\n");
+
+    // The allow-list itself: an entry may not list a name this helper writes.
+    for bad in ["imx290 cam0\n", "imx290 rotation\n", "imx290 clock-frequency rotation-x\n", "imx290 A\n"] {
+        std::fs::write(b.dir.join("list"), bad).unwrap();
+        let r = ran(b
+            .cmd()
+            .env("XORGATE_CAMCFG_OVERLAYS", b.dir.join("list"))
+            .args(["rotate", "cam0", "imx290", "0"]));
+        assert_eq!(r.code, 2, "{bad:?}");
+        assert!(r.stderr.contains("holds a bad entry"), "{bad:?}: {}", r.stderr);
+    }
+    // The firmware's 98 characters hold for `set` too (shown with a list of
+    // long names: the shipped catalog cannot reach the limit).
+    let (a, c, v) = ("a".repeat(32), "c".repeat(32), "1".repeat(32));
+    std::fs::write(b.dir.join("list"), format!("# x\nimx290 {a} {c}\n")).unwrap();
+    let r = ran(b
+        .cmd()
+        .env("XORGATE_CAMCFG_OVERLAYS", b.dir.join("list"))
+        .args(["set", "cam0", "imx290", &format!("{a}={v}"), &format!("{c}={v}"), "rotation=0"]));
+    assert_eq!(r.code, 2);
+    assert_eq!(
+        r.stderr,
+        "the line would be 164 characters; the firmware reads at most 98\n"
+    );
+    assert_eq!(b.read(), "dtoverlay=imx290,cam0,4lane,mono,future=1,rotation=180\n");
+}
+
+/// Finding 8: a `dtparam=` line applies to the overlay loaded before it.
+/// Removing the camera line it follows, or putting another overlay on that
+/// line, would hand it to another overlay: refused. "Follows" = the next
+/// line that is not blank, not a comment and not a [section] header.
+#[test]
+fn a_dtparam_after_the_camera_line_is_not_handed_to_another_overlay() {
+    let refused = "a dtparam= line follows the camera line of cam0 and would then apply to another overlay; move it into the dtoverlay line or remove it first";
+    for between in ["", "\n", "# note\n", "\n# note\n\n", "[all]\n", "  \t\n#x\n[all]\n"] {
+        let text = format!(
+            "dtoverlay=vc4-kms-v3d\ndtoverlay=imx290,cam0\n{between}dtparam=clock-frequency=74250000\n"
+        );
+        for args in [
+            vec!["remove", "cam0"],
+            vec!["set", "cam0", "imx708", "rotation=180"],
+        ] {
+            let b = Boot::new(&text, Some(MODEL_CM5));
+            let r = b.run(&args);
+            assert_eq!(r.code, 5, "{between:?} {args:?}");
+            assert_eq!(
+                r.stderr,
+                format!("{refused} ({} not changed)\n", b.config().display())
+            );
+            assert_eq!(b.read(), text);
+            assert_eq!(b.backup(), None);
+        }
+        // The SAME overlay stays on the line: the dtparam keeps its target.
+        let b = Boot::new(&text, Some(MODEL_CM5));
+        assert_eq!(b.run(&["set", "cam0", "imx290", "rotation=180"]).code, 0, "{between:?}");
+        assert_eq!(b.run(&["rotate", "cam0", "imx290", "0"]).code, 0, "{between:?}");
+        assert!(b.read().contains("dtoverlay=imx290,cam0,rotation=0\n"));
+    }
+    // Another line in between ends "follows"; a commented dtparam is a comment.
+    for text in [
+        "dtoverlay=imx290,cam0\ndtoverlay=dwc2\ndtparam=x=1\n",
+        "dtoverlay=imx290,cam0\nenable_uart=1\ndtparam=x=1\n",
+        "dtoverlay=imx290,cam0\n#dtparam=x=1\n",
+        "dtparam=x=1\ndtoverlay=imx290,cam0\n",
+    ] {
+        let b = Boot::new(text, Some(MODEL_CM5));
+        assert_eq!(b.run(&["remove", "cam0"]).code, 0, "{text:?}");
+        assert_eq!(b.read(), text.replace("dtoverlay=imx290,cam0\n", ""));
+    }
+    // `set` that collapses two lines deletes the first: a dtparam after it
+    // would be handed to the line before.
+    let text = "dtoverlay=imx290,cam0\ndtparam=x=1\ndtoverlay=imx708,cam0\n";
+    let b = Boot::new(text, Some(MODEL_CM5));
+    assert_eq!(b.run(&["set", "cam0", "imx708", "rotation=180"]).code, 5);
+    assert_eq!(b.read(), text);
+}
+
+/// Findings 3, 6 and 9: the lock is root-only, the one-time backup is whole
+/// or absent, and text from config.txt reaches the caller unprocessed.
+#[test]
+fn lock_backup_and_messages() {
+    use std::os::unix::fs::PermissionsExt;
+    let original = fixture(BENCH1);
+    let b = Boot::new(&original, Some(MODEL_CM5));
+    assert_eq!(b.run(&["rotate", "cam0", "imx290", "180"]).code, 0);
+    // The lock (made only where flock(1) exists): 0600, so no other account
+    // can open and hold it.
+    if let Ok(m) = std::fs::metadata(b.dir.join("lock")) {
+        assert_eq!(m.permissions().mode() & 0o777, 0o600);
+    }
+    assert_eq!(b.backup().as_deref(), Some(original.as_str()));
+    // Something that is not a file where the backup goes: no backup can be
+    // kept, so nothing is written.
+    let b = Boot::new(&original, Some(MODEL_CM5));
+    std::fs::create_dir(b.dir.join("config.txt.bak-camcfg")).unwrap();
+    let r = b.run(&["rotate", "cam0", "imx290", "180"]);
+    assert_eq!(r.code, 1);
+    assert_eq!(
+        r.stderr,
+        format!(
+            "{}.bak-camcfg is in the way (not a regular file): no backup can be kept; not written\n",
+            b.config().display()
+        )
+    );
+    assert_eq!(b.read(), original);
+    assert_eq!(
+        std::fs::read_dir(b.dir.join("config.txt.bak-camcfg")).unwrap().count(),
+        0,
+        "nothing was moved into it"
+    );
+    std::fs::remove_dir(b.dir.join("config.txt.bak-camcfg")).unwrap();
+    assert_eq!(b.litter(), Vec::<String>::new());
+
+    // A section header full of backslash escapes comes back byte for byte,
+    // on ONE line, with its tail (dash's `echo` would expand `\n` and `\c`).
+    let text = "[x\\nINJECTED\\c]\ndtoverlay=imx290,cam0\n";
+    let b = Boot::new(text, Some(MODEL_CM5));
+    let r = b.run(&["rotate", "cam0", "imx290", "180"]);
+    assert_eq!(r.code, 5);
+    assert_eq!(
+        r.stderr,
+        format!(
+            "a camera line of cam0 sits under [x\\nINJECTED\\c], a section this helper cannot evaluate for this board; edit it by hand ({} not changed)\n",
+            b.config().display()
+        )
+    );
+    assert_eq!(r.stderr.lines().count(), 1);
+    let r = b.run(&["rotate", "cam0", "imx290\\c", "180"]);
+    assert_eq!((r.code, r.stderr.as_str()), (2, USAGE));
+}
+
+/// Finding 4: a signal ends the run with exit 1 and nothing written. The
+/// helper is held at its lock by another holder, signalled there, and exits
+/// as soon as the wait returns.
+#[test]
+fn a_signal_ends_the_run_with_nothing_written() {
+    if Command::new("flock").arg("--version").output().is_err() {
+        return; // no flock(1): the helper runs unlocked and cannot be held
+    }
+    let original = fixture(BENCH1);
+    let b = Boot::new(&original, Some(MODEL_CM5));
+    std::fs::write(b.dir.join("lock"), "").unwrap();
+    let mut holder = Command::new("flock")
+        .arg(b.dir.join("lock"))
+        .args(["sleep", "3"])
+        .spawn()
+        .unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(500));
+    let mut helper = b.cmd().args(["rotate", "cam0", "imx290", "180"]).spawn().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(700));
+    let killed = Command::new("kill")
+        .args(["-TERM", &helper.id().to_string()])
+        .status()
+        .unwrap();
+    assert!(killed.success());
+    let status = helper.wait().unwrap();
+    holder.wait().unwrap();
+    assert_eq!(status.code(), Some(1), "the trap exits 1");
+    assert_eq!(b.read(), original);
+    assert_eq!(b.backup(), None);
+    assert_eq!(b.litter(), Vec::<String>::new());
+    // The same call, not signalled, goes through.
+    assert_eq!(b.run(&["rotate", "cam0", "imx290", "180"]).code, 0);
+}
+
+/// Findings 4, 5 and 7, read off the script (they guard failures a test
+/// cannot stage: a missing `diff`, a `diff` that errors, a `sync` that
+/// fails): the checks are there and none of them is allowed to pass open.
+#[test]
+fn the_fail_closed_checks_are_in_the_script() {
+    let body = std::fs::read_to_string(repo().join("system/xorgate-camcfg")).unwrap();
+    for needle in [
+        "trap 'exit 1' INT TERM",
+        "if ! command -v diff >/dev/null 2>&1; then",
+        "diff -a \"$tmp.old\" \"$tmp.new\" > \"$tmp.diff\" 2>/dev/null || drc=$?",
+        "if ! sync \"$tmp\" 2>/dev/null; then",
+        "( umask 077; : >> \"$lock\" )",
+        "cmp -s \"$config\" \"$tmp.bak\"",
+    ] {
+        assert!(body.contains(needle), "missing: {needle}");
+    }
+    // Nothing is waved through with `|| true` on the way to the rename,
+    // and no message is printed with `echo`.
+    let tail = &body[body.find("# Before the new file replaces the old one").unwrap()..];
+    assert_eq!(tail.matches("|| true").count(), 1, "only the final whole-disk sync");
+    assert!(tail.contains("sync 2>/dev/null || true"));
+    for line in body.lines().filter(|l| !l.trim_start().starts_with('#')) {
+        assert!(
+            !line.trim_start().starts_with("echo ") && !line.contains("; echo \""),
+            "echo in the helper: {line}"
+        );
+    }
 }

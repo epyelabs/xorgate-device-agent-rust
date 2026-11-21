@@ -25,6 +25,8 @@
 //!   camera enumerated now. So after a sensor change the previous sensor's
 //!   render is replaced instead of being left behind with a dead
 //!   `camera-name=`. An operator's pipeline is still never overwritten.
+//! - The "no camera enumerated … (expected X)" line names the DECLARED
+//!   sensor too (config.txt's line, else the model's).
 //! - The mismatch warning compares the enumerated sensor with the DECLARED
 //!   one (the port's config.txt line when [`ReconcileOpts::boot_config`] is
 //!   given, else the model), and libcamera's variant names
@@ -204,11 +206,21 @@ pub async fn reconcile_hardware(
         let Some(cam) = by_connector.get(video.connector.as_str()).copied() else {
             out.statuses
                 .insert(video.key.clone(), StreamHardwareStatus::NoCamera);
+            // Rust-only: "expected" is the DECLARED sensor, config.txt's
+            // line for the port when there is one, else the model's. Where
+            // the two agree (every IMX290 device, and a pass without a
+            // config.txt) the line is the TS line, word for word.
+            let boot = opts
+                .boot_config
+                .as_deref()
+                .map(|t| boot_config_port_with(t, &video.connector, &[]));
+            let expected = declared_for(boot.as_ref(), &video.sensor)
+                .map_or_else(|| video.sensor.clone(), |d| d.sensor);
             log(
                 ReconcileLevel::Warn,
                 &format!(
                     "{}: no camera enumerated on {} (expected {}) — stream held down until one appears (check the ribbon + overlays, reboot after install)",
-                    video.key, video.connector, video.sensor
+                    video.key, video.connector, expected
                 ),
             );
             continue;

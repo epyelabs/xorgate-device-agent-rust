@@ -88,7 +88,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, watch};
 use tokio::task::AbortHandle;
 use tracing::error;
-use xorgate_core::camera_truth::{capture_recovered, error_line, CaptureLive};
+use xorgate_core::camera_truth::{capture_recovered, error_line, fatal_error_line, CaptureLive};
 use xorgate_core::capture_ladder::{
     absent_backoff, camera_disabled_event, exit_verdict, is_recording, progress_verdict,
     spawn_event, stagger_delay_ms, stall_event, stderr_log_line, AbsentState, CaptureState,
@@ -351,6 +351,10 @@ struct Run {
     error_child: Option<u64>,
     /// Camera report: the last unexpected exit was a progress-watchdog kill.
     stall_failed: bool,
+    /// Camera report: the child that printed a fatal line
+    /// (`ERROR_LINES_FATAL`); while it is the current child it never counts
+    /// as stable.
+    fatal_child: Option<u64>,
     stable_timer: Option<Timer>,
     restart_timer: Option<Timer>,
     /// fs.watch + its pump task; `watch_gen` guards both sweep sources.
@@ -388,6 +392,7 @@ impl Run {
             last_error: None,
             error_child: None,
             stall_failed: false,
+            fatal_child: None,
             stable_timer: None,
             restart_timer: None,
             watcher: None,
@@ -864,13 +869,27 @@ impl Shared {
     /// Camera report: keep the FIRST error line of the CURRENT child
     /// (`camera_truth::error_line`; a later line of the same child is
     /// advice or a consequence, never the cause).
+    ///
+    /// A line on `camera_truth::ERROR_LINES_FATAL` (a frame timeout) marks
+    /// the child as not delivering FOR THE REPORT from now on, alive or
+    /// not: it becomes the error line, the run reads `unstable` and the
+    /// child is never counted as stable. Nothing else changes: the child is
+    /// not signalled, and no timer, counter or event of the ladder moves.
     fn note_error(&self, key: &str, child_id: u64, line: &str) {
         let Some(e) = error_line(line) else { return };
+        let fatal = fatal_error_line(line).is_some();
         let mut g = self.lock();
         if let Some(run) = g.runs.get_mut(key) {
-            if run.child.as_ref().map(|c| c.id) == Some(child_id)
-                && run.error_child != Some(child_id)
-            {
+            if run.child.as_ref().map(|c| c.id) != Some(child_id) {
+                return;
+            }
+            if fatal {
+                run.fatal_child = Some(child_id);
+                run.unstable = true;
+                run.stable_since = None;
+                run.last_error = Some(e);
+                run.error_child = Some(child_id);
+            } else if run.error_child != Some(child_id) {
                 run.last_error = Some(e);
                 run.error_child = Some(child_id);
             }
@@ -1181,7 +1200,11 @@ fn fire(s: &Arc<Shared>, key: &str, run_id: u64, slot: Slot, gen: u64) {
                 }
                 if run.child.is_some() {
                     run.state = CaptureState::Running;
-                    run.stable_since = Some(s.opts.clock.mono_ms());
+                    // (Camera report: a child that printed a fatal line is
+                    // never counted as stable.)
+                    if run.fatal_child != run.child.as_ref().map(|c| c.id) {
+                        run.stable_since = Some(s.opts.clock.mono_ms());
+                    }
                     run.counters.quick_failures = 0;
                     run.counters.backoff_ms = BASE_BACKOFF_MS;
                     out.fx.push(Fx::Status);

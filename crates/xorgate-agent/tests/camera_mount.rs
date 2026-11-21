@@ -463,7 +463,7 @@ async fn the_ts_golden_pass_by_pass_with_the_named_divergences() {
                 apply_rotation: writer.clone(),
                 catalog: catalog(),
                 // The TS has no such input: with none the B7 gate is open.
-                evidence: PortEvidence::default(),
+                evidence: Arc::new(PortEvidence::default),
                 memo: memo.clone(),
             })
             .await;
@@ -525,6 +525,9 @@ struct Rig {
     memo: Arc<Mutex<WriteMemo>>,
     hardware: Option<DeviceHardwareBlock>,
     evidence: PortEvidence,
+    /// How often a pass asked for the evidence (the sysfs scan and the
+    /// listing copy): only when a line is about to be edited.
+    evidence_reads: Arc<AtomicUsize>,
     now: i64,
 }
 
@@ -572,6 +575,7 @@ impl Rig {
             memo: Arc::default(),
             hardware: Some(two_camera_block()),
             evidence: PortEvidence::default(),
+            evidence_reads: Arc::default(),
             now: NOW,
         }
     }
@@ -602,7 +606,13 @@ impl Rig {
             probe: self.probe.clone(),
             apply_rotation: Arc::new(helper_writer(&self.runner, &self.installed)),
             catalog: catalog(),
-            evidence: self.evidence.clone(),
+            evidence: {
+                let (e, reads) = (self.evidence.clone(), self.evidence_reads.clone());
+                Arc::new(move || {
+                    reads.fetch_add(1, Ordering::SeqCst);
+                    e.clone()
+                })
+            },
             memo: self.memo.clone(),
         })
         .await
@@ -700,6 +710,11 @@ async fn imx290_token_less_lines_with_mount_0_get_zero_writes() {
         }
         assert_eq!(rig.runner.calls().len(), 0);
         assert_eq!(rig.d.md5(), BENCH1_MD5);
+        assert_eq!(
+            rig.evidence_reads.load(Ordering::SeqCst),
+            0,
+            "a pass that writes nothing does not scan sysfs"
+        );
     }
 }
 
@@ -919,13 +934,29 @@ async fn imx335_cannot_rotate_and_imx219_reaches_both_pictures() {
         let cfg = config.replace("dtoverlay=imx335,cam0\n", line);
         let d = Device::bench("b2x", &cfg, MODEL_CM5);
         let rig = Rig::new(d);
+        // No camera was enumerated on the port: the verdicts stand, and no
+        // rotation is reported that nothing was read for.
+        let s = rig.pass(&[("cam0", 0)]).await;
+        assert_eq!(cam(&s, "cam0"), (Applied, None, None, String::new()));
+        let s = rig.pass(&[("cam0", 180)]).await;
+        assert_eq!(
+            cam(&s, "cam0"),
+            (
+                Unsupported,
+                None,
+                None,
+                "the imx335 sensor cannot be rotated: mount the camera the right way up"
+                    .to_string()
+            )
+        );
+        // With the camera there (device tree 0 or 180: it changes no pixel).
+        rig.d
+            .camera("cam0", &cm5_path("cam0", "imx335@1a"), Some(0));
         let s = rig.pass(&[("cam0", 0)]).await;
         assert_eq!(
             cam(&s, "cam0"),
             (Applied, Some(0.0), Some(0.0), String::new())
         );
-        let s = rig.pass(&[("cam0", 180)]).await;
-        assert_eq!(cam(&s, "cam0").0, Unsupported);
         assert_eq!(rig.runner.calls().len(), 0);
         assert_eq!(rig.d.read(), cfg);
     }
@@ -969,6 +1000,17 @@ async fn b7_a_port_that_is_not_confirmed_is_not_edited() {
             let s = rig.pass(&[("cam0", 180)]).await;
             assert_eq!(cam(&s, "cam0").0, PendingReboot, "{want}");
             assert_eq!(rig.runner.asked(), ["rotate cam0 imx708 0"]);
+            // The agent's OWN pending rotation write (config.txt now says
+            // rotation=0, the kernel still runs 180) does not trip the
+            // gate: the overlay is the same, the port is still confirmed,
+            // and the setting can be flipped back without a reboot.
+            let s = rig.pass(&[("cam0", 0)]).await;
+            assert_eq!(cam(&s, "cam0").0, Applied, "{want}");
+            assert_eq!(
+                rig.runner.asked(),
+                ["rotate cam0 imx708 0", "rotate cam0 imx708 180"]
+            );
+            assert_eq!(rig.d.read(), config);
         }
     };
     fn confirmed_evidence() -> PortEvidence {
@@ -1278,6 +1320,46 @@ async fn a_failing_write_is_not_retried_every_pass() {
         )
     );
     assert_eq!(config.len() + ",rotation=180".len(), rig.d.read().len());
+
+    // The update hint is for sudo's own refusals (no grant, no helper). A
+    // refusal by the helper itself is reported as the helper worded it:
+    // an update would change nothing.
+    let d = Device::bench("refused", &config, MODEL_CM5);
+    let rig = Rig::new(d);
+    for (stderr, hinted) in [
+        ("sudo: a password is required\n", true),
+        (
+            "sudo: /usr/local/bin/xorgate-camcfg: command not found\n",
+            true,
+        ),
+        (
+            "2 camera lines configure cam0; remove the stale ones first (/boot/firmware/config.txt not changed)\n",
+            false,
+        ),
+        ("could not keep a backup of /boot/firmware/config.txt beside it; not written\n", false),
+        ("another xorgate-camcfg is still running\n", false),
+    ] {
+        *rig.runner.fail.lock().unwrap() = Some(RunResult {
+            failed: true,
+            not_found: false,
+            exit_code: Some(5),
+            stdout: String::new(),
+            stderr: stderr.into(),
+        });
+        *rig.memo.lock().unwrap() = WriteMemo::default();
+        let s = rig.pass(&[("cam0", 180)]).await;
+        let detail = cam(&s, "cam0").3;
+        let hint = " (the agent needs the xorgate-camcfg helper — run `sudo xorgate-rs update`)";
+        assert_eq!(detail.ends_with(hint), hinted, "{stderr}");
+        assert!(
+            detail.starts_with(&format!(
+                "could not edit {}: {}",
+                rig.d.boot_config.display(),
+                stderr.trim()
+            )),
+            "{detail}"
+        );
+    }
 }
 
 /// Q6: an overlay OUTSIDE the catalog is never rendered by the agent. Its
@@ -1314,7 +1396,8 @@ async fn an_overlay_outside_the_catalog_is_rotated_only_through_the_probe() {
     rig.pass(&[("cam0", 180)]).await;
     assert_eq!(rig.d.read(), "dtoverlay=ov5647,cam0,rotation=180\n");
 
-    // The probe cannot run: no write, and it says why (the TS sentence).
+    // The probe cannot run: no write, and it says why (the TS sentence). It
+    // is asked ONCE per agent run, not on every 60 s pass.
     let d = Device::bench("onop", config, MODEL_CM5);
     let rig = Rig::new(d);
     *rig.probe.answer.lock().unwrap() = OverlayProbeResult {
@@ -1322,7 +1405,7 @@ async fn an_overlay_outside_the_catalog_is_rotated_only_through_the_probe() {
         supports: false,
         default_rotation: None,
     };
-    for _ in 0..2 {
+    for _ in 0..3 {
         let s = rig.pass(&[("cam0", 180)]).await;
         assert_eq!(
             cam(&s, "cam0"),
@@ -1334,13 +1417,38 @@ async fn an_overlay_outside_the_catalog_is_rotated_only_through_the_probe() {
             )
         );
     }
-    assert_eq!(
-        rig.probe.calls(),
-        ["imx477", "imx477"],
-        "a failed probe is asked again"
-    );
+    assert_eq!(rig.probe.calls(), ["imx477"], "a failed probe is remembered");
     assert_eq!(rig.runner.calls().len(), 0);
+    // While it fails the default is ASSUMED 0. A line that looks settled
+    // under that assumption (no token, mount 0) is not written; and a
+    // device tree that disagrees (an imx477 really runs 180) is not turned
+    // into "REBOOT REQUIRED" on the strength of the assumption.
+    rig.d.camera("cam0", &name, Some(180));
+    let s = rig.pass(&[("cam0", 0)]).await;
+    assert_eq!(
+        cam(&s, "cam0"),
+        (
+            Unsupported,
+            Some(180.0),
+            Some(0.0),
+            "could not ask dtoverlay whether imx477 supports rotation".to_string()
+        )
+    );
+    assert!(!s.reboot_required);
+    // One that agrees is reported as it is.
+    rig.d.camera("cam0", &name, Some(0));
+    let s = rig.pass(&[("cam0", 0)]).await;
+    assert_eq!(
+        cam(&s, "cam0"),
+        (Applied, Some(0.0), Some(0.0), String::new())
+    );
+    assert_eq!(rig.probe.calls(), ["imx477"]);
+    assert_eq!(rig.runner.calls().len(), 0);
+    assert_eq!(rig.d.read(), config);
+
     // The overlay has no rotation parameter: 0 is what it shows.
+    let d = Device::bench("onorot", config, MODEL_CM5);
+    let rig = Rig::new(d);
     *rig.probe.answer.lock().unwrap() = OverlayProbeResult {
         ok: true,
         supports: false,
@@ -1351,8 +1459,8 @@ async fn an_overlay_outside_the_catalog_is_rotated_only_through_the_probe() {
         cam(&s, "cam0"),
         (
             Unsupported,
-            Some(0.0),
-            Some(0.0),
+            None,
+            None,
             "the imx477 overlay on this device has no \"rotation\" parameter".to_string()
         )
     );
@@ -1367,25 +1475,32 @@ async fn an_overlay_outside_the_catalog_is_rotated_only_through_the_probe() {
     assert_eq!(rig.probe.calls(), Vec::<String>::new());
 }
 
-/// The device tree, three ways: a value, a node WITHOUT the property (the
-/// overlay's default is in force: mount 0, never "could not read"), and a
-/// node that is not there.
+/// The device tree, three ways: a value, a node WITHOUT the property (read
+/// as the kernel reads it: rotation 0, never "could not read"), and a node
+/// that is not there.
 #[tokio::test]
-async fn a_node_without_a_rotation_property_runs_the_default() {
+async fn a_node_without_a_rotation_property_is_rotation_0() {
     let config = "dtoverlay=imx290,cam0\ndtoverlay=imx219,cam1\n";
     let d = Device::bench("dt", config, MODEL_CM5);
     d.camera("cam0", &cm5_path("cam0", "imx290@1a"), None);
     d.camera("cam1", &cm5_path("cam1", "imx219@10"), None);
     let rig = Rig::new(d);
     let s = rig.pass(&[("cam0", 0), ("cam1", 0)]).await;
+    // IMX290 (default 0): rotation 0 is mount 0, the case seen on a device.
     assert_eq!(
         cam(&s, "cam0"),
         (Applied, Some(0.0), Some(0.0), String::new())
     );
+    // A default-180 sensor whose node had no property would be running
+    // rotation 0, which is mount 180: not "applied" at mount 0. (The stock
+    // imx219 / imx708 / imx335 overlays always set the property.) Status
+    // only: the line already gives the wanted rotation, nothing is written.
     assert_eq!(
         cam(&s, "cam1"),
-        (Applied, Some(0.0), Some(0.0), String::new())
+        (PendingReboot, Some(180.0), Some(0.0), String::new())
     );
+    assert_eq!(rig.runner.calls().len(), 0);
+    assert_eq!(rig.d.read(), config);
     // The camera file names a node the live tree does not have (a stale
     // name after a sensor change): unconfirmed, as before.
     std::fs::remove_dir_all(rig.d.dt_root.join("axi")).unwrap();
@@ -1400,6 +1515,114 @@ async fn a_node_without_a_rotation_property_runs_the_default() {
         )
     );
     assert_eq!(rig.runner.calls().len(), 0);
+}
+
+/// D105: which port a camera line WITHOUT a port token belongs to, and a
+/// line carrying both tokens. The firmware's rule (`cam0` is the only port
+/// selector): no `cam0` = CAM1; `cam0,cam1` = CAM0 only. The TS matched the
+/// literal `camN` token, so the first was nobody's and the second both's.
+#[tokio::test]
+async fn a_catalog_line_without_a_port_token_is_cam1s() {
+    let config = "dtoverlay=vc4-kms-v3d\ndtoverlay=imx290,clock-frequency=74250000\n";
+    let d = Device::bench("notok", config, MODEL_CM5);
+    d.camera("cam1", &cm5_path("cam1", "imx290@1a"), Some(0));
+    let rig = Rig::new(d);
+    // cam1: the line is its own (the TS said "no dtoverlay line for cam1").
+    let s = rig.pass(&[("cam0", 0), ("cam1", 0)]).await;
+    assert_eq!(
+        cam(&s, "cam1"),
+        (Applied, Some(0.0), Some(0.0), String::new())
+    );
+    // cam0 has no line.
+    assert_eq!(cam(&s, "cam0").0, CameraMountVerdict::NoOverlay);
+    assert_eq!(rig.runner.calls().len(), 0);
+    let s = rig.pass(&[("cam1", 180)]).await;
+    assert_eq!(cam(&s, "cam1").0, PendingReboot);
+    assert_eq!(rig.runner.asked(), ["rotate cam1 imx290 180"]);
+    assert_eq!(
+        rig.d.read(),
+        "dtoverlay=vc4-kms-v3d\ndtoverlay=imx290,clock-frequency=74250000,rotation=180\n"
+    );
+    // `cam0,cam1` on one line: CAM0's only (the TS counted it for both).
+    let both = "dtoverlay=imx290,cam0,cam1\n";
+    let rig = Rig::new(Device::bench("both", both, MODEL_CM5));
+    let s = rig.pass(&[("cam0", 180), ("cam1", 180)]).await;
+    assert_eq!(cam(&s, "cam1").0, CameraMountVerdict::NoOverlay);
+    assert_eq!(
+        cam(&s, "cam1").3,
+        format!(
+            "no dtoverlay line for cam1 in {} — the camera overlay is missing",
+            rig.d.boot_config.display()
+        )
+    );
+    assert_eq!(rig.runner.asked(), ["rotate cam0 imx290 180"]);
+    assert_eq!(rig.d.read(), "dtoverlay=imx290,cam0,cam1,rotation=180\n");
+}
+
+/// C2: a single `rotation=` token that reads as the wanted value through
+/// the TS `Number()` is settled, however a hand spelled it: no write, as in
+/// v0.1.1. A value that is not a number, another number, or two tokens are
+/// rewritten.
+#[tokio::test]
+async fn a_hand_written_rotation_spelling_is_not_rewritten() {
+    for (token, mount) in [
+        ("rotation=0x0", 0),
+        ("rotation=00", 0),
+        ("rotation=0.0", 0),
+        ("rotation=", 0),
+        ("rotation=180.0", 180),
+        ("rotation=1.8e2", 180),
+    ] {
+        let config = format!("dtoverlay=imx290,cam0,{token}\n");
+        let d = Device::bench("spell", &config, MODEL_CM5);
+        d.camera("cam0", &cm5_path("cam0", "imx290@1a"), Some(mount));
+        let rig = Rig::new(d);
+        let s = rig.pass(&[("cam0", mount)]).await;
+        assert_eq!(
+            cam(&s, "cam0"),
+            (
+                Applied,
+                Some(f64::from(mount)),
+                Some(f64::from(mount)),
+                String::new()
+            ),
+            "{token}"
+        );
+        assert_eq!(rig.runner.calls().len(), 0, "{token}");
+        assert_eq!(rig.d.read(), config, "{token}");
+    }
+    for (line, mount, asked, want) in [
+        (
+            "dtoverlay=imx290,cam0,rotation=90",
+            0,
+            "rotate cam0 imx290 0",
+            "dtoverlay=imx290,cam0,rotation=0",
+        ),
+        (
+            "dtoverlay=imx290,cam0,rotation=upside-down",
+            180,
+            "rotate cam0 imx290 180",
+            "dtoverlay=imx290,cam0,rotation=180",
+        ),
+        (
+            "dtoverlay=imx290,rotation=0,cam0,rotation=0",
+            0,
+            "rotate cam0 imx290 0",
+            "dtoverlay=imx290,rotation=0,cam0",
+        ),
+        // A spelling that reads as the OTHER value is rewritten too.
+        (
+            "dtoverlay=imx290,cam0,rotation=0x0",
+            180,
+            "rotate cam0 imx290 180",
+            "dtoverlay=imx290,cam0,rotation=180",
+        ),
+    ] {
+        let rig = Rig::new(Device::bench("respell", &format!("{line}\n"), MODEL_CM5));
+        rig.pass(&[("cam0", mount)]).await;
+        assert_eq!(rig.runner.asked(), [asked], "{line}");
+        assert_eq!(rig.d.read(), format!("{want}\n"), "{line}");
+    }
 }
 
 /// The JS agent's privileged writer ×5 (`boot-config.test.ts:209-258`): the

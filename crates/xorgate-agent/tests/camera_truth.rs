@@ -422,3 +422,39 @@ async fn mismatch_warning_compares_with_the_declared_sensor() {
         .await
         .is_empty());
 }
+
+/// The hold line names the DECLARED sensor (config.txt's line for the port,
+/// else the model's). Bench 2, 2026-11-21: it said "(expected imx290)", the
+/// model's sensor, while config.txt declared imx219 and then imx335. Where
+/// line and model agree, or there is no config.txt, it is the TS line.
+#[tokio::test]
+async fn the_hold_line_names_the_declared_sensor() {
+    let none = || bench_listing("no camera at all, as the benches print it");
+    let held = |sensor: &str| {
+        vec![format!(
+            "cam0: no camera enumerated on csi0 (expected {sensor}) — stream held down until one appears (check the ribbon + overlays, reboot after install)"
+        )]
+    };
+    // config.txt declares another sensor than the model (imx290).
+    assert_eq!(
+        warnings(none(), Some("dtoverlay=imx219,cam0\n")).await,
+        held("imx219")
+    );
+    assert_eq!(
+        warnings(
+            none(),
+            Some("dtoverlay=imx335,cam0\ndtoverlay=imx219,cam1\n")
+        )
+        .await,
+        held("imx335")
+    );
+    // No config.txt, no line for the port, or a line that agrees with the
+    // model: the model's sensor, the TS line word for word.
+    for boot in [
+        None,
+        Some("dtoverlay=imx290\n"),
+        Some("dtoverlay=imx290,cam0\n"),
+    ] {
+        assert_eq!(warnings(none(), boot).await, held("imx290"), "{boot:?}");
+    }
+}

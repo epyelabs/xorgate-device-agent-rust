@@ -335,7 +335,12 @@ fn camera_mount_reconciler(
     use crate::ops::camera_mount as cm;
     let settings = ctx.paths.settings.clone();
     let hw = ctx.hardware.clone();
-    let catalog = xorgate_core::camera_catalog::catalog();
+    let (catalog, catalog_error) = xorgate_core::camera_catalog::loaded();
+    if let Some(e) = catalog_error {
+        // Said once: without the catalog no sensor is known, every camera
+        // overlay is "outside the catalog" and goes through `dtoverlay -h`.
+        warn!("[camera-mount] {e}; no camera sensor is known to this build");
+    }
     let port_nodes = crate::ops::camera_truth::real_port_nodes();
     cm::CameraMountReconciler::new(
         cm::CameraMountReconcilerOptions {
@@ -408,20 +413,24 @@ fn camera_truth(
         // The B5 hold heals: list the cameras again through the
         // `hardware_changed` path (reconcile, bounce, reapply).
         recheck: Box::new(move || crate::ctx::PhaseHooks::hardware_recheck(recheck.as_ref())),
-        // Wanted = media on and the camera not turned off in
+        // Not wanted = media off, or the camera turned off in
         // `recording.video.cameras` (read on the 60 s refresh).
-        capture_wanted: Box::new(move |key: &str| {
-            media_on
-                && xorgate_core::recording_config::resolve_recording_config(
-                    xorgate_hal::settings_io::load_settings(&settings)
-                        .recording
-                        .as_ref(),
-                )
-                .video
-                .cameras
-                .get(key)
-                .copied()
-                .unwrap_or(true)
+        capture_off: Box::new(move |key: &str| {
+            use xorgate_core::camera_truth::CaptureOff;
+            if !media_on {
+                return Some(CaptureOff::VideoOff);
+            }
+            let on = xorgate_core::recording_config::resolve_recording_config(
+                xorgate_hal::settings_io::load_settings(&settings)
+                    .recording
+                    .as_ref(),
+            )
+            .video
+            .cameras
+            .get(key)
+            .copied()
+            .unwrap_or(true);
+            (!on).then_some(CaptureOff::Disabled)
         }),
         hold_ms: ct::REPORT_HOLD_MS,
     })

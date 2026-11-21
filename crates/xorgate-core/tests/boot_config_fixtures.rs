@@ -7,10 +7,12 @@
 //! longer has the TS `rotationOfLine` / `overlayLinesForCamera` /
 //! `bootConfigCamera`: it reads a camera line through the sensor catalog
 //! (`camera_lines_for_port`, `rotation_token`, `line_rotation`). Their 16 TS
-//! cases stay here as PINS of how the two readers relate: [`ts_view`]
-//! rebuilds the TS answer from the Rust reader, and the cases where the
-//! answers differ BY DESIGN are listed one by one ([`RUST_READS_DIFFERENTLY`],
-//! accepted divergence D97).
+//! cases stay here as PINS: [`ts_view`] rebuilds the TS answer from the Rust
+//! reader, and for these inputs (IMX290 lines, each with its port token) the
+//! two readers must agree on every case. Where they differ by design is not
+//! in this fixture: a token-less line of a default-180 overlay (D97, the
+//! test below), two `rotation=` tokens (D97), a line without a port token
+//! (D105).
 
 mod common;
 
@@ -65,24 +67,10 @@ fn ts_view(text: &str, cam_token: &str) -> Value {
     })
 }
 
-/// D97: the TS reads the `rotation=` value through `Number()`; the Rust
-/// reader understands the two exact tokens `rotation=0` and `rotation=180`
-/// and calls anything else a line that needs a rewrite (`null` here). Case
-/// name → (the TS answer, the Rust answer).
-const RUST_READS_DIFFERENTLY: &[(&str, u64, Option<u64>)] = &[
-    (
-        "[extra] rotationOfLine rotation= (empty → Number('') = 0)",
-        0,
-        None,
-    ),
-    ("[extra] rotationOfLine rotation=0x0", 0, None),
-    ("[extra] rotationOfLine rotation=1.8e2", 180, None),
-];
-
 #[test]
 fn boot_config_test_ts() {
     let f = common::fixture::<Case>("boot_config/boot-config.json");
-    let (mut pinned, mut differs) = (0, 0);
+    let mut pinned = 0;
     for c in &f.cases {
         let i = &c.input;
         let got = match c.op.as_str() {
@@ -103,23 +91,11 @@ fn boot_config_test_ts() {
                 ))
             }
             "bootConfigCamera" => {
-                let mut got = ts_view(i["text"].as_str().unwrap(), i["camToken"].as_str().unwrap());
-                if let Some((_, ts, rust)) = RUST_READS_DIFFERENTLY
-                    .iter()
-                    .find(|(name, _, _)| *name == c.name)
-                {
-                    assert_eq!(c.expected["rotation"], *ts, "{}: the TS answer", c.name);
-                    assert_eq!(
-                        got["rotation"],
-                        to_value(rust),
-                        "{}: the Rust answer",
-                        c.name
-                    );
-                    got["rotation"] = c.expected["rotation"].clone();
-                    differs += 1;
-                }
                 pinned += 1;
-                got
+                ts_view(
+                    i["text"].as_str().unwrap(),
+                    i["camToken"].as_str().unwrap(),
+                )
             }
             "overlayCamToken" => to_value(overlay_cam_token(i["connector"].as_str().unwrap())),
             "resolveCamToken" => {
@@ -169,7 +145,6 @@ fn boot_config_test_ts() {
     }
     assert_eq!(f.cases.len(), 39);
     assert_eq!(pinned, 14, "the bootConfigCamera + rotationOfLine cases");
-    assert_eq!(differs, RUST_READS_DIFFERENTLY.len());
 }
 
 /// B3, beside the TS case "treats a missing rotation token as the overlay's

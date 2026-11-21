@@ -65,7 +65,8 @@ fn every_entry_of_the_vendored_catalog_is_usable_by_this_build() {
 }
 
 /// The helper's allow-list is generated from the catalog: the committed
-/// file is the text `Catalog::helper_allow_list` renders, byte for byte.
+/// file is the text `Catalog::helper_allow_list` renders, byte for byte
+/// (the overlays, and per overlay the parameter names `set` may write).
 #[test]
 fn the_helpers_allow_list_is_generated_from_the_catalog() {
     let want = catalog().helper_allow_list();
@@ -74,7 +75,25 @@ fn the_helpers_allow_list_is_generated_from_the_catalog() {
         have, want,
         "system/xorgate-camcfg.overlays is stale; it must be:\n{want}"
     );
-    let names: Vec<&str> = have.lines().filter(|l| !l.starts_with('#')).collect();
-    assert_eq!(names, ["imx290", "imx219", "imx708", "imx335"]);
+    // One overlay per line, then the parameter names `set` may write for it
+    // (the entry's fixed parameters and options).
+    let entries: Vec<&str> = have.lines().filter(|l| !l.starts_with('#')).collect();
+    assert_eq!(
+        entries,
+        [
+            "imx290 clock-frequency",
+            "imx219",
+            "imx708 link-frequency",
+            "imx335 link-frequency"
+        ]
+    );
+    for s in &catalog().sensors {
+        let mut want = vec![s.overlay.as_str()];
+        want.extend(s.param_names());
+        assert!(entries.contains(&want.join(" ").as_str()), "{}", s.id);
+        for o in &s.options {
+            assert!(s.param_names().contains(&o.param.as_str()));
+        }
+    }
     assert!(have.contains("# catalogVersion 3\n"));
 }

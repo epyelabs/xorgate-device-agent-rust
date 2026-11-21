@@ -15,8 +15,11 @@
 //! The device is bench 2: two cameras, cam1 (imx219) streaming, cam0
 //! (imx335) held because its driver is bound but libcamera did not list it.
 //!
-//! - The heal: when a re-listing finds cam0, its capture starts as at boot,
-//!   the journal says so once, and cam1's capture is the SAME run.
+//! - The heal: when a re-listing finds cam0, every capture already running
+//!   (cam1's) is restarted ONCE, then cam0's starts, and the journal says
+//!   so in one line. (On bench 2 a capture started before libcamera gained
+//!   the camera kept the media device, and cam0 could never be acquired.)
+//!   A re-listing that heals nothing restarts nothing.
 //! - Heal-only: a re-listing that omits cam1 does not stop cam1; one that
 //!   cannot enumerate changes nothing at all and is not a check.
 //! - One pass at a time: a re-listing is skipped while a hardware-block
@@ -54,7 +57,7 @@ const NONE: &str = "no camera at all, as the benches print it";
 const BROKEN: &str = "libcamera broken";
 
 const HELD: &str = "cam0: no camera enumerated on csi0 (expected imx335) — stream held down until one appears (check the ribbon + overlays, reboot after install)";
-const HEALED: &str = "cam0: a camera is enumerated now — starting the stream";
+const HEALED: &str = "cam0: a camera is enumerated now — restarting the capture of cam1 so the new camera can be acquired, then starting the stream";
 
 /// A bench listing by (a unique part of) its fixture name.
 fn bench_listing(name_part: &str) -> RunResult {
@@ -256,7 +259,7 @@ impl World {
                 a.fetch_add(1, Ordering::SeqCst);
             }),
             recheck: Box::new(move || recheck.hardware_recheck()),
-            capture_wanted: Box::new(|_| true),
+            capture_off: Box::new(|_| None),
             hold_ms: REPORT_HOLD_MS,
         });
         truth.refresh();
@@ -333,10 +336,12 @@ impl World {
     }
 }
 
-/// The heal. The 15 s re-listing finds cam0: its capture starts, the journal
-/// says so once, and cam1's capture is the same run as before.
+/// The heal, as bench 2 needs it (2026-11-21, E-heal): the 15 s re-listing
+/// finds cam0. A capture that was running before still holds the media
+/// device (`Camera … is already in use`, for ever), so cam1's capture is
+/// restarted ONCE, then cam0's starts; the journal says both in one line.
 #[tokio::test(start_paused = true)]
-async fn a_held_stream_starts_when_a_relisting_finds_its_camera() {
+async fn a_heal_restarts_the_running_captures_once_and_starts_the_healed_one() {
     let w = World::boot("cam-heal").await;
     w.set_listing(BOTH);
     w.run(16).await;
@@ -347,13 +352,16 @@ async fn a_held_stream_starts_when_a_relisting_finds_its_camera() {
     );
     assert_ne!(w.hw.status("cam0"), Some(StreamHardwareStatus::NoCamera));
     assert!(w.hw.capture_allowed("cam0"));
-    // cam0's capture started, as it would have at boot; cam1's run was not
-    // touched: one spawn, still running.
-    assert_eq!(
-        w.captures(),
-        [("cam1".to_string(), true), ("cam0".to_string(), true)]
-    );
-    // The journal: the healed stream's line, once; nothing about cam1.
+    // cam1's boot capture was stopped (the manager's graceful Replace),
+    // then both cameras were started: exactly one restart of cam1.
+    let after_heal = [
+        ("cam1".to_string(), false),
+        ("cam0".to_string(), true),
+        ("cam1".to_string(), true),
+    ];
+    assert_eq!(w.captures(), after_heal);
+    // The journal: the heal's one line (it names the restarted capture);
+    // nothing else about cam1.
     let mut want = w.boot_events.clone();
     want.push(HEALED.to_string());
     assert_eq!(w.events(), want);
@@ -367,11 +375,11 @@ async fn a_held_stream_starts_when_a_relisting_finds_its_camera() {
     assert_eq!(w.port("cam0")["bound"]["listed"], "imx335");
     assert_eq!(w.port("cam1")["verdict"], "ok");
 
-    // Nothing is held any more: no further re-listing, ever.
+    // Nothing is held any more: no further re-listing and no further
+    // restart, ever.
     w.run(700).await;
     assert_eq!(w.runs.load(Ordering::SeqCst), 2);
-    assert_eq!(w.captures().len(), 2);
-    assert!(w.captures().iter().all(|(_, running)| *running));
+    assert_eq!(w.captures(), after_heal);
     w.end();
 }
 
@@ -399,7 +407,7 @@ async fn a_relisting_that_omits_a_found_camera_does_not_stop_it() {
     assert_eq!(w.hw.status("cam0"), Some(StreamHardwareStatus::NoCamera));
     assert_eq!(
         w.port("cam0")["detail"],
-        "The imx335 driver is bound on csi0 but libcamera lists no camera there (checked again after the agent started): libcamera on this device may not support this sensor. The imx335 driver only weakly checks which chip is attached, so the camera on this port may be a different sensor."
+        "The imx335 driver is bound on csi0 but libcamera lists no camera there (checked again after the agent started): libcamera on this device may not support this sensor."
     );
     // Every later re-listing with the same answer: still nothing stops.
     w.run(400).await;
@@ -437,12 +445,16 @@ async fn a_relisting_that_cannot_enumerate_changes_nothing() {
     assert_eq!(w.port("cam1")["verdict"], "ok");
     assert_eq!(w.port("cam0")["verdict"], "not-detected");
 
-    // A later re-listing that works still heals.
+    // A later re-listing that works still heals (one restart of cam1).
     w.set_listing(BOTH);
     w.run(300).await;
     assert_eq!(
         w.captures(),
-        [("cam1".to_string(), true), ("cam0".to_string(), true)]
+        [
+            ("cam1".to_string(), false),
+            ("cam0".to_string(), true),
+            ("cam1".to_string(), true)
+        ]
     );
     w.end();
 }
@@ -501,4 +513,20 @@ async fn a_relisting_never_runs_beside_or_over_a_block_change_pass() {
     assert_eq!(w.hw.snapshot().cameras, Some(vec![]));
     assert!(w.captures().iter().all(|(_, running)| !*running));
     w.end();
+}
+
+/// The heal's journal line: alone when no other capture runs, and naming
+/// every capture it restarts otherwise.
+#[test]
+fn the_heal_line_names_the_captures_it_restarts() {
+    use xorgate_agent::recording::hooks::heal_line;
+    assert_eq!(
+        heal_line("cam0", &[]),
+        "cam0: a camera is enumerated now — starting the stream"
+    );
+    assert_eq!(heal_line("cam0", &["cam1"]), HEALED);
+    assert_eq!(
+        heal_line("cam2", &["cam0", "cam1"]),
+        "cam2: a camera is enumerated now — restarting the capture of cam0, cam1 so the new camera can be acquired, then starting the stream"
+    );
 }

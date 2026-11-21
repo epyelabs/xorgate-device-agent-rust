@@ -32,7 +32,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::camera_catalog::{
-    valid_overlay_name, valid_overlay_param, Catalog, CONFIG_TXT_LINE_MAX,
+    reserved_param_name, valid_overlay_name, valid_overlay_param, Catalog, CONFIG_TXT_LINE_MAX,
 };
 use crate::hardware_block::DeviceHardwareBlock;
 use crate::js;
@@ -364,9 +364,13 @@ pub enum RotationToken {
     /// No `rotation=` token: the overlay's own default applies. NOT 0: the
     /// `imx219`, `imx708` and `imx335` overlays default to 180 (bug B3).
     Absent,
-    /// Exactly one token, `rotation=0` or `rotation=180`.
+    /// Exactly one token whose value is 0 or 180 as the TS reads it
+    /// (`Number()`): `rotation=0`, `rotation=180`, and the hand-written
+    /// spellings v0.1.1 also took for settled (`0x0`, `00`, `0.0`, `180.0`,
+    /// `1.8e2`, an empty value = 0).
     Deg(u16),
-    /// Any other value, or more than one token: the line needs a rewrite.
+    /// A value that is not a number or is another number, or more than one
+    /// token: the line needs a rewrite.
     Invalid,
 }
 
@@ -379,10 +383,15 @@ pub fn rotation_token(line: &OverlayLine) -> RotationToken {
     if tokens.next().is_some() {
         return RotationToken::Invalid;
     }
-    match &first["rotation=".len()..] {
-        "0" => RotationToken::Deg(0),
-        "180" => RotationToken::Deg(180),
-        _ => RotationToken::Invalid,
+    // `Number(token.slice("rotation=".length))` (`boot-config.ts:121`): a
+    // line a hand wrote as `rotation=0x0` is not rewritten for its spelling.
+    let value = js::number(&first["rotation=".len()..]);
+    if value == 0.0 {
+        RotationToken::Deg(0)
+    } else if value == 180.0 {
+        RotationToken::Deg(180)
+    } else {
+        RotationToken::Invalid
     }
 }
 
@@ -427,9 +436,11 @@ pub fn mount_of_rotation(default_rotation: u16, rotation: u32) -> u32 {
 pub enum RenderError {
     /// A token is outside the helper's charset.
     Token(String),
-    /// A port token (`cam0`, `cam1`) or `rotation=` among the parameters:
-    /// the renderer writes those itself.
+    /// A port token (`cam0`, `cam1`, also `cam0=…`) or a `rotation…` among
+    /// the parameters: the renderer writes those itself.
     Reserved(String),
+    /// A parameter name given twice.
+    Repeated(String),
     /// Longer than the firmware reads.
     TooLong(usize),
 }
@@ -444,6 +455,7 @@ impl std::fmt::Display for RenderError {
             RenderError::Reserved(t) => {
                 write!(f, "\"{t}\" is written by the camera line owner itself")
             }
+            RenderError::Repeated(t) => write!(f, "the parameter \"{t}\" is given twice"),
             RenderError::TooLong(n) => write!(
                 f,
                 "the line would be {n} characters; the firmware reads at most {CONFIG_TXT_LINE_MAX}"
@@ -467,12 +479,19 @@ pub fn render_overlay_line(
         return Err(RenderError::Token(overlay.to_string()));
     }
     let mut out = format!("dtoverlay={overlay},{}", port.token());
+    let mut names = std::collections::BTreeSet::new();
     for p in params {
         if !valid_overlay_param(p) {
             return Err(RenderError::Token(p.clone()));
         }
-        if p == "cam0" || p == "cam1" || p.starts_with("rotation=") || p == "rotation" {
+        // A port token or `rotation` in ANY form (`cam0=on` selects CAM0 as
+        // surely as `cam0` does): written here, never taken.
+        let name = p.split('=').next().unwrap_or(p);
+        if reserved_param_name(name) {
             return Err(RenderError::Reserved(p.clone()));
+        }
+        if !names.insert(name) {
+            return Err(RenderError::Repeated(name.to_string()));
         }
         out.push(',');
         out.push_str(p);
@@ -663,8 +682,9 @@ pub const CAMCFG_USAGE: &str = "usage: xorgate-camcfg rotate <cam0|cam1> <overla
 /// - the rotation is 0 or 180;
 /// - `set`: the overlay is in the catalog (the helper's allow-list is
 ///   generated from it), every parameter passes the strict token charset,
-///   none is a port token or a `rotation`, and the rendered line is at most
-///   98 characters.
+///   its NAME is one the catalog lists for that overlay, none is given
+///   twice, none is a port token or a `rotation` in any form (`cam0=on`,
+///   `rotation-x`), and the rendered line is at most 98 characters.
 ///
 /// `Err` is a sentence for the cloud-visible status detail. (The helper
 /// checks the same things again as root: its arguments are not trusted.)
@@ -693,12 +713,23 @@ pub fn camcfg_call(op: CamCfgOp, catalog: &Catalog) -> Result<crate::commands::H
             if let Some(e) = bad_rotation(*rotation) {
                 return Err(e);
             }
-            if catalog.by_overlay(overlay).is_none() {
+            let Some(sensor) = catalog.by_overlay(overlay) else {
                 return Err(format!(
                     "the overlay \"{overlay}\" is not in this agent build's sensor catalog"
                 ));
-            }
+            };
             render_overlay_line(overlay, *port, params, *rotation).map_err(|e| e.to_string())?;
+            // The helper's allow-list names the parameters of each overlay
+            // (it is rendered from the same catalog entry).
+            let allowed = sensor.param_names();
+            if let Some(p) = params
+                .iter()
+                .find(|p| !allowed.contains(&p.split('=').next().unwrap_or(p)))
+            {
+                return Err(format!(
+                    "\"{p}\" is not a parameter the sensor catalog lists for the {overlay} overlay"
+                ));
+            }
         }
         CamCfgOp::Remove { .. } => {}
     }
@@ -756,7 +787,7 @@ mod tests {
             CamCfgOp::Set {
                 port: CamPort::Cam1,
                 overlay: "imx290".into(),
-                params: vec!["clock-frequency=74250000".into(), "4lane".into()],
+                params: vec!["clock-frequency=74250000".into()],
                 rotation: 0,
             },
             catalog(),
@@ -769,7 +800,6 @@ mod tests {
                 "cam1",
                 "imx290",
                 "clock-frequency=74250000",
-                "4lane",
                 "rotation=0"
             ]
         );
@@ -854,7 +884,19 @@ mod tests {
                 "{bad:?}"
             );
         }
-        for reserved in ["cam0", "cam1", "rotation=180", "rotation"] {
+        // A port token or a `rotation` in ANY form is written by the owner,
+        // never taken: `cam0=on` would select CAM0 on a line filed as CAM1.
+        for reserved in [
+            "cam0",
+            "cam1",
+            "cam0=on",
+            "cam0=1",
+            "cam1=on",
+            "rotation=180",
+            "rotation",
+            "rotation-x=1",
+            "rotations",
+        ] {
             assert!(
                 set("imx290", &[reserved])
                     .unwrap_err()
@@ -862,6 +904,37 @@ mod tests {
                 "{reserved:?}"
             );
         }
+        // Parameter NAMES are the catalog's, per overlay (the helper's
+        // allow-list is rendered from the same entry), each at most once.
+        assert!(set("imx290", &["clock-frequency=74250000"]).is_ok());
+        assert!(set("imx708", &["link-frequency=447000000"]).is_ok());
+        for (overlay, param) in [
+            ("imx290", "4lane"),
+            ("imx290", "link-frequency=450000000"),
+            ("imx708", "clock-frequency=74250000"),
+            ("imx219", "vcm"),
+            ("imx290", "media-controller=0"),
+        ] {
+            assert_eq!(
+                set(overlay, &[param]).unwrap_err(),
+                format!(
+                    "\"{param}\" is not a parameter the sensor catalog lists for the {overlay} overlay"
+                )
+            );
+        }
+        assert_eq!(
+            set(
+                "imx290",
+                &["clock-frequency=37125000", "clock-frequency=74250000"]
+            )
+            .unwrap_err(),
+            "the parameter \"clock-frequency\" is given twice"
+        );
+        let names = |id: &str| catalog().by_id(id).unwrap().param_names();
+        assert_eq!(names("imx290"), ["clock-frequency"]);
+        assert_eq!(names("imx219"), Vec::<&str>::new());
+        assert_eq!(names("imx708"), ["link-frequency"]);
+        assert_eq!(names("imx335"), ["link-frequency"]);
         // 98 characters is the firmware's limit; 99 is refused. (A single
         // token is at most 32 characters, so the length comes from several.)
         let many =
@@ -894,9 +967,8 @@ mod tests {
 
     #[test]
     fn js_number_subset() {
-        // The shared `Number(string)` (crate::js), as the TS used it on the
-        // `rotation=` token. The Rust reader no longer does (D97): only the
-        // exact tokens `rotation=0` / `rotation=180` are understood.
+        // The shared `Number(string)` (crate::js), as the TS and
+        // `rotation_token` read the value of a `rotation=` token.
         let n = js::number;
         assert_eq!(n(""), 0.0);
         assert_eq!(n("  "), 0.0);
@@ -927,13 +999,31 @@ mod tests {
             t("dtoverlay=imx290,rotation=180,cam0"),
             RotationToken::Deg(180)
         );
+        // The spellings v0.1.1 took for 0 or 180 (the TS `Number()`): one
+        // such token is settled, not a line to rewrite.
+        for (token, want) in [
+            ("rotation=", 0),
+            ("rotation=0x0", 0),
+            ("rotation=00", 0),
+            ("rotation=0.0", 0),
+            ("rotation=-0", 0),
+            ("rotation=180.0", 180),
+            ("rotation=1.8e2", 180),
+            ("rotation=0xb4", 180),
+        ] {
+            assert_eq!(
+                t(&format!("dtoverlay=imx290,cam0,{token}")),
+                RotationToken::Deg(want),
+                "{token}"
+            );
+        }
+        // Not a number, another number, or two tokens: needs a rewrite.
         for bad in [
-            "rotation=",
             "rotation=90",
+            "rotation=270",
             "rotation=x",
-            "rotation=1.8e2",
-            "rotation=0x0",
-            "rotation=00",
+            "rotation=180deg",
+            "rotation=1e3",
             "rotation=0,rotation=180",
             "rotation=180,rotation=180",
         ] {
