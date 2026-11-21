@@ -746,7 +746,8 @@ mod tests {
 
 // ---------------------------------------------------------------------------
 // Phase 4 (I5): the two sudo helpers — `xorgate-setclock` (sudoers 021) and
-// `xorgate-camrotate` (sudoers 023)
+// the camera-line owner `xorgate-camcfg` (sudoers 025; it replaced the
+// `xorgate-camrotate` call in the support-other-camera-models plan, D95)
 // ---------------------------------------------------------------------------
 
 /// One privileged helper invocation. Next to the three [`PrivilegedCall`]s
@@ -756,15 +757,14 @@ mod tests {
 /// call `run("sudo", ["-n", HELPER, …])` with whatever values they hold and
 /// let the helper re-validate them. Here the fields are private and the only
 /// constructors are [`crate::clock_step::setclock_call`] and
-/// [`crate::boot_config::camrotate_call`], which apply the helper's OWN
-/// validation (`system/xorgate-setclock:16-21`, `system/xorgate-camrotate:39-50`)
-/// first, so a value the helper would refuse never reaches sudo. A refusal
-/// carries the helper's own stderr line, so the caller's `detail` (cloud-
-/// visible for the camera mount) reads exactly as if the helper had run
-/// (accepted divergence D33: no sudo journal line for a refused call).
+/// [`crate::boot_config::camcfg_call`], which apply the helper's OWN
+/// argument validation (`system/xorgate-setclock:16-21`, `system/xorgate-camcfg`)
+/// first, so a value the helper would refuse never reaches sudo (accepted
+/// divergence D33: no sudo journal line for a refused call).
 ///
 /// Shipped form vs the frozen I5 sketch (`pub enum HelperCall { SetClock {..},
-/// CamRotate {..} }`): a struct over the read-only [`HelperKind`] enum, so the
+/// CamRotate {..} }`; the camera variant is `CamCfg` since Phase 1 of the
+/// support-other-camera-models plan): a struct over the read-only [`HelperKind`] enum, so the
 /// validated values cannot be edited after minting (an enum with public
 /// fields could be built or mutated anywhere).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -777,13 +777,10 @@ pub struct HelperCall {
 pub enum HelperKind {
     /// `sudo -n /usr/local/bin/xorgate-setclock <epoch-seconds>` (`clock-step.ts:186`).
     SetClock { epoch_s: u64 },
-    /// `sudo -n /usr/local/bin/xorgate-camrotate <sensor> <camN> <0|180>`
-    /// (`boot-config.ts:285`).
-    CamRotate {
-        sensor: String,
-        cam_token: String,
-        deg: u16,
-    },
+    /// `sudo -n /usr/local/bin/xorgate-camcfg <verb> …`: the camera-line
+    /// owner (`system/xorgate-camcfg`). RUST-ONLY: the JS agent calls
+    /// `xorgate-camrotate <sensor> <camN> <0|180>` (`boot-config.ts:285`).
+    CamCfg { op: crate::boot_config::CamCfgOp },
 }
 
 impl HelperCall {
@@ -800,20 +797,16 @@ impl HelperCall {
     pub fn helper(&self) -> &'static str {
         match self.kind {
             HelperKind::SetClock { .. } => crate::clock_step::SETCLOCK_HELPER,
-            HelperKind::CamRotate { .. } => crate::boot_config::CAMROTATE_HELPER,
+            HelperKind::CamCfg { .. } => crate::boot_config::CAMCFG_HELPER,
         }
     }
 
-    /// The helper's own arguments, as the TS stringifies them
-    /// (`String(Math.round(targetMs / 1000))`, `String(deg)`).
+    /// The helper's own arguments (the clock's as the TS stringifies it,
+    /// `String(Math.round(targetMs / 1000))`).
     pub fn helper_args(&self) -> Vec<String> {
         match &self.kind {
             HelperKind::SetClock { epoch_s } => vec![epoch_s.to_string()],
-            HelperKind::CamRotate {
-                sensor,
-                cam_token,
-                deg,
-            } => vec![sensor.clone(), cam_token.clone(), deg.to_string()],
+            HelperKind::CamCfg { op } => op.args(),
         }
     }
 
@@ -834,7 +827,7 @@ impl HelperCall {
     pub fn timeout_ms(&self) -> Option<u64> {
         match self.kind {
             HelperKind::SetClock { .. } => None,
-            HelperKind::CamRotate { .. } => Some(20_000),
+            HelperKind::CamCfg { .. } => Some(20_000),
         }
     }
 }

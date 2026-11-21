@@ -95,7 +95,7 @@ pub async fn execute_command(
 
 /// The exact argv of one Phase 4 sudo helper run (I5): built only from a
 /// core [`HelperCall`] (whose only mints are `clock_step::setclock_call` and
-/// `boot_config::camrotate_call`). Private fields, like [`PrivilegedArgv`].
+/// `boot_config::camcfg_call`). Private fields, like [`PrivilegedArgv`].
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HelperArgv {
     argv: Vec<String>,
@@ -125,8 +125,8 @@ impl HelperArgv {
         self.argv[1..].iter().map(String::as_str).collect()
     }
 
-    /// `run(…, { timeoutMs })` — 20 s for `xorgate-camrotate`, none for
-    /// `xorgate-setclock`.
+    /// `run(…, { timeoutMs })` — 20 s for `xorgate-camcfg` (as the TS bounds
+    /// `xorgate-camrotate`), none for `xorgate-setclock`.
     pub fn timeout(&self) -> Option<Duration> {
         self.timeout
     }
@@ -136,7 +136,7 @@ impl HelperArgv {
 pub trait PrivilegedRunner: Send + Sync + 'static {
     fn run<'a>(&'a self, call: &'a PrivilegedArgv) -> RunFut<'a>;
     /// One sudo helper run (I5): the clock stepper's `xorgate-setclock` and
-    /// the camera-mount reconciler's `xorgate-camrotate`.
+    /// the camera-mount reconciler's `xorgate-camcfg`.
     fn run_helper<'a>(&'a self, call: &'a HelperArgv) -> RunFut<'a>;
 }
 
@@ -492,10 +492,13 @@ mod tests {
             ]
         );
         assert_eq!((a.program(), a.timeout()), ("sudo", None));
-        let cam = xorgate_core::boot_config::camrotate_call(
-            "imx290",
-            "cam1",
-            xorgate_core::types::CameraRotationDeg::Deg0,
+        let cam = xorgate_core::boot_config::camcfg_call(
+            xorgate_core::boot_config::CamCfgOp::Rotate {
+                port: xorgate_core::boot_config::CamPort::Cam1,
+                overlay: "imx290".into(),
+                rotation: 0,
+            },
+            xorgate_core::camera_catalog::catalog(),
         )
         .unwrap();
         let b = HelperArgv::from(&cam);
@@ -503,9 +506,10 @@ mod tests {
             b.args(),
             [
                 "-n",
-                "/usr/local/bin/xorgate-camrotate",
-                "imx290",
+                "/usr/local/bin/xorgate-camcfg",
+                "rotate",
                 "cam1",
+                "imx290",
                 "0"
             ]
         );

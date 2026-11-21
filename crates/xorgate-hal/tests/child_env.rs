@@ -196,14 +196,17 @@ fn the_notify_keys_never_reach_a_child_and_everything_else_does() {
             };
         let r = SudoRunner.run(&PrivilegedArgv::for_rust_agent(&call)).await;
         assert!(!r.failed, "fake sudo (run_argv): {r:?}");
-        let helper = xorgate_core::boot_config::camrotate_call(
-            "imx290",
-            "cam0",
-            xorgate_core::types::CameraRotationDeg::Deg0,
+        let helper = xorgate_core::boot_config::camcfg_call(
+            xorgate_core::boot_config::CamCfgOp::Rotate {
+                port: xorgate_core::boot_config::CamPort::Cam0,
+                overlay: "imx290".into(),
+                rotation: 0,
+            },
+            xorgate_core::camera_catalog::catalog(),
         )
         .unwrap();
         let ha = HelperArgv::from(&helper);
-        assert!(ha.timeout().is_some(), "camrotate takes the timeout runner");
+        assert!(ha.timeout().is_some(), "camcfg takes the timeout runner");
         let r = SudoRunner.run_helper(&ha).await;
         assert!(!r.failed, "fake sudo (run_argv_timeout_grace): {r:?}");
         let got = recorded(&fakes, "sudo");
