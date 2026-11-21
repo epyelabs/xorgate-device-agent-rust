@@ -41,6 +41,19 @@ RS_UNIT=$SYS/xorgate-agent-rs.service
 RS_UPD=$SYS/xorgate-updater-rs.service
 DIST_DROPIN=$SYS/xorgate-updater-rs.service.d/10-dist.conf
 S024=/etc/sudoers.d/024_xorgate-update-rs
+# The camera-line owner (Rust-only, support-other-camera-models Phase 1): the
+# helper, its overlay allow-list and its grant. NOT RUN since they were added
+# (this harness is Mac-only): the expectations below were written by reading.
+S025=/etc/sudoers.d/025_xorgate-camcfg
+CAMCFG=/usr/local/bin/xorgate-camcfg
+# body_025 <user>: update_plan::camcfg_sudoers_body.
+body_025() {
+  printf '%s\n' \
+    "# Installed by xorgate-rs. Allows the agent (running as $1) to change the" \
+    "# camera overlay lines of the boot config through the camera-line owner, and" \
+    "# nothing else. See device-agent-rust system/xorgate-camcfg + crates/xorgate-core/src/boot_config.rs." \
+    "$1 ALL=(root) NOPASSWD: /usr/local/bin/xorgate-camcfg"
+}
 WRAP=/usr/local/bin/xorgate-rs
 JS_WORKER='node /opt/xorgate/dist/worker.js'
 
@@ -106,7 +119,7 @@ footprint_leaks() { # prints every write not allowlisted and not I3-covered
 }
 # path of an I3 line (everything after the first " /")
 paths() { awk '{ n = index($0, " /"); print substr($0, n + 1) }' "$1"; }
-RUST_RE='^(/opt/xorgate-rs(\.new|\.old)?|/usr/local/bin/xorgate-rs|/etc/systemd/system/xorgate-(agent|updater)-rs\.service(\.d(/.*)?)?|/etc/systemd/system/[^/]+\.(wants|requires)/xorgate-(agent|updater)-rs\.service|/etc/sudoers\.d/024_xorgate-update-rs|/var/lib/xorgate-rs-install(/.*)?)$'
+RUST_RE='^(/opt/xorgate-rs(\.new|\.old)?|/usr/local/bin/xorgate-rs|/etc/systemd/system/xorgate-(agent|updater)-rs\.service(\.d(/.*)?)?|/etc/systemd/system/[^/]+\.(wants|requires)/xorgate-(agent|updater)-rs\.service|/etc/sudoers\.d/024_xorgate-update-rs|/usr/local/bin/xorgate-camcfg(\.overlays)?|/etc/sudoers\.d/025_xorgate-camcfg|/var/lib/xorgate-rs-install(/.*)?)$'
 NEVER_RE='^(/etc/xorgate(/.*)?|/opt/xorgate|/usr/local/bin/(xorgate|xorgate-setclock|xorgate-camrotate|sim7600-lte\.sh)|/etc/systemd/system/(xorgate-agent\.service(\.d(/.*)?)?|xorgate-updater\.service|sim7600-lte\.service)|/etc/sudoers\.d/0(10|2[0-3])_.*|/etc/cron\.d(/.*)?|/etc/udev/rules\.d(/.*)?|/etc/NetworkManager/conf\.d(/.*)?|/etc/systemd/logind\.conf\.d(/.*)?)$'
 export RUST_RE NEVER_RE
 sel() { # <regex> <invert 0|1> <manifest>: the lines whose path matches (or not)
@@ -297,6 +310,9 @@ expect_conv() {
     printf 'd 0755 0:0 - %s.d\n' "$RS_UPD"
     printf 'f 0644 0:0 %s %s\n' "$(printf '%s\n' "$DIST_BODY" | sha_of)" "$DIST_DROPIN"
     [ "$svc" != root ] && printf 'f 0440 0:0 %s %s\n' "$(body_024 "$svc" | sha_of)" "$S024"
+    printf 'f 0755 0:0 %s %s\n' "$(member "$tgz" system/xorgate-camcfg | sha_of)" "$CAMCFG"
+    printf 'f 0644 0:0 %s %s\n' "$(member "$tgz" system/xorgate-camcfg.overlays | sha_of)" "$CAMCFG.overlays"
+    [ "$svc" != root ] && printf 'f 0440 0:0 %s %s\n' "$(body_025 "$svc" | sha_of)" "$S025"
     printf 'f 0755 0:0 %s %s\n' "$(printf '%s\n' "$WRAPPER_BODY" | sha_of)" "$WRAP"
     tree_digest "$tgz"
     printf 'd 0700 0:0 - %s\n' "$REC_DIR"
@@ -384,10 +400,11 @@ assert_converted() {
   done
   check "record installed: absolute paths, none pre-existing${bad_inst:+:$bad_inst}" [ -z "$bad_inst" ]
   local missing=""
-  for p in "$RS_UNIT" "$RS_UPD" "$DIST_DROPIN" "$WRAP"; do
+  for p in "$RS_UNIT" "$RS_UPD" "$DIST_DROPIN" "$WRAP" "$CAMCFG" "$CAMCFG.overlays"; do
     grep -qwF "$p" <<<" $(rec installed) " || missing+=" $p"
   done
   [ "$svc" != root ] && { grep -qwF "$S024" <<<" $(rec installed) " || missing+=" $S024"; }
+  [ "$svc" != root ] && { grep -qwF "$S025" <<<" $(rec installed) " || missing+=" $S025"; }
   check "record installed lists every NEW file${missing:+ (missing:$missing)}" [ -z "$missing" ]
   if diff <(no_rec_rows "$m0") <(no_rec_rows "$REC_DIR/pre.manifest") >"$E/pre.diff" 2>&1; then
     ok "I3 cross-check: WP1's pre.manifest == WP2's independent M0, byte for byte (I3 amendment: 4-digit modes)"

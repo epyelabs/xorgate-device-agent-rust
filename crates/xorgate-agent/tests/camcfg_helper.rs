@@ -59,7 +59,14 @@ impl Boot {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("overlays")).unwrap();
-        for o in ["imx290", "imx219", "imx708", "imx335", "imx477", "vc4-kms-v3d"] {
+        for o in [
+            "imx290",
+            "imx219",
+            "imx708",
+            "imx335",
+            "imx477",
+            "vc4-kms-v3d",
+        ] {
             std::fs::write(dir.join("overlays").join(format!("{o}.dtbo")), b"dtbo").unwrap();
         }
         std::fs::write(dir.join("config.txt"), config).unwrap();
@@ -140,7 +147,8 @@ fn digest(s: &str) -> String {
 /// The lines of `after` that differ from `before`, as `(line number, before,
 /// after)`; the two files must have the same number of lines.
 fn changed_lines(before: &str, after: &str) -> Vec<(usize, String, String)> {
-    let (b, a): (Vec<&str>, Vec<&str>) = (before.split('\n').collect(), after.split('\n').collect());
+    let (b, a): (Vec<&str>, Vec<&str>) =
+        (before.split('\n').collect(), after.split('\n').collect());
     assert_eq!(b.len(), a.len(), "line count changed");
     b.iter()
         .zip(&a)
@@ -196,13 +204,24 @@ fn bench1_two_imx290_lines() {
             "dtoverlay=imx290,cam0,rotation=0".to_string()
         )]
     );
-    assert_eq!(b.backup().as_deref(), Some(original.as_str()), "never overwritten");
+    assert_eq!(
+        b.backup().as_deref(),
+        Some(original.as_str()),
+        "never overwritten"
+    );
     // cam1 is the OTHER line, selected by having no cam0 token.
     let r = b.run(&["rotate", "cam1", "imx290", "180"]);
     assert_eq!(r.code, 0, "{}", r.stderr);
     let lines = changed_lines(&original, &b.read());
     assert_eq!(lines.len(), 2);
-    assert_eq!(lines[1], (53, "dtoverlay=imx290,cam1".to_string(), "dtoverlay=imx290,cam1,rotation=180".to_string()));
+    assert_eq!(
+        lines[1],
+        (
+            53,
+            "dtoverlay=imx290,cam1".to_string(),
+            "dtoverlay=imx290,cam1,rotation=180".to_string()
+        )
+    );
     // The commented-out soundcard overlay at the end is still a comment.
     assert!(b.read().ends_with("#dtoverlay=googlevoicehat-soundcard\n"));
     assert_eq!(b.litter(), Vec::<String>::new());
@@ -236,7 +255,10 @@ fn cm4_imx708_reaches_both_rotations() {
     assert_eq!(r.code, 4);
     assert_eq!(
         r.stderr,
-        format!("no camera dtoverlay line for cam1 in {}\n", b.config().display())
+        format!(
+            "no camera dtoverlay line for cam1 in {}\n",
+            b.config().display()
+        )
     );
     let r = b.run(&["rotate", "cam0", "imx290", "0"]);
     assert_eq!(r.code, 5);
@@ -298,16 +320,32 @@ fn every_other_byte_of_the_file_is_kept() {
         "  dtoverlay=imx290 , cam0 ,4lane\r\n",
         "dtoverlay=imx290,cam0,4lane,rotation=180\r\n",
     );
-    assert_eq!(b.read(), want, "the CR stays, nothing else moves, no newline is added");
+    assert_eq!(
+        b.read(),
+        want,
+        "the CR stays, nothing else moves, no newline is added"
+    );
     assert!(!b.read().ends_with('\n'));
     // A file that ends in a newline keeps it; the last line may be the
     // camera line itself, with or without one.
     for (text, want) in [
-        ("dtoverlay=imx708,cam0\n", "dtoverlay=imx708,cam0,rotation=0\n"),
+        (
+            "dtoverlay=imx708,cam0\n",
+            "dtoverlay=imx708,cam0,rotation=0\n",
+        ),
         ("dtoverlay=imx708,cam0", "dtoverlay=imx708,cam0,rotation=0"),
-        ("dtoverlay=imx708,cam0\r\n", "dtoverlay=imx708,cam0,rotation=0\r\n"),
-        ("dtoverlay=imx708,cam0\r", "dtoverlay=imx708,cam0,rotation=0\r"),
-        ("\n\ndtoverlay=imx708,cam0\n\n\n", "\n\ndtoverlay=imx708,cam0,rotation=0\n\n\n"),
+        (
+            "dtoverlay=imx708,cam0\r\n",
+            "dtoverlay=imx708,cam0,rotation=0\r\n",
+        ),
+        (
+            "dtoverlay=imx708,cam0\r",
+            "dtoverlay=imx708,cam0,rotation=0\r",
+        ),
+        (
+            "\n\ndtoverlay=imx708,cam0\n\n\n",
+            "\n\ndtoverlay=imx708,cam0,rotation=0\n\n\n",
+        ),
     ] {
         let b = Boot::new(text, Some(MODEL_CM5));
         let r = b.run(&["rotate", "cam0", "imx708", "0"]);
@@ -348,7 +386,12 @@ fn rotate_matches_the_agents_renderer_line_for_line() {
             let want = line_with_rotation(&parsed, rot).unwrap();
             let b = Boot::new(&format!("# x\n{text}\n# y\n"), Some(MODEL_CM5));
             let r = b.run(&["rotate", "cam0", &parsed.name, &rot.to_string()]);
-            let already = parsed.params.iter().filter(|p| p.starts_with("rotation=")).count() == 1
+            let already = parsed
+                .params
+                .iter()
+                .filter(|p| p.starts_with("rotation="))
+                .count()
+                == 1
                 && parsed.params.contains(&format!("rotation={rot}"));
             if already {
                 // The one case with no write: exactly one token, the right one.
@@ -402,8 +445,9 @@ fn rotate_refuses_two_lines_on_one_port_and_a_line_it_cannot_write_back() {
         let r = b.run(&["rotate", "cam0", "imx290", "180"]);
         assert_eq!(r.code, 5, "{bad}");
         assert!(
-            r.stderr
-                .starts_with("the camera line of cam0 holds characters this helper does not write back"),
+            r.stderr.starts_with(
+                "the camera line of cam0 holds characters this helper does not write back"
+            ),
             "{bad}: {}",
             r.stderr
         );
@@ -411,12 +455,17 @@ fn rotate_refuses_two_lines_on_one_port_and_a_line_it_cannot_write_back() {
         assert_eq!(b.backup(), None);
     }
     // A line that would grow past the firmware's 98 characters.
-    let long = format!("dtoverlay=imx290,cam0,{}", ["abcdefgh=12345678"; 4].join(","));
+    let long = format!(
+        "dtoverlay=imx290,cam0,{}",
+        ["abcdefgh=12345678"; 4].join(",")
+    );
     assert_eq!(long.len(), 93);
     let b = Boot::new(&format!("{long}\n"), Some(MODEL_CM5));
     let r = b.run(&["rotate", "cam0", "imx290", "180"]);
     assert_eq!(r.code, 5);
-    assert!(r.stderr.starts_with("the line would be 106 characters; the firmware reads at most 98"));
+    assert!(r
+        .stderr
+        .starts_with("the line would be 106 characters; the firmware reads at most 98"));
     assert_eq!(b.read(), format!("{long}\n"));
     // Exactly 98 is written.
     let fits = format!(
@@ -447,8 +496,16 @@ fn an_overlay_outside_the_allow_list_needs_an_explicit_port_token() {
     }
     assert_eq!(b.read(), text);
     for (line, port, want) in [
-        ("dtoverlay=imx477,cam0", "cam0", "dtoverlay=imx477,cam0,rotation=0"),
-        ("dtoverlay=imx477,cam1", "cam1", "dtoverlay=imx477,cam1,rotation=0"),
+        (
+            "dtoverlay=imx477,cam0",
+            "cam0",
+            "dtoverlay=imx477,cam0,rotation=0",
+        ),
+        (
+            "dtoverlay=imx477,cam1",
+            "cam1",
+            "dtoverlay=imx477,cam1,rotation=0",
+        ),
         (
             "dtoverlay=imx477,cam0,rotation=180",
             "cam0",
@@ -472,14 +529,32 @@ fn an_overlay_outside_the_allow_list_needs_an_explicit_port_token() {
 #[test]
 fn section_filters_agree_with_the_agents_reader() {
     let headers = [
-        "", "[all]", "[cm4]", "[cm5]", "[pi4]", "[pi5]", "[none]", "[pi3]", "[cm4s]",
-        "[gpio4=1]", "[EDID=VSC-TD2220]", "[tryboot]", "[0x12345678]", "[ALL]", "[ all ]",
-        "[all] # x", "  [cm5]  ", "#[cm4]",
+        "",
+        "[all]",
+        "[cm4]",
+        "[cm5]",
+        "[pi4]",
+        "[pi5]",
+        "[none]",
+        "[pi3]",
+        "[cm4s]",
+        "[gpio4=1]",
+        "[EDID=VSC-TD2220]",
+        "[tryboot]",
+        "[0x12345678]",
+        "[ALL]",
+        "[ all ]",
+        "[all] # x",
+        "  [cm5]  ",
+        "#[cm4]",
     ];
     let boards = [
         (Some(MODEL_CM4), Board::Cm4),
         (Some(MODEL_CM5), Board::Cm5),
-        (Some("Raspberry Pi Compute Module 4S Rev 1.0\0"), Board::Unknown),
+        (
+            Some("Raspberry Pi Compute Module 4S Rev 1.0\0"),
+            Board::Unknown,
+        ),
         (Some("Raspberry Pi 5 Model B Rev 1.0\0"), Board::Unknown),
         (None, Board::Unknown),
     ];
@@ -504,15 +579,23 @@ fn section_filters_agree_with_the_agents_reader() {
                 LineScope::Unknown => (5, 2),
             };
             seen[i] += 1;
-            assert_eq!(r.code, want, "{board:?} {head:?} (agent: {scope:?}): {}", r.stderr);
+            assert_eq!(
+                r.code, want,
+                "{board:?} {head:?} (agent: {scope:?}): {}",
+                r.stderr
+            );
             if want == 0 {
-                assert_eq!(b.read(), format!("{head}dtoverlay=imx290,cam0,rotation=180\n"));
+                assert_eq!(
+                    b.read(),
+                    format!("{head}dtoverlay=imx290,cam0,rotation=180\n")
+                );
             } else {
                 assert_eq!(b.read(), text, "{board:?} {head:?}");
             }
             if want == 5 {
                 assert!(
-                    r.stderr.contains("a section this helper cannot evaluate for this board"),
+                    r.stderr
+                        .contains("a section this helper cannot evaluate for this board"),
                     "{}",
                     r.stderr
                 );
@@ -549,7 +632,13 @@ fn set_replaces_adds_and_collapses_the_ports_line() {
     // One line: replaced in place, with the canonical render.
     let original = fixture(BENCH1);
     let b = Boot::new(&original, Some(MODEL_CM5));
-    let r = b.run(&["set", "cam0", "imx708", "link-frequency=447000000", "rotation=180"]);
+    let r = b.run(&[
+        "set",
+        "cam0",
+        "imx708",
+        "link-frequency=447000000",
+        "rotation=180",
+    ]);
     assert_eq!(r.code, 0, "{}", r.stderr);
     let want = render_overlay_line(
         "imx708",
@@ -558,14 +647,23 @@ fn set_replaces_adds_and_collapses_the_ports_line() {
         180,
     )
     .unwrap();
-    assert_eq!(want, "dtoverlay=imx708,cam0,link-frequency=447000000,rotation=180");
+    assert_eq!(
+        want,
+        "dtoverlay=imx708,cam0,link-frequency=447000000,rotation=180"
+    );
     assert_eq!(
         changed_lines(&original, &b.read()),
         [(52, "dtoverlay=imx290,cam0".to_string(), want.clone())]
     );
     assert_eq!(b.backup().as_deref(), Some(original.as_str()));
     // Idempotent.
-    let r = b.run(&["set", "cam0", "imx708", "link-frequency=447000000", "rotation=180"]);
+    let r = b.run(&[
+        "set",
+        "cam0",
+        "imx708",
+        "link-frequency=447000000",
+        "rotation=180",
+    ]);
     assert_eq!(r.code, 3);
     // CAM1's line, written with the (firmware-skipped) cam1 token.
     let r = b.run(&["set", "cam1", "imx219", "rotation=0"]);
@@ -625,9 +723,15 @@ fn set_replaces_adds_and_collapses_the_ports_line() {
         "#camera_auto_detect=1\ncamera_auto_detect=0\ndisplay_auto_detect=1\ndtoverlay=imx290,cam0,rotation=0\n"
     );
     // `rotate` leaves camera_auto_detect alone.
-    let b = Boot::new("camera_auto_detect=1\ndtoverlay=imx290,cam0\n", Some(MODEL_CM5));
+    let b = Boot::new(
+        "camera_auto_detect=1\ndtoverlay=imx290,cam0\n",
+        Some(MODEL_CM5),
+    );
     assert_eq!(b.run(&["rotate", "cam0", "imx290", "180"]).code, 0);
-    assert_eq!(b.read(), "camera_auto_detect=1\ndtoverlay=imx290,cam0,rotation=180\n");
+    assert_eq!(
+        b.read(),
+        "camera_auto_detect=1\ndtoverlay=imx290,cam0,rotation=180\n"
+    );
 
     // A line under a filter it cannot evaluate: refused, whatever the verb.
     let unknown = "[gpio4=1]\ndtoverlay=imx290,cam0\n[all]\n";
@@ -658,7 +762,9 @@ fn set_takes_allow_listed_overlays_that_exist_on_the_device() {
     for overlay in ["imx477", "vc4-kms-v3d", "dwc2"] {
         let r = b.run(&["set", "cam0", overlay, "rotation=0"]);
         assert_eq!(r.code, 2, "{overlay}");
-        assert!(r.stderr.contains(&format!("the overlay {overlay} is not in the allow-list")));
+        assert!(r
+            .stderr
+            .contains(&format!("the overlay {overlay} is not in the allow-list")));
     }
     // In the allow-list, but this device has no such overlay file.
     std::fs::remove_file(b.dir.join("overlays/imx708.dtbo")).unwrap();
@@ -676,7 +782,11 @@ fn set_takes_allow_listed_overlays_that_exist_on_the_device() {
             .env("XORGATE_CAMCFG_OVERLAYS", b.dir.join("nope"))
             .args(&args));
         assert_eq!(r.code, 2, "{args:?}");
-        assert!(r.stderr.contains("no overlay allow-list at"), "{}", r.stderr);
+        assert!(
+            r.stderr.contains("no overlay allow-list at"),
+            "{}",
+            r.stderr
+        );
     }
     // A corrupt allow-list is not trusted.
     std::fs::write(b.dir.join("bad-list"), "imx290\n../../etc/passwd\n").unwrap();
@@ -721,7 +831,10 @@ fn remove_deletes_only_the_ports_camera_lines() {
     assert!(b.read().contains("dtoverlay=vc4-kms-v3d\n"));
     assert!(b.read().contains("dtoverlay=dwc2,dr_mode=host\n"));
     // Both of two lines go; the file may end up empty.
-    let b = Boot::new("dtoverlay=imx290,cam0\ndtoverlay=imx708,cam0", Some(MODEL_CM5));
+    let b = Boot::new(
+        "dtoverlay=imx290,cam0\ndtoverlay=imx708,cam0",
+        Some(MODEL_CM5),
+    );
     assert_eq!(b.run(&["remove", "cam0"]).code, 0);
     assert_eq!(b.read(), "");
 }
@@ -839,7 +952,11 @@ fn the_test_seams_are_ignored_under_sudo() {
         r.stderr,
         "no config.txt found (looked in /boot/firmware and /boot)\n"
     );
-    assert_eq!(b.read(), original, "the fixture named by the seam was not touched");
+    assert_eq!(
+        b.read(),
+        original,
+        "the fixture named by the seam was not touched"
+    );
 }
 
 /// It never reboots, and it never calls anything that could.

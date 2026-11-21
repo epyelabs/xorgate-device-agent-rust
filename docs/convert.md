@@ -86,7 +86,13 @@ running the script again, or undone with `--revert`.
 7. **Sudoers**: `/etc/sudoers.d/024_xorgate-update-rs` (the service user may run
    `systemctl start --no-block xorgate-updater-rs.service`, nothing else), checked with
    `visudo -cf` before it lands. A refusal is a warning, not a failure. A root service user gets
-   no grant.
+   no grant. Then the camera-line owner, which the Rust agent uses to change the camera lines of
+   `config.txt` (it does not call the JS agent's `xorgate-camrotate`, which is left as it is):
+   `/usr/local/bin/xorgate-camcfg.overlays`, `/usr/local/bin/xorgate-camcfg` and
+   `/etc/sudoers.d/025_xorgate-camcfg`, under the same `visudo` rule. A build that predates the
+   helper installs none of the three. Re-running `sudo /opt/xorgate-rs/install-rs.sh` on a
+   converted device installs them if they are missing (so does the second `xorgate-rs update`
+   after the build that introduced them: the first one is run by the previous build's updater).
 8. **systemctl**: `daemon-reload`, `enable xorgate-agent-rs`, `disable xorgate-agent`,
    `start xorgate-agent-rs`. The `Conflicts=` stops the JS agent, and the unit's
    `After=xorgate-agent.service` makes that start wait for the JS agent's WHOLE stop (its exit and
@@ -131,7 +137,7 @@ installed build):
 sudo /opt/xorgate-rs/install-rs.sh
 ```
 
-It re-checks the unit, the wrapper, the drop-ins, the 024 grant and the enablement, repairs what
+It re-checks the unit, the wrapper, the drop-ins, the 024 grant, the camera-line owner (helper, allow-list, 025) and the enablement, repairs what
 differs, and prints what it changed. It does **not** change the build:
 
 ```
@@ -215,7 +221,7 @@ sudo /opt/xorgate-rs/install-rs.sh --revert --purge
 ```
 
 This is keep mode, then it deletes everything the conversion installed (`/opt/xorgate-rs`, the
-wrapper, the Rust units and their drop-ins, 024, the record directory) and runs `daemon-reload`.
+wrapper, the Rust units and their drop-ins, 024, the camera-line owner with its allow-list and 025, the record directory) and runs `daemon-reload`.
 The whole device then matches `pre.manifest`. The script runs from a temporary copy, because it
 deletes its own file. It never deletes a file it did not install, and it names and keeps foreign
 drop-ins (for example the bench's `90-bench-dev.conf`).

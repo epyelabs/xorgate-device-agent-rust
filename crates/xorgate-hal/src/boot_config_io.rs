@@ -282,7 +282,10 @@ mod tests {
                 ("ov5647", false, Some(0)),
             ]
         );
-        assert_eq!(help_rotation_default("Params: rotation  no default here\n"), None);
+        assert_eq!(
+            help_rotation_default("Params: rotation  no default here\n"),
+            None
+        );
         assert_eq!(
             help_rotation_default("        rotation  Turn (default 90)\n"),
             None
@@ -352,7 +355,10 @@ mod tests {
         std::fs::write(dt.join("soc/i2c0mux/i2c@1/imx290@1a/rotation"), [0u8, 180]).unwrap();
         assert_eq!(dt_rotation_state(bare, &dt), DtRotation::Unknown, "2 bytes");
         assert_eq!(dt_rotation_state("", &dt), DtRotation::Unknown);
-        assert_eq!(dt_rotation_state("/base/../../etc", &dt), DtRotation::Unknown);
+        assert_eq!(
+            dt_rotation_state("/base/../../etc", &dt),
+            DtRotation::Unknown
+        );
         // The board, from the model file (NUL-terminated on a real device).
         assert_eq!(read_board(&dt), Board::Unknown, "no model file");
         std::fs::write(dt.join("model"), b"Raspberry Pi Compute Module 5 Rev 1.0\0").unwrap();

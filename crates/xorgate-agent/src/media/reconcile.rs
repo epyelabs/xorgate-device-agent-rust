@@ -35,9 +35,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use indexmap::IndexMap;
-use xorgate_core::camera_truth::{
-    boot_config_port_on, declared_for, sensor_base, DeclaredSource,
-};
+use xorgate_core::camera_truth::{boot_config_port_on, declared_for, sensor_base, DeclaredSource};
 use xorgate_core::cameras::EnumeratedCamera;
 use xorgate_core::hardware_block::DeviceHardwareBlock;
 use xorgate_core::js::trim as js_trim;
@@ -218,19 +216,11 @@ pub async fn reconcile_hardware(
         // Declared = the port's config.txt line, then the model. (The
         // enumerated sensor is the hint that makes a line with an overlay
         // outside the catalog count as this port's line.)
-        let boot = opts
-            .boot_config
-            .as_deref()
-            .map(|t| {
-                boot_config_port_on(
-                    t,
-                    &video.connector,
-                    &[sensor_base(&cam.sensor)],
-                    opts.board,
-                )
-            });
-        if let Some(d) = declared_for(boot.as_ref(), &video.sensor)
-            .filter(|d| d.differs_from(&cam.sensor))
+        let boot = opts.boot_config.as_deref().map(|t| {
+            boot_config_port_on(t, &video.connector, &[sensor_base(&cam.sensor)], opts.board)
+        });
+        if let Some(d) =
+            declared_for(boot.as_ref(), &video.sensor).filter(|d| d.differs_from(&cam.sensor))
         {
             let who = match d.source {
                 DeclaredSource::Model => "model expects",

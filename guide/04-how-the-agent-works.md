@@ -302,8 +302,14 @@ red. The resolved state is also published as `system.led_state` and `system.heal
   trustworthy, for at most 5 minutes.
 - **Clock stepper** (`clock_stepper.rs`): with no NTP, it steps the clock from GPS or the modem's
   network time through a sudo helper (`system/xorgate-setclock`), with a per-boot step limit.
-- **Camera mount** (`camera_mount.rs`): applies `cameraMount` rotation to the boot config through a
-  sudo helper (`system/xorgate-camrotate`). It never reboots; it reports `rebootRequired`.
+- **Camera mount** (`camera_mount.rs`): makes the camera overlay line in the boot config agree with
+  `cameraMount`, which says how the camera is MOUNTED: device-tree rotation = the overlay's default
+  rotation (from the sensor catalog, `crates/xorgate-core/data/camera-catalog.json`) + the mount.
+  It writes through the camera-line owner, a sudo helper (`system/xorgate-camcfg`), and only when
+  the port's line gives another rotation than the one wanted. It never edits a line it cannot
+  stand behind (two lines on one port, a `[section]` it cannot evaluate, a port whose sensor the
+  kernel and libcamera do not confirm). It never reboots; it reports `rebootRequired`.
+  (`system/xorgate-camrotate` is the JS agent's helper: still shipped, no longer called.)
 - **SMS reader** (`sms.rs`): reads stored SMS over the modem's spare AT port without marking them
   read, for the `read_sms` command and `xorgate-rs sms`.
 

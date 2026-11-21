@@ -2,7 +2,7 @@
 //! @89b5c64 (`applyRotationViaHelper` `:280-302`, `reconcileCameraMount`
 //! `:329-457`) and of the worker's `reconcileCameraMountNow` (`worker.ts:150-205`),
 //! Phase 4 WP3 (I7), reworked in Phase 1 of the support-other-camera-models
-//! plan (accepted divergences D95-D102).
+//! plan (accepted divergences D95-D104).
 //!
 //! It makes the boot config's camera overlay line agree with the
 //! `cameraMount` namespace and reports the three rotations (desired / boot /
@@ -45,9 +45,8 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use tracing::{info, warn};
 use xorgate_core::boot_config::{
     camcfg_call, camera_lines_for_port, line_rotation, line_with_rotation, mount_of_rotation,
-    parse_scoped_lines, resolve_cam_token, rotation_for_mount, Board, CamCfgOp, CamPort,
-    LineScope, ScopedLine, BOOT_CONFIG_CANDIDATES, CAMCFG_ALLOW_LIST, CAMCFG_HELPER,
-    PROC_DEVICE_TREE,
+    parse_scoped_lines, resolve_cam_token, rotation_for_mount, Board, CamCfgOp, CamPort, LineScope,
+    ScopedLine, BOOT_CONFIG_CANDIDATES, CAMCFG_ALLOW_LIST, CAMCFG_HELPER, PROC_DEVICE_TREE,
 };
 use xorgate_core::camera_catalog::Catalog;
 use xorgate_core::camera_truth::{rotation_write_block, CaptureTruth, PortFacts, PortNode};
@@ -235,6 +234,9 @@ pub struct PortEvidence {
     /// look.
     pub nodes: Option<Vec<PortNode>>,
 }
+
+/// Reads the [`PortEvidence`] of a pass, given the hardware block in force.
+pub type EvidenceFn = Box<dyn Fn(Option<&DeviceHardwareBlock>) -> PortEvidence + Send + Sync>;
 
 /// What a reconciler remembers between passes.
 #[derive(Debug, Default)]
@@ -762,7 +764,7 @@ pub struct CameraMountReconcilerOptions {
     /// What the kernel and libcamera say is on the ports, read per pass
     /// (the B7 gate). Production: the hardware reconcile's listing + the
     /// sysfs scan.
-    pub evidence: Box<dyn Fn(Option<&DeviceHardwareBlock>) -> PortEvidence + Send + Sync>,
+    pub evidence: EvidenceFn,
     /// The worker's `log` (`worker.ts:176-181`): see [`camera_mount_event_sink`].
     pub log: Arc<EventSink>,
     pub clock: Arc<dyn Clock + Send + Sync>,

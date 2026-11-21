@@ -109,7 +109,12 @@ fn boot_config_test_ts() {
                     .find(|(name, _, _)| *name == c.name)
                 {
                     assert_eq!(c.expected["rotation"], *ts, "{}: the TS answer", c.name);
-                    assert_eq!(got["rotation"], to_value(rust), "{}: the Rust answer", c.name);
+                    assert_eq!(
+                        got["rotation"],
+                        to_value(rust),
+                        "{}: the Rust answer",
+                        c.name
+                    );
                     got["rotation"] = c.expected["rotation"].clone();
                     differs += 1;
                 }

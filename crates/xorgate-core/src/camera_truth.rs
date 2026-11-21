@@ -991,9 +991,12 @@ pub fn rotation_write_block(f: &PortFacts<'_>) -> Option<String> {
         .iter()
         .filter(|n| n.connector == f.connector)
         .collect();
-    let mine = nodes
-        .iter()
-        .find(|n| sensor.dt_node_names.iter().any(|w| w == node_sensor(&n.node)));
+    let mine = nodes.iter().find(|n| {
+        sensor
+            .dt_node_names
+            .iter()
+            .any(|w| w == node_sensor(&n.node))
+    });
     let connector = f.connector;
     match mine {
         Some(n) if n.driver.is_some() => None,
@@ -1132,7 +1135,11 @@ mod tests {
 
     #[test]
     fn every_catalog_overlay_is_a_port_selector() {
-        let names: Vec<&str> = catalog().sensors.iter().map(|s| s.overlay.as_str()).collect();
+        let names: Vec<&str> = catalog()
+            .sensors
+            .iter()
+            .map(|s| s.overlay.as_str())
+            .collect();
         assert_eq!(names, ["imx290", "imx219", "imx708", "imx335"]);
         for o in &names {
             assert_eq!(port_of(&format!("dtoverlay={o},cam0")), Some("csi0"));

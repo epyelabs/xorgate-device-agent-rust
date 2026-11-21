@@ -125,11 +125,20 @@ tar --owner=0 --group=0 -czf "$T/dist/xorgate-agent-rs-noconflict.tar.gz" -C "$T
 cp "$T/dist/xorgate-agent-rs-good.tar.gz" "$T/dist/xorgate-agent-rs-latest.tar.gz"
 (cd "$T/dist" && sha256sum xorgate-agent-rs-latest.tar.gz > xorgate-agent-rs-latest.tar.gz.sha256)
 GOOD="$T/dist/xorgate-agent-rs-good.tar.gz"
+# A build that ships the camera-line owner (support-other-camera-models
+# Phase 1): system/xorgate-camcfg + its overlay allow-list. The other fake
+# builds ship no system/ at all, as a build older than the helper does.
+mkbuild camcfg "xorgate-rs 0.0.0-test (fake)" 0
+mkdir -p "$T/build-camcfg/system"
+cp "$SRC/system/xorgate-camcfg" "$SRC/system/xorgate-camcfg.overlays" "$T/build-camcfg/system/"
+tar --owner=0 --group=0 -czf "$T/dist/xorgate-agent-rs-camcfg.tar.gz" -C "$T/build-camcfg" .
+(cd "$T/dist" && sha256sum xorgate-agent-rs-camcfg.tar.gz > xorgate-agent-rs-camcfg.tar.gz.sha256)
 
 # ---- a minimal JS-provisioned device (backend install-script.ts layout) ----
 wipe() {
   rm -rf /etc/xorgate /opt/xorgate /opt/xorgate-rs /opt/xorgate-rs.new /opt/xorgate-rs.old /var/lib/xorgate-rs-install \
-    /usr/local/bin/xorgate /usr/local/bin/xorgate-rs /etc/systemd/system/xorgate-* /etc/sudoers.d/02[0-4]_xorgate-* \
+    /usr/local/bin/xorgate /usr/local/bin/xorgate-rs /usr/local/bin/xorgate-camcfg /usr/local/bin/xorgate-camcfg.overlays \
+    /etc/systemd/system/xorgate-* /etc/sudoers.d/02[0-5]_xorgate-* \
     /etc/systemd/system/multi-user.target.wants/xorgate-* "$T/state/active"/* /run/xorgate-rs-install.lock
 }
 provision() { # [svc user: pi|root] [DEVICE_DIST_VERSION]
@@ -265,6 +274,58 @@ grep -qx state=converting /var/lib/xorgate-rs-install/record; expect $? 0 "recor
 run "$O" -y --tarball "$GOOD"; expect $? 0 "re-run completes"
 [ ! -e /etc/sudoers.d/024_xorgate-update-rs ] && [ ! -e /etc/systemd/system/xorgate-agent-rs.service.d ]; expect $? 0 "root svc: no 024, no 10-user copy"
 run "$O" --revert --purge; expect $? 0 "purge"; [ "$(snap)" = "$M0" ]; expect $? 0 "purge after an interrupted first run == M0"
+
+echo "== the camera-line owner: helper + allow-list + 025 (Rust-only; installed, repaired, purged)"
+provision pi; M0=$(snap)
+has_not() { if grep -qF -- "$2" "$1"; then failc "$3"; else pass "$3"; fi; }
+run "$O" -y --tarball "$GOOD"; expect $? 0 "a build WITHOUT the helper converts"
+has "$O" "this build ships no camera-line owner (system/xorgate-camcfg): none installed" "  ... and says so"
+[ ! -e /usr/local/bin/xorgate-camcfg ] && [ ! -e /usr/local/bin/xorgate-camcfg.overlays ] && [ ! -e /etc/sudoers.d/025_xorgate-camcfg ]
+expect $? 0 "  ... none of the three installed"
+run "$O" --revert --purge; expect $? 0 "purge"; [ "$(snap)" = "$M0" ]; expect $? 0 "purge == M0"
+provision pi; M0=$(snap)
+run "$O" -y --tarball "$T/dist/xorgate-agent-rs-camcfg.tar.gz"; expect $? 0 "a build WITH the helper converts"
+cmp -s /usr/local/bin/xorgate-camcfg "$SRC/system/xorgate-camcfg" && [ "$(stat -c '%a %u:%g' /usr/local/bin/xorgate-camcfg)" = "755 0:0" ]
+expect $? 0 "xorgate-camcfg == the tarball's, 0755 root"
+cmp -s /usr/local/bin/xorgate-camcfg.overlays "$SRC/system/xorgate-camcfg.overlays" && [ "$(stat -c '%a %u:%g' /usr/local/bin/xorgate-camcfg.overlays)" = "644 0:0" ]
+expect $? 0 "xorgate-camcfg.overlays == the tarball's, 0644 root"
+grep -n 'xorgate-camcfg.overlays written' "$O" | cut -d: -f1 > "$T/l1"; grep -n 'bin/xorgate-camcfg written' "$O" | cut -d: -f1 > "$T/l2"
+[ -s "$T/l1" ] && [ -s "$T/l2" ] && [ "$(cat "$T/l1")" -lt "$(cat "$T/l2")" ]; expect $? 0 "the allow-list lands BEFORE the helper"
+if [ "$NET" = 1 ]; then
+  [ "$(stat -c '%a %u:%g' /etc/sudoers.d/025_xorgate-camcfg)" = "440 0:0" ] \
+    && cmp -s <(bash -c "source '$INSTALL_RS'; rs_camcfg_sudoers_body pi") /etc/sudoers.d/025_xorgate-camcfg \
+    && [ "$(grep -vc '^#' /etc/sudoers.d/025_xorgate-camcfg)" = 1 ] \
+    && grep -qx 'pi ALL=(root) NOPASSWD: /usr/local/bin/xorgate-camcfg' /etc/sudoers.d/025_xorgate-camcfg
+  expect $? 0 "025 for pi: one grant line, the helper, 0440 root"
+  visudo -cf /etc/sudoers.d/025_xorgate-camcfg >/dev/null 2>&1; expect $? 0 "025 passes visudo -cf"
+  grep -q "installed=.*/etc/sudoers.d/025_xorgate-camcfg" /var/lib/xorgate-rs-install/record; expect $? 0 "025 is in the record's installed list"
+fi
+grep -q "installed=.*/usr/local/bin/xorgate-camcfg.overlays.*/usr/local/bin/xorgate-camcfg\( \|\$\)" /var/lib/xorgate-rs-install/record; expect $? 0 "helper + allow-list are in the record's installed list"
+[ ! -e /usr/local/bin/xorgate-camrotate ] && [ ! -e /etc/sudoers.d/023_xorgate-camrotate ]; expect $? 0 "the JS agent's camrotate surface is not created"
+M1=$(snap)
+run "$O" -y --tarball "$T/dist/xorgate-agent-rs-camcfg.tar.gz"; expect $? 0 "re-run"
+grep -q 'install verified, changed (0)' "$O" && [ "$(snap)" = "$M1" ]; expect $? 0 "re-run: changed (0), device byte-identical"
+# A tampered helper and a missing allow-list are repaired by a re-run.
+echo '# tampered' >> /usr/local/bin/xorgate-camcfg; rm -f /usr/local/bin/xorgate-camcfg.overlays
+run "$O" -y --tarball "$T/dist/xorgate-agent-rs-camcfg.tar.gz"; expect $? 0 "repair run"
+[ "$(snap | grep -v ' /var/lib/xorgate-rs-install')" = "$(echo "$M1" | grep -v ' /var/lib/xorgate-rs-install')" ]; expect $? 0 "repair: helper + allow-list back to the tarball's bytes"
+run "$O" --revert; expect $? 0 "keep-mode revert"
+[ -e /usr/local/bin/xorgate-camcfg ]; expect $? 0 "keep mode leaves the (inert) helper"
+has "$O" "JS install matches the pre-conversion record: yes" "  ... and the JS-owned rows still match"
+run "$O" --revert --purge; expect $? 0 "revert --purge"
+[ ! -e /usr/local/bin/xorgate-camcfg ] && [ ! -e /usr/local/bin/xorgate-camcfg.overlays ] && [ ! -e /etc/sudoers.d/025_xorgate-camcfg ]
+expect $? 0 "purge removes the helper, the allow-list and 025"
+[ "$(snap)" = "$M0" ]; expect $? 0 "purge: whole device == M0"
+[ -z "$(diff <(echo "$M0") <(snap))" ] || diff <(echo "$M0") <(snap) | sed 's/^/    /'
+provision root
+run "$O" -y --tarball "$T/dist/xorgate-agent-rs-camcfg.tar.gz"; expect $? 0 "root service user"
+[ -e /usr/local/bin/xorgate-camcfg ] && [ ! -e /etc/sudoers.d/025_xorgate-camcfg ]; expect $? 0 "root svc: the helper, no 025"
+has_not "$O" "WARNING: camcfg sudoers" "  ... and no visudo warning"
+# A helper already there before the conversion is not the conversion's to delete.
+provision pi; install -m 0755 "$SRC/system/xorgate-camcfg" /usr/local/bin/xorgate-camcfg
+run "$O" -y --tarball "$T/dist/xorgate-agent-rs-camcfg.tar.gz"; expect $? 0 "a helper that predates the conversion"
+run "$O" --revert --purge; expect $? 0 "purge"
+[ -e /usr/local/bin/xorgate-camcfg ] && [ ! -e /usr/local/bin/xorgate-camcfg.overlays ]; expect $? 0 "purge keeps what predates the conversion, removes what it added"
 
 if [ "$NET" = 1 ]; then
   echo "== bucket mode (agent.env DEVICE_DIST_BUCKET_URL, trailing / stripped)"

@@ -11,7 +11,7 @@
 //!   (`:54`, `existsSync` injected), `resolveCamToken` (`:304`) and the
 //!   reconciler's verdict/state types (`:219-253`).
 //! - The camera-line model of the support-other-camera-models plan (Phase 1,
-//!   RUST-ONLY; accepted divergences D95-D102): which `[section]` a line sits
+//!   RUST-ONLY; accepted divergences D95-D104): which `[section]` a line sits
 //!   under and whether it applies to this board ([`parse_scoped_lines`]),
 //!   which port a camera line configures ([`port_of_line`]), "no `rotation=`
 //!   token" as its own case ([`rotation_token`], bug B3), the rotation a line
@@ -19,10 +19,10 @@
 //!   renderers ([`render_overlay_line`], [`line_with_rotation`]) and the ONE
 //!   mint of the `xorgate-camcfg` helper call ([`camcfg_call`]).
 //!
-//! THE RULE: device-tree rotation in force = the overlay's default rotation
-//! + the `cameraMount` setting (mod 360). The default is the sensor
-//! catalog's (`imx290` 0; `imx219`, `imx708`, `imx335` 180). "No token" and
-//! "property absent" read as that default, never as 0.
+//! THE RULE: the device-tree rotation in force is the overlay's default
+//! rotation plus the `cameraMount` setting (mod 360). The default is the
+//! sensor catalog's (`imx290` 0; `imx219`, `imx708`, `imx335` 180). "No
+//! token" and "property absent" read as that default, never as 0.
 //!
 //! Left in the HAL/agent: the file reads, the `dtoverlay -h` probe and the
 //! reconciler (`xorgate-agent::ops::camera_mount`).
@@ -31,7 +31,9 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::camera_catalog::{valid_overlay_name, valid_overlay_param, Catalog, CONFIG_TXT_LINE_MAX};
+use crate::camera_catalog::{
+    valid_overlay_name, valid_overlay_param, Catalog, CONFIG_TXT_LINE_MAX,
+};
 use crate::hardware_block::DeviceHardwareBlock;
 use crate::js;
 
@@ -640,11 +642,7 @@ impl CamCfgOp {
                 params,
                 rotation,
             } => {
-                let mut v = vec![
-                    "set".to_string(),
-                    port.token().to_string(),
-                    overlay.clone(),
-                ];
+                let mut v = vec!["set".to_string(), port.token().to_string(), overlay.clone()];
                 v.extend(params.iter().cloned());
                 v.push(format!("rotation={rotation}"));
                 v
@@ -671,7 +669,8 @@ pub const CAMCFG_USAGE: &str = "usage: xorgate-camcfg rotate <cam0|cam1> <overla
 /// `Err` is a sentence for the cloud-visible status detail. (The helper
 /// checks the same things again as root: its arguments are not trusted.)
 pub fn camcfg_call(op: CamCfgOp, catalog: &Catalog) -> Result<crate::commands::HelperCall, String> {
-    let bad_rotation = |r: u16| (r != 0 && r != 180).then(|| format!("rotation {r} is not 0 or 180"));
+    let bad_rotation =
+        |r: u16| (r != 0 && r != 180).then(|| format!("rotation {r} is not 0 or 180"));
     match &op {
         CamCfgOp::Rotate {
             overlay, rotation, ..
@@ -774,7 +773,13 @@ mod tests {
                 "rotation=0"
             ]
         );
-        let c = camcfg_call(CamCfgOp::Remove { port: CamPort::Cam0 }, catalog()).unwrap();
+        let c = camcfg_call(
+            CamCfgOp::Remove {
+                port: CamPort::Cam0,
+            },
+            catalog(),
+        )
+        .unwrap();
         assert_eq!(c.helper_args(), ["remove", "cam0"]);
     }
 
@@ -859,7 +864,8 @@ mod tests {
         }
         // 98 characters is the firmware's limit; 99 is refused. (A single
         // token is at most 32 characters, so the length comes from several.)
-        let many = |n: usize| -> Vec<String> { (0..n).map(|i| format!("p{i:02}=12345678")).collect() };
+        let many =
+            |n: usize| -> Vec<String> { (0..n).map(|i| format!("p{i:02}=12345678")).collect() };
         let l = |n: usize| render_overlay_line("imx290", CamPort::Cam0, &many(n), 0);
         assert_eq!(l(5).unwrap().len(), 97);
         assert_eq!(l(6), Err(RenderError::TooLong(110)));
@@ -938,7 +944,10 @@ mod tests {
             );
         }
         // Not the token: a parameter that merely starts alike.
-        assert_eq!(t("dtoverlay=imx290,cam0,rotations=1"), RotationToken::Absent);
+        assert_eq!(
+            t("dtoverlay=imx290,cam0,rotations=1"),
+            RotationToken::Absent
+        );
 
         let c = catalog();
         let eff = |text: &str| effective_rotation(&line(text), c);
@@ -982,7 +991,10 @@ mod tests {
         assert_eq!(p("dtoverlay=imx290,rotation=180,cam0"), CamPort::Cam0);
         assert_eq!(p("dtoverlay=imx219,cam1,rotation=180"), CamPort::Cam1);
         assert_eq!(p("dtoverlay=imx219"), CamPort::Cam1);
-        assert_eq!(p("dtoverlay=imx290,clock-frequency=74250000"), CamPort::Cam1);
+        assert_eq!(
+            p("dtoverlay=imx290,clock-frequency=74250000"),
+            CamPort::Cam1
+        );
         // Only the exact token selects the port.
         assert_eq!(p("dtoverlay=imx290,xcam0"), CamPort::Cam1);
         assert_eq!(p("dtoverlay=imx290,cam0=1"), CamPort::Cam1);
@@ -1184,8 +1196,14 @@ dtoverlay=o\n";
     #[test]
     fn rotating_a_line_changes_only_its_rotation_token() {
         let w = |text: &str, rot| line_with_rotation(&line(text), rot).unwrap();
-        assert_eq!(w("dtoverlay=imx290,cam0", 180), "dtoverlay=imx290,cam0,rotation=180");
-        assert_eq!(w("dtoverlay=imx290,cam0", 0), "dtoverlay=imx290,cam0,rotation=0");
+        assert_eq!(
+            w("dtoverlay=imx290,cam0", 180),
+            "dtoverlay=imx290,cam0,rotation=180"
+        );
+        assert_eq!(
+            w("dtoverlay=imx290,cam0", 0),
+            "dtoverlay=imx290,cam0,rotation=0"
+        );
         assert_eq!(
             w("dtoverlay=imx708,cam0,rotation=180", 0),
             "dtoverlay=imx708,cam0,rotation=0"
@@ -1225,7 +1243,10 @@ dtoverlay=o\n";
             line_with_rotation(&line("dtoverlay=IMX290,cam0"), 0),
             Err(RenderError::Token("IMX290".into()))
         );
-        let long = format!("dtoverlay=imx290,cam0,{}", ["abcdefgh=12345678"; 4].join(","));
+        let long = format!(
+            "dtoverlay=imx290,cam0,{}",
+            ["abcdefgh=12345678"; 4].join(",")
+        );
         assert_eq!(long.len(), 93);
         assert_eq!(
             line_with_rotation(&line(&long), 180),

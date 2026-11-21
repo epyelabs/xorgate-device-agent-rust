@@ -351,7 +351,9 @@ fn parse_sensor(v: &Value) -> Result<Sensor, String> {
     {
         let param = str_of(o, "param")?;
         if !valid_overlay_name(param) {
-            return Err(format!("option parameter \"{param}\" is outside [a-z0-9_-]"));
+            return Err(format!(
+                "option parameter \"{param}\" is outside [a-z0-9_-]"
+            ));
         }
         let values: Option<Vec<i64>> = o
             .get("values")
@@ -618,6 +620,9 @@ pub fn catalog() -> &'static Catalog {
 mod tests {
     use super::*;
 
+    /// One edit of the catalog document.
+    type Edit = Box<dyn Fn(&mut Value)>;
+
     fn doc() -> Value {
         serde_json::from_str(CATALOG_JSON).unwrap()
     }
@@ -666,7 +671,9 @@ mod tests {
             .preset_unsupported("1080p30-4mbps")
             .is_some());
         assert_eq!(
-            c.by_id("imx290").unwrap().preset_unsupported("1080p30-4mbps"),
+            c.by_id("imx290")
+                .unwrap()
+                .preset_unsupported("1080p30-4mbps"),
             None
         );
     }
@@ -758,7 +765,7 @@ mod tests {
     /// Rule 2: an unknown enum member makes that entry unusable, not the file.
     #[test]
     fn an_unknown_enum_member_costs_only_its_entry() {
-        let cases: [(&str, Box<dyn Fn(&mut Value)>, &str); 4] = [
+        let cases: [(&str, Edit, &str); 4] = [
             (
                 "tier",
                 Box::new(|d: &mut Value| d["sensors"][1]["tier"] = "experimental".into()),
@@ -771,7 +778,9 @@ mod tests {
             ),
             (
                 "os",
-                Box::new(|d: &mut Value| d["sensors"][1]["requires"]["os"] = serde_json::json!(["forky"])),
+                Box::new(|d: &mut Value| {
+                    d["sensors"][1]["requires"]["os"] = serde_json::json!(["forky"])
+                }),
                 "unknown OS release \"forky\"",
             ),
             (
@@ -799,19 +808,27 @@ mod tests {
         d["packageSets"][0]["targets"][0]["arch"] = "riscv64".into();
         let c = reparse(&d).unwrap();
         assert_eq!(c.sensors.len(), 4);
-        assert!(c.package_set("arducam-libcamera").unwrap().targets.is_empty());
+        assert!(c
+            .package_set("arducam-libcamera")
+            .unwrap()
+            .targets
+            .is_empty());
     }
 
     #[test]
     fn a_malformed_entry_costs_only_itself() {
-        let edits: [Box<dyn Fn(&mut Value)>; 7] = [
+        let edits: [Edit; 7] = [
             Box::new(|d: &mut Value| d["sensors"][2]["overlay"]["defaultRotation"] = 90.into()),
             Box::new(|d: &mut Value| d["sensors"][2]["overlay"]["name"] = "IMX708".into()),
             Box::new(|d: &mut Value| d["sensors"][2]["overlay"]["name"] = "imx708,cam0".into()),
             Box::new(|d: &mut Value| d["sensors"][2]["overlay"]["canFlip"] = "yes".into()),
             Box::new(|d: &mut Value| d["sensors"][2]["libcameraNames"] = serde_json::json!([])),
-            Box::new(|d: &mut Value| d["sensors"][2]["overlay"]["fixedParams"] = serde_json::json!(["a b"])),
-            Box::new(|d: &mut Value| d["sensors"][2]["options"][0]["values"] = serde_json::json!(["450"])),
+            Box::new(|d: &mut Value| {
+                d["sensors"][2]["overlay"]["fixedParams"] = serde_json::json!(["a b"])
+            }),
+            Box::new(|d: &mut Value| {
+                d["sensors"][2]["options"][0]["values"] = serde_json::json!(["450"])
+            }),
         ];
         for (i, edit) in edits.iter().enumerate() {
             let mut d = doc();
