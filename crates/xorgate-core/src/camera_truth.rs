@@ -582,7 +582,7 @@ fn identity_note(identity: Option<Identity>, driver: &str) -> String {
 /// | yes | the declared sensor | otherwise | `ok` |
 /// | yes | nothing | a line in config.txt, or a sensor node in the live device tree | `not-detected` |
 /// | yes | nothing | config.txt unreadable AND the device tree unreadable | `not-detected` |
-/// | yes | nothing | no line and no node | `empty` |
+/// | yes | nothing | no line (or config.txt unreadable) and no node (or the device tree unreadable), not both unreadable | `empty` |
 pub fn derive_port(f: &PortFacts<'_>) -> CameraPort {
     let declared = declared_for(f.boot.as_ref(), f.model_sensor);
     let node = f.nodes.and_then(|n| node_for_port(n, f.connector));
@@ -727,10 +727,17 @@ fn verdict_of(
             ),
         );
     }
+    // What is known to be missing: the line (config.txt was read), or, when
+    // config.txt could not be read, the overlay in the running kernel.
+    let why = if f.boot.is_some() {
+        "config.txt has no camera dtoverlay line for it"
+    } else {
+        "no camera overlay is loaded for it in the running kernel"
+    };
     (
         CameraVerdict::Empty,
         format!(
-            "No camera is configured on {port}: config.txt has no camera dtoverlay line for it (the device model expects {}). Add the line for the attached sensor and reboot, or leave it if the port is unused.",
+            "No camera is configured on {port}: {why} (the device model expects {}). Add the line for the attached sensor and reboot, or leave it if the port is unused.",
             f.model_sensor
         ),
     )
@@ -1296,6 +1303,27 @@ mod tests {
         );
         assert_eq!(p.bound.identity, None, "no driver is in use on the port");
         assert_eq!(status_word(&p), "empty");
+        // config.txt unreadable, the device tree readable and without a
+        // sensor node for the port: still `empty`, and the sentence does not
+        // claim to know what config.txt holds.
+        let p = derive_port(&PortFacts {
+            nodes: Some(&nodes),
+            ..facts("cam1", "csi1")
+        });
+        assert_eq!(p.verdict, CameraVerdict::Empty);
+        assert_eq!(p.boot_config, None);
+        assert_eq!(
+            p.detail,
+            "No camera is configured on csi1: no camera overlay is loaded for it in the running kernel (the device model expects imx290). Add the line for the attached sensor and reboot, or leave it if the port is unused."
+        );
+        // config.txt read (no line), the device tree unreadable: `empty` by
+        // config.txt's word.
+        let p = derive_port(&PortFacts {
+            boot: Some(boot_config_port(CM4, "csi1")),
+            ..facts("cam1", "csi1")
+        });
+        assert_eq!(p.verdict, CameraVerdict::Empty);
+        assert_eq!(p.bound.driver, None);
     }
 
     #[test]
