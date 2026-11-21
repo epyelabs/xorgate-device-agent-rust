@@ -84,8 +84,9 @@ PATH=/usr/sbin:/usr/bin:/sbin:/bin
 LC_ALL=C
 export PATH LC_ALL
 umask 022
-IFS='
-'
+# The default field separators (space, tab, newline), whatever was inherited.
+IFS=$(printf ' \t\n_')
+IFS=${IFS%_}
 
 usage() {
   echo "usage: xorgate-camcfg rotate <cam0|cam1> <overlay> <0|180> | set <cam0|cam1> <overlay> [param...] rotation=<0|180> | remove <cam0|cam1>" >&2
@@ -258,6 +259,10 @@ fi
 # Does the file end without a newline? (Kept that way unless a line is added.)
 nofinalnl=0
 if [ -s "$config" ] && [ -n "$(tail -c 1 "$config")" ]; then nofinalnl=1; fi
+
+# Temp files a killed run (or a power cut) left beside the config: ours by
+# name, never read by the firmware, removed before a new one is made.
+rm -f "$config".xorgate-camcfg.[0-9]* 2>/dev/null || true
 
 tmp="$config.xorgate-camcfg.$$"
 trap 'rm -f "$tmp" "$tmp.verdict" "$tmp.diff"' EXIT INT TERM

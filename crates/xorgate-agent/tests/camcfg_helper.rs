@@ -225,6 +225,19 @@ fn bench1_two_imx290_lines() {
     // The commented-out soundcard overlay at the end is still a comment.
     assert!(b.read().ends_with("#dtoverlay=googlevoicehat-soundcard\n"));
     assert_eq!(b.litter(), Vec::<String>::new());
+    // What a killed run left behind is swept by the next one.
+    for stale in [
+        "config.txt.xorgate-camcfg.4242",
+        "config.txt.xorgate-camcfg.4242.verdict",
+    ] {
+        std::fs::write(b.dir.join(stale), "half a file").unwrap();
+    }
+    std::fs::write(b.dir.join("config.txt.xorgate-camcfg-notes"), "not ours").unwrap();
+    assert_eq!(b.run(&["rotate", "cam1", "imx290", "180"]).code, 3);
+    assert_eq!(
+        b.litter(),
+        vec!["config.txt.xorgate-camcfg-notes".to_string()]
+    );
 }
 
 /// The CM4 with an IMX708: `dtoverlay=imx708,cam0,rotation=180` under `[all]`.

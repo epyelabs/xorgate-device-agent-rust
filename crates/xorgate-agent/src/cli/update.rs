@@ -1008,7 +1008,10 @@ mod tests {
             );
             // The helper, its allow-list and 025: either way.
             let helper = r.p.abs(plan::CAMCFG_BIN);
-            assert_eq!(fs::read_to_string(&helper).unwrap(), "#!/bin/sh\n# camcfg v1\n");
+            assert_eq!(
+                fs::read_to_string(&helper).unwrap(),
+                "#!/bin/sh\n# camcfg v1\n"
+            );
             assert_eq!(mode_of(&helper), 0o755);
             let list = r.p.abs(xorgate_core::boot_config::CAMCFG_ALLOW_LIST);
             assert_eq!(fs::read_to_string(&list).unwrap(), "imx290\n");
@@ -1022,7 +1025,10 @@ mod tests {
             // The shared helpers and their grants: only on a Rust-only device.
             let camrotate = fs::read_to_string(r.p.abs(plan::CAMROTATE_BIN)).unwrap();
             if coexisting {
-                assert_eq!(camrotate, "#!/bin/sh\n# JS camrotate\n", "left to the JS agent");
+                assert_eq!(
+                    camrotate, "#!/bin/sh\n# JS camrotate\n",
+                    "left to the JS agent"
+                );
                 assert!(!r.p.abs("/usr/local/bin/xorgate-setclock").exists());
                 assert!(!r.p.abs(plan::CAMROTATE_SUDOERS_DEST).exists());
                 assert!(!r.p.abs(plan::CLOCK_SUDOERS_DEST).exists());

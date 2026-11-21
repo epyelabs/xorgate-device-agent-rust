@@ -113,6 +113,8 @@ What gets uploaded, and the guard rails:
 | `/etc/systemd/system/xorgate-agent-rs.service` (+ `.d/10-user.conf`) | the agent unit, run as the provisioning user |
 | `/etc/systemd/system/xorgate-updater-rs.service` (+ `.d/10-dist.conf`) | the one-shot updater |
 | `/etc/sudoers.d/024_xorgate-update-rs` | lets the agent start exactly the updater unit, nothing else |
+| `/usr/local/bin/xorgate-camcfg` (+ `xorgate-camcfg.overlays`) | the camera-line owner: the root helper through which the agent changes the camera `dtoverlay=` lines of `config.txt`, and the overlay names it may write (generated from the sensor catalog). It builds every line itself from checked parts and never reboots |
+| `/etc/sudoers.d/025_xorgate-camcfg` | lets the agent run that helper, nothing else |
 | `/etc/xorgate/` | identity, `agent.env`, manifests: shared with the reference agent, read-only for the converter |
 | `/var/lib/xorgate/` | settings and state: shared with the reference agent |
 
