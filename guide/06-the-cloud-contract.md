@@ -133,16 +133,17 @@ Value rules:
 
   | Field | Values |
   |---|---|
-  | `verdict` | `ok`, `mismatch`, `not-detected`, `no-frames`, `empty`, `unchecked` |
+  | `verdict` | `ok`, `mismatch`, `reboot-required`, `not-detected`, `no-frames`, `empty`, `unchecked` |
   | `capture.state` | `streaming`, `starting`, `failing`, `absent`, `off` |
   | `declared.source` | `boot-config`, `model` |
   | `bound.identity` | `chip-id`, `weak`, `none`, or `null` |
 
   **A reader must tolerate a value it does not know in any of these, and a key it does not know
-  anywhere in the block.** Later phases add verdicts (`reboot-required`, `requirements-missing`,
-  `unknown-sensor`, and `unmanaged` for a port with no sensor setting), a `config` source, and
-  fields. `detail` is for people: show it, never parse it. `declared`, `bootConfig` and every
-  field of `bound` may be `null`.
+  anywhere in the block.** Later phases add verdicts (`requirements-missing`, `unknown-sensor`,
+  and `unmanaged` for a port with no sensor setting), a `config` source, and
+  fields. `detail` is for people: show it, never parse it. `capture.lastError` is plain text
+  (terminal colour codes are stripped). `declared`, `bootConfig` and every field of `bound` may be
+  `null`.
 
 ### Commands
 

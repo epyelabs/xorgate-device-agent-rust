@@ -765,6 +765,22 @@ impl RecordingManager {
         self.inner.reapply()
     }
 
+    /// Rust-only (camera report, the heal of a held port): restart every
+    /// capture child, then apply as usual. It is the Replace transition a
+    /// preset change takes, nothing new: the running supervisor is stopped
+    /// and waited for, then a new one starts with the current camera set.
+    /// Needed when libcamera gained a camera while captures were running:
+    /// a capture started before still holds the media device, and the new
+    /// camera cannot be acquired until that capture is restarted.
+    pub fn restart_capture(&self) -> Result<(), String> {
+        {
+            let mut st = lock(&self.inner.state);
+            st.video_key.clear();
+            st.video_cameras_key.clear();
+        }
+        self.inner.reapply()
+    }
+
     /// The receiver of errors the TS leaves uncaught (the 5 s poll's
     /// `reapply`). The worker takes it once and exits non-zero on a message.
     pub fn take_fatal(&self) -> Option<mpsc::UnboundedReceiver<String>> {
