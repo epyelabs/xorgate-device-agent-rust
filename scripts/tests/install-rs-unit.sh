@@ -289,7 +289,8 @@ cmp -s /usr/local/bin/xorgate-camcfg "$SRC/system/xorgate-camcfg" && [ "$(stat -
 expect $? 0 "xorgate-camcfg == the tarball's, 0755 root"
 cmp -s /usr/local/bin/xorgate-camcfg.overlays "$SRC/system/xorgate-camcfg.overlays" && [ "$(stat -c '%a %u:%g' /usr/local/bin/xorgate-camcfg.overlays)" = "644 0:0" ]
 expect $? 0 "xorgate-camcfg.overlays == the tarball's, 0644 root"
-grep -n 'xorgate-camcfg.overlays written' "$O" | cut -d: -f1 > "$T/l1"; grep -n 'bin/xorgate-camcfg written' "$O" | cut -d: -f1 > "$T/l2"
+# (each "written" line is printed twice: as it happens, and in the final summary)
+grep -n 'xorgate-camcfg.overlays written' "$O" | head -n1 | cut -d: -f1 > "$T/l1"; grep -n 'bin/xorgate-camcfg written' "$O" | head -n1 | cut -d: -f1 > "$T/l2"
 [ -s "$T/l1" ] && [ -s "$T/l2" ] && [ "$(cat "$T/l1")" -lt "$(cat "$T/l2")" ]; expect $? 0 "the allow-list lands BEFORE the helper"
 if [ "$NET" = 1 ]; then
   [ "$(stat -c '%a %u:%g' /etc/sudoers.d/025_xorgate-camcfg)" = "440 0:0" ] \

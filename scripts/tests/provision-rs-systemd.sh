@@ -69,6 +69,12 @@ case " $(sp Environment $UPD) " in *" DEVICE_DIST_VERSION=latest "*) ok "10-dist
 visudo -c >/dev/null 2>&1 && ok "visudo -c" || bad "visudo -c"
 sudo -u pi sudo -n -l /usr/bin/systemctl start --no-block xorgate-updater-rs.service >/dev/null 2>&1 && ok "pi may start the updater (024)" || bad "024 grant missing"
 sudo -u pi sudo -n -l /usr/bin/systemctl start xorgate-agent-rs.service >/dev/null 2>&1 && bad "pi may start other units" || ok "…and nothing else"
+# The camera-line owner's grant (025, Rust-only): the helper with any
+# arguments (it checks them itself), and not the file beside it.
+sudo -u pi sudo -n -l /usr/local/bin/xorgate-camcfg rotate cam0 imx290 180 >/dev/null 2>&1 && ok "pi may run the camera-line owner (025)" || bad "025 grant missing"
+sudo -u pi sudo -n -l /usr/local/bin/xorgate-camcfg.overlays >/dev/null 2>&1 && bad "025 also grants the allow-list file" || ok "…and not its allow-list (a data file)"
+[ "$(stat -c '%a %U' /usr/local/bin/xorgate-camcfg.overlays)" = "644 root" ] && [ "$(stat -c '%a %U' /usr/local/bin/xorgate-camcfg)" = "755 root" ] \
+  && ok "helper 0755 root, allow-list 0644 root (the helper trusts a root-owned list only)" || bad "camcfg modes: $(stat -c '%a %U %n' /usr/local/bin/xorgate-camcfg*)"
 
 echo "== the first cloud update rewrites nothing (the REAL xorgate-rs update)"
 REAL=$SRC/tools/replay/.cache/bin/xorgate-rs
