@@ -581,7 +581,8 @@ pub struct PortFacts<'a> {
     pub backoff_step: u32,
     pub last_error: Option<&'a str>,
     /// The capture fails by STALLING (it runs, writes nothing and the
-    /// progress watchdog kills it): the video preset it runs.
+    /// progress watchdog kills it): the video preset it runs. Worded as a
+    /// stall only when `last_error` is `None`.
     pub stalled_preset: Option<&'a str>,
     /// The stream's `.gst` exists and is not the bridged kind: the KVS
     /// master owns the camera and the agent's capture never runs it.
@@ -664,7 +665,10 @@ impl Resolved<'_> {
         let d = self
             .declared
             .filter(|d| d.source == DeclaredSource::BootConfig)?;
-        let want = camera_overlay(&d.sensor).map_or(d.sensor.as_str(), |o| o.driver);
+        // Only for an overlay in the table: outside it the node's name is
+        // not known (`arducam-pivariety` and its like name their node
+        // differently), so a name that differs proves nothing.
+        let want = camera_overlay(&d.sensor)?.driver;
         let node = self.node?;
         let loaded = self.port_nodes.iter().any(|n| node_sensor(&n.node) == want);
         (!loaded).then(|| node_sensor(&node.node))
@@ -817,7 +821,9 @@ fn verdict_of(r: &Resolved<'_>) -> (CameraVerdict, String) {
         let note = identity_note(r.identity, drv);
         let unknown = r.unknown_overlay_note();
         return match f.capture {
-            CaptureTruth::Failing => match f.stalled_preset {
+            // The stall wording only when the child printed no error of its
+            // own: with one (a frame timeout, say), that error is the lead.
+            CaptureTruth::Failing => match f.stalled_preset.filter(|_| f.last_error.is_none()) {
                 Some(preset) => (
                     CameraVerdict::NoFrames,
                     format!(
@@ -1451,16 +1457,35 @@ mod tests {
         );
         assert_eq!(p.capture.backoff_step, 2);
         assert_eq!(status_word(&p), "no-frames");
-        // The known 1080p30 recording stall on a HEALTHY camera: it names
-        // the preset and does not send the reader to the ribbon cable.
+        // The known 1080p30 recording stall on a HEALTHY camera (the child
+        // runs and prints NO error): it names the preset and does not send
+        // the reader to the ribbon cable.
+        let stalled = PortFacts {
+            stalled_preset: Some("1080p30-4mbps"),
+            last_error: None,
+            ..failing.clone()
+        };
+        let p = derive_port(&stalled);
+        assert_eq!(p.verdict, CameraVerdict::NoFrames);
+        assert_eq!(
+            p.detail,
+            "imx290 on csi0 starts, but its recording stalls at preset 1080p30-4mbps: the capture process runs, writes nothing and is restarted by the progress watchdog. Try another video preset; a stall of this kind is a known fault of some presets and does not point at the cable or the sensor."
+        );
+        // A watchdog kill of a child that DID print an error (a frame
+        // timeout): the sentence must not contradict it. The normal
+        // no-frames wording, with the error in `capture.lastError`.
         let p = derive_port(&PortFacts {
             stalled_preset: Some("1080p30-4mbps"),
             ..failing
         });
         assert_eq!(p.verdict, CameraVerdict::NoFrames);
         assert_eq!(
+            p.capture.last_error.as_deref(),
+            Some("ERROR RPI pipeline_base.cpp:1408 Camera frontend has timed out!")
+        );
+        assert_eq!(
             p.detail,
-            "imx290 on csi0 starts, but its recording stalls at preset 1080p30-4mbps: the capture process runs, writes nothing and is restarted by the progress watchdog. Try another video preset; a stall of this kind is a known fault of some presets and does not point at the cable or the sensor."
+            "imx290 is listed on csi0 but delivers no frames: its capture process keeps failing. The imx290 driver cannot confirm which chip is attached, so the camera on this port may be a different sensor, or nothing may be attached. Check the ribbon cable and that the dtoverlay line in config.txt names the sensor that is really attached."
         );
         // A chip-ID driver gets no identity caveat.
         let nodes = [node("csi1", "imx219@10", Some("imx219"))];
@@ -1597,6 +1622,33 @@ mod tests {
             p.detail,
             "config.txt now declares imx708 on csi0, but the running kernel still has the imx219 overlay loaded, and no camera is listed there. Reboot to apply the config.txt change."
         );
+        // An overlay OUTSIDE the table whose node is named differently
+        // (`arducam-pivariety` instantiates `arducam_pivariety@c`): nothing
+        // is inferred from the names, so no "reboot to apply".
+        let nodes = [node(
+            "csi0",
+            "arducam_pivariety@c",
+            Some("arducam-pivariety"),
+        )];
+        let p = derive_port(&PortFacts {
+            boot_text: Some("dtoverlay=arducam-pivariety,cam0\n"),
+            nodes: Some(&nodes),
+            listed: Some((
+                "arducam-pivariety",
+                "/base/soc/i2c0mux/i2c@0/arducam_pivariety@c",
+            )),
+            capture: CaptureTruth::Streaming,
+            ..facts("cam0", "csi0")
+        });
+        assert_eq!(p.verdict, CameraVerdict::Ok);
+        assert!(!p.detail.contains("Reboot"), "{}", p.detail);
+        let p = derive_port(&PortFacts {
+            boot_text: Some("dtoverlay=arducam-pivariety,cam0\n"),
+            nodes: Some(&nodes),
+            ..facts("cam0", "csi0")
+        });
+        assert_eq!(p.verdict, CameraVerdict::NotDetected);
+        assert!(!p.detail.contains("Reboot to apply"), "{}", p.detail);
         // An overlay served by the SAME driver is not a stale edit.
         let nodes = [node("csi0", "imx290@1a", Some("imx290"))];
         let p = derive_port(&PortFacts {
