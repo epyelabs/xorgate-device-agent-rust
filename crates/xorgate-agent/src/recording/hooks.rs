@@ -34,7 +34,7 @@ use tracing::{info, warn};
 use xorgate_core::cameras::EnumeratedCamera;
 use xorgate_core::hardware_block::DeviceHardwareBlock;
 use xorgate_core::stream_guard::StreamHardwareStatus;
-use xorgate_core::telemetry::{ActivityLevel, RunMode};
+use xorgate_core::telemetry::ActivityLevel;
 
 use super::manager::RecordingManager;
 use crate::ctx::{AgentCtx, BoxFut, MediaControl, PhaseHooks};
@@ -45,12 +45,13 @@ use crate::ctx::{AgentCtx, BoxFut, MediaControl, PhaseHooks};
 /// fatal at boot, logged and skipped on a cloud change (review-wp5 M1).
 pub trait HardwareReconciler: Send + Sync {
     fn reconcile(&self) -> BoxFut<'_, Result<Vec<String>, String>>;
-    /// Rust-only (support-other-camera-models Phase 0): the same pass, run
+    /// Rust-only (support-other-camera-models Phase 0): list the cameras
     /// again for a port that is held for lack of a camera while a driver is
-    /// bound on it. It differs from [`reconcile`](Self::reconcile) in its
-    /// journal only: a line the previous pass already logged is not logged
-    /// again (a re-check every five minutes must not repeat "no camera
-    /// enumerated …" for ever). Default: the plain pass.
+    /// bound on it. HEAL-ONLY: it may turn a held port into a found one and
+    /// nothing else (never a found port into a held one; a listing that
+    /// cannot enumerate changes nothing), it is skipped while another pass
+    /// runs, and it journals only the streams it healed. Default: the plain
+    /// pass.
     fn recheck(&self) -> BoxFut<'_, Result<Vec<String>, String>> {
         self.reconcile()
     }
@@ -69,10 +70,12 @@ pub struct StreamHardwareSnapshot {
     pub armed: bool,
     /// `streamHardware`: the verdicts of the last pass that could enumerate.
     pub statuses: IndexMap<String, StreamHardwareStatus>,
-    /// Camera report (Rust-only): how many passes have completed.
+    /// Camera report (Rust-only): how many listings count as a check: every
+    /// full pass, and every re-listing that could enumerate.
     pub passes: u64,
-    /// Camera report (Rust-only): what the LAST completed pass enumerated;
-    /// `None` = it could not enumerate (or no pass has completed).
+    /// Camera report (Rust-only): what the last FULL pass enumerated, plus
+    /// the cameras a re-listing found since; `None` = that pass could not
+    /// enumerate (or no pass has completed).
     pub cameras: Option<Vec<EnumeratedCamera>>,
 }
 
@@ -82,9 +85,12 @@ pub struct StreamHardwareSnapshot {
 #[derive(Default)]
 pub struct StreamHardware {
     inner: Mutex<StreamHardwareSnapshot>,
-    /// The `[hardware]` lines of the last pass (what a re-check must not
-    /// repeat).
-    last_lines: Mutex<Vec<String>>,
+    /// One reconcile pass at a time. A full pass (boot, hardware-block
+    /// change) waits for its turn; a re-listing that finds a pass running
+    /// is skipped. So a re-listing never runs beside a block-change pass,
+    /// and one that started before a block change has finished (and been
+    /// replaced wholesale) by the time that pass's result lands.
+    pass_lock: tokio::sync::Mutex<()>,
 }
 
 impl StreamHardware {
@@ -156,17 +162,39 @@ pub struct MediaReconciler {
 }
 
 impl MediaReconciler {
-    /// One pass. `quiet` = a re-check: lines the previous pass logged are
-    /// dropped, and a stream that got its camera says so once.
+    /// One pass. `quiet` = a re-listing of a held port (Rust-only), which is
+    /// HEAL-ONLY:
+    ///
+    /// - it may only upgrade a port from "no camera" to "found"; a port
+    ///   that was found is never downgraded, whatever this listing says (a
+    ///   listing that omits a streaming camera must not stop its capture);
+    /// - a listing that cannot enumerate changes NOTHING: verdicts, cameras
+    ///   and the pass count stay as they were (it is not a check);
+    /// - its journal is the healed streams' lines only, plus one "a camera
+    ///   is enumerated now" line per healed stream.
+    ///
+    /// A full pass (boot, hardware-block change) replaces the snapshot
+    /// wholesale, as the TS does.
     async fn pass(&self, quiet: bool) -> Result<Vec<String>, String> {
         let cfg = &self.ctx.env.config;
+        if !crate::ops::camera_truth::camera_report_enabled(cfg.mode, cfg.offline) {
+            return Ok(Vec::new());
+        }
+        // One pass at a time (see `StreamHardware::pass_lock`).
+        let _turn = if quiet {
+            match self.stream_hw.pass_lock.try_lock() {
+                Ok(g) => g,
+                Err(_) => return Ok(Vec::new()),
+            }
+        } else {
+            self.stream_hw.pass_lock.lock().await
+        };
+        // Read under the lock: a pass queued behind another sees the block
+        // in force when ITS turn comes.
         let block = self.ctx.hardware.borrow().clone();
         let Some(block) = block else {
             return Ok(Vec::new());
         };
-        if cfg.mode != RunMode::Real || cfg.offline {
-            return Ok(Vec::new());
-        }
         let (state, clock) = (self.ctx.state.clone(), self.ctx.clock.clone());
         let emit = move |level: crate::media::ReconcileLevel, msg: &str| {
             let t = clock.wall_ms();
@@ -183,24 +211,18 @@ impl MediaReconciler {
             // `store.event(level, …); store.flush(t, true)` = `note`.
             state.note(level, format!("hardware: {msg}"), t);
         };
-        let before: Vec<String> = if quiet {
-            self.stream_hw
-                .last_lines
-                .lock()
-                .unwrap_or_else(|p| p.into_inner())
-                .clone()
-        } else {
-            Vec::new()
-        };
-        let lines: Arc<Mutex<Vec<String>>> = Arc::default();
+        // A full pass logs as it goes; a re-listing's lines are held back
+        // until it is known which streams healed.
+        let held_back: Arc<Mutex<Vec<(crate::media::ReconcileLevel, String)>>> = Arc::default();
         let log: crate::media::ReconcileLog = {
-            let (lines, emit) = (lines.clone(), emit.clone());
+            let (held_back, emit) = (held_back.clone(), emit.clone());
             Arc::new(move |level, msg: &str| {
-                lines
-                    .lock()
-                    .unwrap_or_else(|p| p.into_inner())
-                    .push(msg.to_string());
-                if !before.iter().any(|l| l == msg) {
+                if quiet {
+                    held_back
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner())
+                        .push((level, msg.to_string()));
+                } else {
                     emit(level, msg);
                 }
             })
@@ -222,26 +244,12 @@ impl MediaReconciler {
         // A throw (first failed mkdir/write, Node's message) leaves the
         // verdicts untouched (TS parity, review-wp5 M1).
         .await?;
-        let healed: Vec<String> = {
+        if !quiet {
             let mut g = self
                 .stream_hw
                 .inner
                 .lock()
                 .unwrap_or_else(|p| p.into_inner());
-            // Streams that were held for lack of a camera and now have one.
-            let healed = if res.cameras.is_some() {
-                res.statuses
-                    .iter()
-                    .filter(|(k, st)| {
-                        **st != StreamHardwareStatus::NoCamera
-                            && g.armed
-                            && g.statuses.get(*k) == Some(&StreamHardwareStatus::NoCamera)
-                    })
-                    .map(|(k, _)| k.clone())
-                    .collect()
-            } else {
-                Vec::new()
-            };
             if res.cameras.is_some() {
                 // `streamHardware.clear(); set(...)…; streamGuardArmed = true`.
                 g.armed = true;
@@ -251,23 +259,70 @@ impl MediaReconciler {
             // above stay those of the last pass that could enumerate).
             g.passes += 1;
             g.cameras = res.cameras.clone();
+            return Ok(res.changed_streams);
+        }
+
+        // ---- A re-listing: heal-only.
+        let Some(listed) = &res.cameras else {
+            // It could not enumerate: not a check. Nothing changes.
+            tracing::debug!("[hardware] re-listing could not enumerate cameras; ignored");
+            return Ok(Vec::new());
+        };
+        let healed: Vec<String> = {
+            let mut g = self
+                .stream_hw
+                .inner
+                .lock()
+                .unwrap_or_else(|p| p.into_inner());
+            let snap = &mut *g;
+            let healed: Vec<String> = res
+                .statuses
+                .iter()
+                .filter(|(k, st)| {
+                    **st != StreamHardwareStatus::NoCamera
+                        && snap.statuses.get(*k) == Some(&StreamHardwareStatus::NoCamera)
+                })
+                .map(|(k, _)| k.clone())
+                .collect();
+            for key in &healed {
+                snap.statuses.insert(key.clone(), res.statuses[key]);
+            }
+            match &mut snap.cameras {
+                // The camera of each healed stream joins the listing.
+                Some(known) => {
+                    for v in block.video.iter().filter(|v| healed.contains(&v.key)) {
+                        let port = Some(v.connector.as_str());
+                        let found = listed.iter().find(|c| c.connector.as_deref() == port);
+                        if let Some(cam) =
+                            found.filter(|_| !known.iter().any(|c| c.connector.as_deref() == port))
+                        {
+                            known.push(cam.clone());
+                        }
+                    }
+                }
+                // The last full pass could not enumerate: this listing is
+                // the first one there is (the verdicts are still only
+                // upgraded).
+                None => snap.cameras = Some(listed.clone()),
+            }
+            // A listing that could enumerate is a check.
+            snap.passes += 1;
             healed
         };
-        *self
-            .stream_hw
-            .last_lines
+        for (level, msg) in held_back
             .lock()
-            .unwrap_or_else(|p| p.into_inner()) =
-            lines.lock().unwrap_or_else(|p| p.into_inner()).clone();
-        // Rust-only: the hold of B5 ended. Said once, on a re-check only
-        // (a boot or hardware-change pass keeps the TS's lines exactly).
-        if quiet {
-            for key in &healed {
-                emit(
-                    crate::media::ReconcileLevel::Info,
-                    &format!("{key}: a camera is enumerated now — starting the stream"),
-                );
+            .unwrap_or_else(|p| p.into_inner())
+            .drain(..)
+        {
+            if healed.iter().any(|k| msg.starts_with(&format!("{k}: "))) {
+                emit(level, &msg);
             }
+        }
+        for key in &healed {
+            emit(
+                crate::media::ReconcileLevel::Info,
+                &format!("{key}: a camera is enumerated now — starting the stream"),
+            );
         }
         Ok(res.changed_streams)
     }

@@ -991,6 +991,7 @@ async fn camera_report_rides_effective_and_reports_on_change_only() {
             }
         }),
         recheck: Box::new(|| {}),
+        capture_wanted: Box::new(|_| true),
         hold_ms: REPORT_HOLD_MS,
     });
     truth.refresh();

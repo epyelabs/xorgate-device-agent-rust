@@ -166,8 +166,12 @@ pub fn own_direct_render_camera(content: &str, stream_key: &str) -> Option<Strin
     {
         return Some(name);
     }
+    // The JS clause, for the name the file carries, UNQUOTED as the JS
+    // looks for it: a quoted `camera-name="…"` never matched before Phase 0
+    // and does not match now.
     let legacy = !t.contains('\n')
         && t.starts_with("libcamerasrc")
+        && t.contains(&format!("camera-name={name}"))
         && t.contains("x264enc")
         && t.contains("appsink");
     legacy.then_some(name)
@@ -217,14 +221,27 @@ mod tests {
             ),
             None
         );
-        // A quoted name is read without its quotes.
+        // A QUOTED name: the legacy clause looks for `camera-name=<name>`
+        // unquoted, exactly as the JS rule does, so such a file was never
+        // ours before Phase 0 and is not ours now, whichever camera it names.
+        let quoted = "libcamerasrc camera-name=\"/c\" ! x264enc ! appsink";
+        assert!(!is_recognized_direct_render(quoted, "cam0", "/c"));
+        assert_eq!(own_direct_render_camera(quoted, "cam0"), None);
+        // What the new rule recognises that the JS rule (asked about the
+        // camera enumerated now, `/new`) does not is exactly the B6 case: a
+        // one-line x264enc file, or our exact render, naming ANOTHER camera.
+        let other = "libcamerasrc camera-name=/old ! x264enc ! appsink";
+        assert!(!is_recognized_direct_render(other, "cam0", "/new"));
         assert_eq!(
-            own_direct_render_camera(
-                "libcamerasrc camera-name=\"/c\" ! x264enc ! appsink",
-                "cam0"
-            )
-            .as_deref(),
-            Some("/c")
+            own_direct_render_camera(other, "cam0").as_deref(),
+            Some("/old")
+        );
+        // For the camera enumerated now the two rules agree.
+        let same = "libcamerasrc camera-name=/new ! x264enc ! appsink";
+        assert!(is_recognized_direct_render(same, "cam0", "/new"));
+        assert_eq!(
+            own_direct_render_camera(same, "cam0").as_deref(),
+            Some("/new")
         );
         // Operator pipelines: never ours.
         for custom in [
