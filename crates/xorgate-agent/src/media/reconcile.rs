@@ -16,17 +16,32 @@
 //! Files are read as bytes → lossy UTF-8 (`readFileSync(p, "utf8")`, D4) and
 //! written with a plain `writeFileSync` (not atomic, like the TS). Content is
 //! compared after JS `trim()`.
+//!
+//! Two deliberate differences from the TS (support-other-camera-models plan,
+//! Phase 0; both leave a healthy IMX290 device byte-identical):
+//!
+//! - B6: a `.gst.direct` is ours when it is one of our renders FOR THE
+//!   CAMERA NAME IT CARRIES (`own_direct_render_camera`), not only for the
+//!   camera enumerated now. So after a sensor change the previous sensor's
+//!   render is replaced instead of being left behind with a dead
+//!   `camera-name=`. An operator's pipeline is still never overwritten.
+//! - The mismatch warning compares the enumerated sensor with the DECLARED
+//!   one (the port's config.txt line when [`ReconcileOpts::boot_config`] is
+//!   given, else the model), and libcamera's variant names
+//!   (`imx708_wide`…) are the same sensor. The camera is used anyway, as
+//!   before.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use indexmap::IndexMap;
+use xorgate_core::camera_truth::{boot_config_port, declared_for, same_sensor, DeclaredSource};
 use xorgate_core::cameras::EnumeratedCamera;
 use xorgate_core::hardware_block::DeviceHardwareBlock;
 use xorgate_core::js::trim as js_trim;
 use xorgate_core::pipeline_builder::{
     build_bridged_kvs_pipeline, build_direct_kvs_pipeline, is_recognized_bridged_render,
-    is_recognized_direct_render,
+    own_direct_render_camera,
 };
 use xorgate_core::stream_guard::StreamHardwareStatus;
 use xorgate_core::video_capture::{camera_file_for, direct_backup_for, pipeline_file_for};
@@ -78,6 +93,10 @@ pub struct ReconcileOpts {
     pub list_exec: Option<ListExec>,
     /// `None` = `console[level](`[hardware] ${msg}`)`.
     pub log: Option<ReconcileLog>,
+    /// The text of `/boot/firmware/config.txt` (Rust-only): when given, a
+    /// port's `dtoverlay=` line declares its sensor ahead of the model for
+    /// the mismatch warning. `None` = the model alone, as the TS has it.
+    pub boot_config: Option<String>,
 }
 
 /// `ReconcileResult` (`hardware-reconcile.ts:52-59`).
@@ -191,12 +210,23 @@ pub async fn reconcile_hardware(
             );
             continue;
         };
-        if cam.sensor != video.sensor {
+        // Declared = the port's config.txt line, then the model.
+        let boot = opts
+            .boot_config
+            .as_deref()
+            .map(|t| boot_config_port(t, &video.connector));
+        if let Some(d) = declared_for(boot.as_ref(), &video.sensor)
+            .filter(|d| !same_sensor(&d.sensor, &cam.sensor))
+        {
+            let who = match d.source {
+                DeclaredSource::Model => "model expects",
+                DeclaredSource::BootConfig => "config.txt declares",
+            };
             log(
                 ReconcileLevel::Warn,
                 &format!(
-                    "{}: model expects {} on {}, enumerated {} — using it anyway",
-                    video.key, video.sensor, video.connector, cam.sensor
+                    "{}: {who} {} on {}, enumerated {} — using it anyway",
+                    video.key, d.sensor, video.connector, cam.sensor
                 ),
             );
         }
@@ -243,10 +273,11 @@ pub async fn reconcile_hardware(
             wrote = true;
         }
 
+        // B6: ours for whatever camera the file names (see the module doc).
         let current_direct = read_if_exists(&direct_path);
         if current_direct
             .as_deref()
-            .is_none_or(|c| is_recognized_direct_render(c, &video.key, &cam.camera_name))
+            .is_none_or(|c| own_direct_render_camera(c, &video.key).is_some())
             && current_direct.as_deref().map(js_trim) != Some(js_trim(&desired_direct))
         {
             write(&direct_path, &desired_direct)?;

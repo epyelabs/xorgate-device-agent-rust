@@ -16,6 +16,7 @@ use xorgate_hal::boot_sources::FileBootSources;
 use xorgate_hal::kvs_manifest_io::load_manifest;
 use xorgate_hal::read_lossy::read_text;
 
+use super::hooks::StreamHardware;
 use super::manager::{PowerSampleFn, SampleGroupsFn};
 use crate::ctx::{AgentCtx, TelemetrySource};
 
@@ -71,9 +72,26 @@ pub fn boot_sources(
 /// `cameras: () => resolveBridgedCameras(pipelineDir, loadManifest(...)?.channels ?? [])`
 /// (`worker.ts:446-450`), re-resolved on every apply pass; each skipped
 /// bridged stream warns `[video-capture] …` (`video-capture.ts:105-108`).
-pub fn cameras_fn(ctx: &AgentCtx) -> Arc<dyn Fn() -> Vec<CaptureCamera> + Send + Sync> {
+///
+/// B5 (support-other-camera-models Phase 0, RUST-ONLY): a stream whose port
+/// enumerated NO camera is dropped from the set (`stream_hw`,
+/// [`StreamHardware::capture_allowed`]). The TS resolves the camera name
+/// from the files alone (`<key>.camera`, else the name inside
+/// `<key>.gst.direct`), and the reconciler leaves both in place when no
+/// camera enumerates, so it launches a capture for a camera that is not
+/// there, from the PREVIOUS sensor's name. The filter sits here because this
+/// closure is the only source of the capture daemon's camera set
+/// (`RecordingManager::apply_video`). `None` = no reconcile verdicts (the
+/// tests that drive the TS behaviour): no filter.
+pub fn cameras_fn(
+    ctx: &AgentCtx,
+    stream_hw: Option<Arc<StreamHardware>>,
+) -> Arc<dyn Fn() -> Vec<CaptureCamera> + Send + Sync> {
     let pipelines = ctx.paths.pipelines.display().to_string();
     let manifest = ctx.paths.kvs_manifest.clone();
+    // The keys held on the last pass, so the hold is logged once, not on
+    // every apply pass.
+    let held_before: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
     Arc::new(move || {
         let channels: Vec<KvsChannel> = load_manifest(&manifest)
             .map(|m| {
@@ -92,8 +110,33 @@ pub fn cameras_fn(ctx: &AgentCtx) -> Arc<dyn Fn() -> Vec<CaptureCamera> + Send +
         for w in warnings {
             warn!("{w}");
         }
+        let Some(hw) = &stream_hw else { return cams };
+        let (cams, held) = hold_cameras_without_a_sensor(cams, |key| hw.capture_allowed(key));
+        let mut before = held_before.lock().unwrap_or_else(|p| p.into_inner());
+        for key in held.iter().filter(|k| !before.contains(k)) {
+            warn!("{}", capture_held_warning(key));
+        }
+        *before = held;
         cams
     })
+}
+
+/// B5: split the resolved camera set into the cameras that may be launched
+/// and the stream keys held because their port has no camera.
+pub fn hold_cameras_without_a_sensor(
+    cams: Vec<CaptureCamera>,
+    allowed: impl Fn(&str) -> bool,
+) -> (Vec<CaptureCamera>, Vec<String>) {
+    let (keep, held): (Vec<CaptureCamera>, Vec<CaptureCamera>) =
+        cams.into_iter().partition(|c| allowed(&c.stream_key));
+    (keep, held.into_iter().map(|c| c.stream_key).collect())
+}
+
+/// B5: the line logged once when a stream's capture is held.
+pub fn capture_held_warning(stream_key: &str) -> String {
+    format!(
+        "[video-capture] {stream_key}: no camera enumerated on its port — capture not started (the camera name left in {stream_key}.camera / {stream_key}.gst.direct is stale)"
+    )
 }
 
 /// `encoder: () => hardwareBlock?.encoder ?? "sw-h264"` (`worker.ts:453`).

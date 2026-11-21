@@ -99,6 +99,7 @@ fn rules_fixture() {
                         },
                         desired: None,
                         obd: None,
+                        cameras: None,
                         hints: None,
                         mode: None,
                         camera_mount: None,

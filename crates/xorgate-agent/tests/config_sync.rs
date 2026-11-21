@@ -928,3 +928,154 @@ fn a_failed_apply_reports_the_temp_path_like_node() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+/// The per-port camera report (support-other-camera-models Phase 0,
+/// RUST-ONLY: no `config-sync.test.ts` counterpart) through the real
+/// `ConfigSync`: `effective.cameras` rides every report as the LAST key of
+/// `effective`, a change of the block asks for exactly one more report
+/// (after the hold), and a walk down the capture ladder asks for none.
+#[tokio::test(start_paused = true)]
+async fn camera_report_rides_effective_and_reports_on_change_only() {
+    use xorgate_agent::ops::camera_truth::{CameraTruth, CameraTruthOptions, REPORT_HOLD_MS};
+    use xorgate_agent::recording::hooks::StreamHardwareSnapshot;
+    use xorgate_core::camera_truth::CaptureLive;
+    use xorgate_core::cameras::EnumeratedCamera;
+    use xorgate_core::capture_ladder::CaptureState;
+    use xorgate_core::hardware_block::parse_hardware_block;
+    use xorgate_core::stream_guard::StreamHardwareStatus;
+
+    let (h, cap) = (Home::new("cameras"), Arc::new(Cap::default()));
+    let live = |state, stable_ms, unstable, step| CaptureLive {
+        state,
+        record: false,
+        bytes_seen: false,
+        unstable,
+        stable_ms,
+        backoff_step: step,
+        last_error: unstable.then(|| format!("ERROR at step {step}")),
+    };
+    let capture: Arc<Mutex<CaptureLive>> =
+        Arc::new(Mutex::new(live(CaptureState::Starting, None, false, 0)));
+    let sync_cell: Arc<std::sync::OnceLock<ConfigSync>> = Arc::default();
+    let (c, s) = (capture.clone(), sync_cell.clone());
+    // The CM4 bench: IMX708 declared in config.txt, the model says imx290.
+    let truth = CameraTruth::new(CameraTruthOptions {
+        hardware: Box::new(|| {
+            parse_hardware_block(&json!({
+                "v": 2, "platform": "rpi-cm4", "encoder": "hw-h264", "rails": false,
+                "statusLed": null, "imu": "bno085",
+                "video": [{"key": "cam0", "connector": "csi0", "sensor": "imx290", "codec": "h264"}]
+            }))
+        }),
+        stream_hw: Box::new(|| StreamHardwareSnapshot {
+            armed: true,
+            statuses: [("cam0".to_string(), StreamHardwareStatus::Ok)]
+                .into_iter()
+                .collect(),
+            passes: 1,
+            cameras: Some(vec![EnumeratedCamera {
+                camera_name: "/base/soc/i2c0mux/i2c@0/imx708@1a".into(),
+                sensor: "imx708".into(),
+                connector: Some("csi0".into()),
+            }]),
+        }),
+        boot_config: Arc::new(|| Some("dtoverlay=imx708,cam0,rotation=180\n".to_string())),
+        port_nodes: Arc::new(|_| None),
+        pipeline_dir: h.dir.display().to_string(),
+        capture: Box::new(move || vec![("cam0".to_string(), c.lock().unwrap().clone())]),
+        publish: Box::new(|_| {}),
+        on_change: Box::new(move || {
+            if let Some(sync) = s.get() {
+                sync.request(ReportOrigin::Boot);
+            }
+        }),
+        hold_ms: REPORT_HOLD_MS,
+    });
+    truth.refresh();
+
+    let mut o = harness(&h, &cap);
+    let t = truth.clone();
+    o.cameras = Some(Arc::new(move || t.for_report()));
+    let sync = ConfigSync::new(o);
+    let _ = sync_cell.set(sync.clone());
+    let reports = || -> Vec<Value> {
+        cap.sent()
+            .iter()
+            .map(|s| serde_json::from_str::<Value>(s).unwrap())
+            .collect()
+    };
+    let hold = REPORT_HOLD_MS + 50;
+
+    // The boot report carries the block, last in `effective`.
+    sync.request(ReportOrigin::Boot);
+    delay(30).await;
+    let r = reports();
+    assert_eq!(r.len(), 1);
+    let eff = r[0]["effective"].as_object().unwrap();
+    assert_eq!(eff.keys().next_back().map(String::as_str), Some("cameras"));
+    assert_eq!(
+        serde_json::to_string(&eff["cameras"]).unwrap(),
+        r#"{"cam0":{"connector":"csi0","declared":{"sensor":"imx708","source":"boot-config"},"bootConfig":{"overlay":"imx708","line":"dtoverlay=imx708,cam0,rotation=180","lines":1},"bound":{"driver":null,"node":null,"listed":"imx708","path":"/base/soc/i2c0mux/i2c@0/imx708@1a","identity":"chip-id"},"capture":{"state":"starting","backoffStep":0,"lastError":null},"verdict":"ok","detail":"imx708 on csi0 is detected; capture is starting."}}"#
+    );
+    assert!(r[0]["status"].get("cameras").is_none(), "reported-only");
+
+    // Nothing moved: ticking for a while asks for nothing.
+    for _ in 0..5 {
+        truth.tick();
+        delay(1000).await;
+    }
+    delay(hold).await;
+    assert_eq!(reports().len(), 1);
+
+    // Capture goes stable: ONE more report, with `streaming`.
+    *capture.lock().unwrap() = live(CaptureState::Running, Some(0), false, 0);
+    truth.tick();
+    delay(hold).await;
+    let r = reports();
+    assert_eq!(r.len(), 2);
+    assert_eq!(r[1]["origin"], "boot");
+    assert_eq!(
+        r[1]["effective"]["cameras"]["cam0"]["capture"]["state"],
+        "streaming"
+    );
+    assert_eq!(
+        r[1]["effective"]["cameras"]["cam0"]["detail"],
+        "imx708 on csi0 is detected and streaming."
+    );
+
+    // It starts failing: one more (`no-frames`) …
+    *capture.lock().unwrap() = live(CaptureState::Retrying, None, true, 0);
+    truth.tick();
+    delay(hold).await;
+    let r = reports();
+    assert_eq!(r.len(), 3);
+    assert_eq!(r[2]["effective"]["cameras"]["cam0"]["verdict"], "no-frames");
+
+    // … and five minutes of ladder (every state, a new step and a new error
+    // line each time) ask for nothing more.
+    for step in 1..=10u32 {
+        for state in [
+            CaptureState::Starting,
+            CaptureState::Retrying,
+            CaptureState::Failed,
+        ] {
+            *capture.lock().unwrap() = live(state, None, true, step);
+            truth.tick();
+            delay(10_000).await;
+        }
+    }
+    assert_eq!(
+        reports().len(),
+        3,
+        "no report churn from the capture ladder"
+    );
+    // The next report of any origin carries the current step and error.
+    sync.request(ReportOrigin::Cloud);
+    delay(30).await;
+    let r = reports();
+    assert_eq!(r.len(), 4);
+    let cam0 = &r[3]["effective"]["cameras"]["cam0"];
+    assert_eq!(cam0["capture"]["backoffStep"], 10);
+    assert_eq!(cam0["capture"]["lastError"], "ERROR at step 10");
+    sync.stop();
+}

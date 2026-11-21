@@ -12,7 +12,9 @@
 use std::path::Path;
 use std::time::Duration;
 
-use xorgate_core::boot_config::{dt_rotation_for_camera, resolve_boot_config_path};
+use xorgate_core::boot_config::{
+    dt_rotation_for_camera, resolve_boot_config_path, BOOT_CONFIG_CANDIDATES,
+};
 use xorgate_core::js;
 use xorgate_core::video_capture::camera_file_for;
 
@@ -37,6 +39,14 @@ pub fn read_boot_config(path: &str) -> Result<String, String> {
         Ok(bytes) => Ok(String::from_utf8_lossy(&bytes).into_owned()),
         Err(e) => Err(node_read_error(&e, path)),
     }
+}
+
+/// The boot config's text, wherever this OS keeps it
+/// ([`BOOT_CONFIG_CANDIDATES`]); `None` when there is no such file or it
+/// cannot be read. Read-only (the camera report and the mismatch warning).
+pub fn read_boot_config_text() -> Option<String> {
+    let path = resolve_boot_config_path_fs(BOOT_CONFIG_CANDIDATES)?;
+    read_boot_config(path).ok()
 }
 
 /// node's `readFileSync` error text for the errnos a config.txt read can

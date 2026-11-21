@@ -138,9 +138,107 @@ pub fn is_recognized_direct_render(content: &str, stream_key: &str, camera_name:
         && t.contains("appsink")
 }
 
+/// B6 (support-other-camera-models Phase 0, RUST-ONLY): is this
+/// `.gst.direct` content one of OUR renders, for whatever camera it names?
+/// Returns the camera name the file itself carries.
+///
+/// [`is_recognized_direct_render`] (the JS rule) ties recognition to the
+/// camera enumerated NOW, so after a sensor change the previous sensor's
+/// render is taken for an operator's pipeline and left behind with its dead
+/// `camera-name=`. Here the name is read out of the file, and the content
+/// must then be, for THAT name:
+///
+/// - exactly the software or the hardware direct render of this stream, or
+/// - a legacy install's render: one line, `libcamerasrc` first, an H.264
+///   encoder element (`x264enc`, or `v4l2h264enc` as a CM4 file has it: the
+///   JS clause asks for `x264enc` only) and `appsink`.
+///
+/// Anything else (no `camera-name=`, several lines, another source or sink)
+/// is an operator's pipeline: `None`, never overwritten.
+pub fn own_direct_render_camera(content: &str, stream_key: &str) -> Option<String> {
+    let t = js_trim(content);
+    let name = crate::video_capture::extract_camera_name(t).filter(|n| !n.is_empty())?;
+    if t == build_direct_kvs_pipeline(EncoderToken::SwH264, stream_key, &name)
+        || t == build_direct_kvs_pipeline(EncoderToken::HwH264, stream_key, &name)
+    {
+        return Some(name);
+    }
+    let legacy = !t.contains('\n')
+        && t.starts_with("libcamerasrc")
+        && (t.contains("x264enc") || t.contains("v4l2h264enc"))
+        && t.contains("appsink");
+    legacy.then_some(name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// B6: our own render is recognised by the camera name it carries, in
+    /// every template variant; an operator's pipeline never is.
+    #[test]
+    fn b6_own_direct_render_is_recognised_by_the_name_it_carries() {
+        let old = "/base/soc/i2c0mux/i2c@0/imx290@1a";
+        let new = "/base/soc/i2c0mux/i2c@0/imx708@1a";
+        for enc in [EncoderToken::SwH264, EncoderToken::HwH264] {
+            let file = format!("{}\n", build_direct_kvs_pipeline(enc, "cam0", old));
+            // The JS rule, asked about the NEW camera, does not know it …
+            assert!(!is_recognized_direct_render(&file, "cam0", new));
+            // … this one does, and says whose it is.
+            assert_eq!(
+                own_direct_render_camera(&file, "cam0").as_deref(),
+                Some(old)
+            );
+            // Another stream's exact render is not this stream's.
+            assert_eq!(
+                own_direct_render_camera(&file, "cam1"),
+                // (the sw/hw templates carry `name=<key>`; the legacy clause
+                // still adopts a single-line libcamerasrc → encoder → appsink)
+                Some(old.to_string())
+            );
+        }
+        // Legacy single-line renders: x264enc (CM5) and v4l2h264enc (CM4).
+        let legacy_sw = format!("libcamerasrc camera-name={old} ! video/x-raw ! x264enc ! appsink");
+        let legacy_hw = format!(
+            "libcamerasrc camera-name={old} ! video/x-raw ! videoconvert ! v4l2h264enc ! appsink"
+        );
+        assert_eq!(
+            own_direct_render_camera(&legacy_sw, "cam0").as_deref(),
+            Some(old)
+        );
+        assert_eq!(
+            own_direct_render_camera(&legacy_hw, "cam0").as_deref(),
+            Some(old)
+        );
+        // The JS legacy clause never took the v4l2h264enc file.
+        assert!(!is_recognized_direct_render(&legacy_hw, "cam0", old));
+        // A quoted name is read without its quotes.
+        assert_eq!(
+            own_direct_render_camera(
+                "libcamerasrc camera-name=\"/c\" ! x264enc ! appsink",
+                "cam0"
+            )
+            .as_deref(),
+            Some("/c")
+        );
+        // Operator pipelines: never ours.
+        for custom in [
+            // the golden fixture's custom file: no camera name
+            "libcamerasrc ! my direct ! appsink\n",
+            // several lines
+            "libcamerasrc camera-name=/c\n! x264enc ! appsink",
+            // another source
+            "videotestsrc camera-name=/c ! x264enc ! appsink",
+            // no H.264 encoder / no appsink
+            "libcamerasrc camera-name=/c ! jpegenc ! appsink",
+            "libcamerasrc camera-name=/c ! x264enc ! filesink location=/tmp/x",
+            // an empty name
+            "libcamerasrc camera-name=\"\" ! x264enc ! appsink",
+            "",
+        ] {
+            assert_eq!(own_direct_render_camera(custom, "cam0"), None, "{custom}");
+        }
+    }
 
     #[test]
     fn shm_caps_are_the_fixed_contract() {

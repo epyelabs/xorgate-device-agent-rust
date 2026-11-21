@@ -61,6 +61,12 @@ impl StateStore {
         self.snap.obd = obd;
     }
 
+    /// The per-port camera report for `xorgate-rs status` (Rust-only; no
+    /// `state.ts` counterpart): `None` removes the key.
+    pub fn set_cameras(&mut self, cameras: Option<Value>) {
+        self.snap.cameras = cameras;
+    }
+
     /// `setLatest` (`state.ts:96-99`).
     pub fn set_latest(&mut self, payload: TelemetryPayload) {
         self.snap.seq = payload.seq;
@@ -184,6 +190,11 @@ impl StateHandle {
         self.lock().set_recording(recording);
     }
 
+    /// The per-port camera report (Rust-only), written with the next flush.
+    pub fn set_cameras(&self, cameras: Option<Value>) {
+        self.lock().set_cameras(cameras);
+    }
+
     /// `store.snapshot().connection`.
     pub fn connection(&self) -> ConnectionState {
         self.lock().snapshot().connection
@@ -280,6 +291,7 @@ mod tests {
             recent_events: vec![],
             recording: None,
             obd: None,
+            cameras: None,
         }
     }
 

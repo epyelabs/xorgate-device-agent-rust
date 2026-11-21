@@ -404,30 +404,10 @@ pub fn render(st: &DaemonStatus, now: f64, ctx: &RenderCtx) -> Vec<String> {
                         ));
                     }
                 }
-                // (state.latest?.media?.streams ?? []).filter(s => s.recording !== undefined)
-                let streams = g("latest")
-                    .and_then(|l| l.get("media"))
-                    .and_then(|m| m.get("streams"))
-                    .and_then(Value::as_array);
-                let parts: Vec<String> = streams
-                    .into_iter()
-                    .flatten()
-                    .filter(|s| s.get("recording").is_some())
-                    .map(|s| {
-                        format!(
-                            "{} {}",
-                            js_string(s.get("streamKey")),
-                            if truthy(s.get("recording")) {
-                                p.green("recording")
-                            } else {
-                                p.gray("idle")
-                            }
-                        )
-                    })
-                    .collect();
-                if !parts.is_empty() {
-                    out.push(format!("  video      {}", parts.join("   ")));
-                }
+                // The `video` line: (state.latest?.media?.streams ?? [])
+                // .filter(s => s.recording !== undefined), plus (Rust-only)
+                // the per-port camera report when state.json carries one.
+                out.extend(video_lines(state, &p));
                 // `if (state.obd) console.log(\`  ${obdStatusLine(state.obd)}\`)`
                 // (`status.ts:116` @ 09da38d).
                 if let Some(obd) = g("obd").filter(|v| truthy(Some(v))).and_then(|v| {
@@ -451,6 +431,83 @@ pub fn render(st: &DaemonStatus, now: f64, ctx: &RenderCtx) -> Vec<String> {
             out
         }
     }
+}
+
+/// The `video` line(s) of `status`.
+///
+/// Without a camera report in state.json (a device without a hardware
+/// block, sim / replay mode, a state file the JS agent wrote) this is the TS
+/// line, unchanged: `<key> recording|idle` for every stream under capture
+/// supervision (`status.ts:104-113`).
+///
+/// With one (`state.cameras`, the per-port camera report, Rust-only) each
+/// camera of the model shows its verdict instead of `idle`: a healthy
+/// camera shows what it is doing (`recording`, `streaming`, `starting`,
+/// `off`), any other shows the verdict (`not-detected`, `no-frames`,
+/// `mismatch`, `empty`, `unmanaged`) followed by one line with the report's
+/// sentence. A camera with no capture process (nothing detected) is listed
+/// too, which the TS line never did.
+fn video_lines(state: &Value, p: &Paint) -> Vec<String> {
+    let streams: Vec<&Value> = state
+        .get("latest")
+        .and_then(|l| l.get("media"))
+        .and_then(|m| m.get("streams"))
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|s| s.get("recording").is_some())
+        .collect();
+    let cameras = state.get("cameras").and_then(Value::as_object);
+    let mut parts: Vec<String> = Vec::new();
+    let mut details: Vec<String> = Vec::new();
+    for (key, cam) in cameras.into_iter().flatten() {
+        let verdict = cam.get("verdict").and_then(Value::as_str).unwrap_or("?");
+        let capture = cam
+            .get("capture")
+            .and_then(|c| c.get("state"))
+            .and_then(Value::as_str)
+            .unwrap_or("?");
+        let recording = streams.iter().any(|s| {
+            s.get("streamKey").and_then(Value::as_str) == Some(key.as_str())
+                && truthy(s.get("recording"))
+        });
+        let word = if verdict != "ok" {
+            p.yellow(verdict)
+        } else if recording {
+            p.green("recording")
+        } else if capture == "streaming" {
+            p.green(capture)
+        } else {
+            p.gray(capture)
+        };
+        parts.push(format!("{key} {word}"));
+        if verdict != "ok" {
+            if let Some(d) = cam.get("detail").and_then(Value::as_str) {
+                details.push(format!("             {key}: {d}"));
+            }
+        }
+    }
+    let reported = |s: &Value| {
+        let key = s.get("streamKey").and_then(Value::as_str);
+        cameras.is_some_and(|c| key.is_some_and(|k| c.contains_key(k)))
+    };
+    for s in streams.iter().filter(|s| !reported(s)) {
+        parts.push(format!(
+            "{} {}",
+            js_string(s.get("streamKey")),
+            if truthy(s.get("recording")) {
+                p.green("recording")
+            } else {
+                p.gray("idle")
+            }
+        ));
+    }
+    if parts.is_empty() {
+        return Vec::new();
+    }
+    let mut out = vec![format!("  video      {}", parts.join("   "))];
+    out.extend(details);
+    out
 }
 
 /// `homePermissionDenied` (`status.ts:19-26`): the home exists but `R_OK|X_OK`
@@ -590,6 +647,101 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    fn state_with(streams: Value, cameras: Option<Value>) -> Value {
+        let mut s = serde_json::json!({"latest": {"media": {"streams": streams}}});
+        if let Some(c) = cameras {
+            s["cameras"] = c;
+        }
+        s
+    }
+
+    /// Without a camera report the `video` line is the TS line.
+    #[test]
+    fn video_line_without_a_camera_report_is_the_ts_line() {
+        let p = Paint(false);
+        let streams = serde_json::json!([
+            {"streamKey": "cam0", "recording": true},
+            {"streamKey": "cam1", "recording": false},
+            {"streamKey": "cam2"}
+        ]);
+        assert_eq!(
+            video_lines(&state_with(streams, None), &p),
+            ["  video      cam0 recording   cam1 idle"]
+        );
+        assert!(video_lines(&state_with(serde_json::json!([]), None), &p).is_empty());
+        assert!(video_lines(&serde_json::json!({}), &p).is_empty());
+    }
+
+    /// With one, every camera shows its verdict: the line no longer says
+    /// `idle` for a healthy camera and for a failing one alike (B11).
+    #[test]
+    fn video_line_prints_the_per_camera_verdict() {
+        let p = Paint(false);
+        let cam = |verdict: &str, capture: &str, detail: &str| serde_json::json!({"verdict": verdict, "capture": {"state": capture}, "detail": detail});
+        // Bench 2: cam0 not detected (no capture process, so no stream
+        // flag), cam1 streaming with recording off.
+        let streams = serde_json::json!([
+            {"streamKey": "cam0"},
+            {"streamKey": "cam1", "recording": false}
+        ]);
+        let cameras = serde_json::json!({
+            "cam0": cam("not-detected", "absent", "csi0 is declared as imx335 by config.txt, but no imx335 answered on this port (the kernel driver did not bind). Check the ribbon cable and that the dtoverlay line in config.txt names the sensor that is really attached, then reboot."),
+            "cam1": cam("ok", "streaming", "imx219 on csi1 is detected and streaming.")
+        });
+        assert_eq!(
+            video_lines(&state_with(streams, Some(cameras)), &p),
+            [
+                "  video      cam0 not-detected   cam1 streaming",
+                "             cam0: csi0 is declared as imx335 by config.txt, but no imx335 answered on this port (the kernel driver did not bind). Check the ribbon cable and that the dtoverlay line in config.txt names the sensor that is really attached, then reboot.",
+            ]
+        );
+        // Recording to disk wins the word of a healthy camera; the other
+        // capture states print as they are.
+        let streams = serde_json::json!([
+            {"streamKey": "cam0", "recording": true},
+            {"streamKey": "cam1", "recording": false}
+        ]);
+        for (capture, word) in [
+            ("starting", "starting"),
+            ("off", "off"),
+            ("streaming", "streaming"),
+        ] {
+            let cameras = serde_json::json!({
+                "cam0": cam("ok", "streaming", "x"),
+                "cam1": cam("ok", capture, "y")
+            });
+            assert_eq!(
+                video_lines(&state_with(streams.clone(), Some(cameras)), &p),
+                [format!("  video      cam0 recording   cam1 {word}")]
+            );
+        }
+        // A failing camera never reads as `recording`, whatever its flag.
+        let cameras = serde_json::json!({"cam0": cam("no-frames", "failing", "why")});
+        assert_eq!(
+            video_lines(&state_with(streams.clone(), Some(cameras)), &p),
+            [
+                "  video      cam0 no-frames   cam1 idle",
+                "             cam0: why",
+            ],
+            "cam1 has no report: the TS wording for it"
+        );
+        // Colours: a verdict that is not ok is yellow, streaming is green.
+        let cameras = serde_json::json!({
+            "cam0": cam("mismatch", "streaming", "d"),
+            "cam1": cam("ok", "streaming", "e")
+        });
+        assert_eq!(
+            video_lines(
+                &state_with(serde_json::json!([]), Some(cameras)),
+                &Paint(true)
+            ),
+            [
+                "  video      cam0 \x1b[33mmismatch\x1b[0m   cam1 \x1b[32mstreaming\x1b[0m",
+                "             cam0: d",
+            ]
+        );
     }
 
     #[test]

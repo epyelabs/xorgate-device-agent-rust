@@ -31,6 +31,7 @@ use xorgate_core::telemetry::{RecordingStatus, TelemetryMedia};
 use indexmap::IndexMap;
 use tokio::sync::watch;
 use tracing::{info, warn};
+use xorgate_core::cameras::EnumeratedCamera;
 use xorgate_core::hardware_block::DeviceHardwareBlock;
 use xorgate_core::stream_guard::StreamHardwareStatus;
 use xorgate_core::telemetry::{ActivityLevel, RunMode};
@@ -51,24 +52,58 @@ pub trait HardwareReconciler: Send + Sync {
 /// logged again (CF39, review-wp3 #4).
 pub type UploadBuilder = Arc<dyn Fn() -> Option<UploadOptions> + Send + Sync>;
 
+/// What the last hardware reconcile passes found (a copy of
+/// [`StreamHardware`]'s content).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct StreamHardwareSnapshot {
+    /// `streamGuardArmed`: some pass could enumerate cameras.
+    pub armed: bool,
+    /// `streamHardware`: the verdicts of the last pass that could enumerate.
+    pub statuses: IndexMap<String, StreamHardwareStatus>,
+    /// Camera report (Rust-only): how many passes have completed.
+    pub passes: u64,
+    /// Camera report (Rust-only): what the LAST completed pass enumerated;
+    /// `None` = it could not enumerate (or no pass has completed).
+    pub cameras: Option<Vec<EnumeratedCamera>>,
+}
+
 /// `streamHardware` + `streamGuardArmed` (`worker.ts:129-130`): the reconcile
 /// verdicts the media spawn guard reads. Armed only after a pass that could
 /// enumerate cameras.
 #[derive(Default)]
 pub struct StreamHardware {
-    inner: Mutex<(bool, IndexMap<String, StreamHardwareStatus>)>,
+    inner: Mutex<StreamHardwareSnapshot>,
 }
 
 impl StreamHardware {
     /// `streamGuardArmed`.
     pub fn armed(&self) -> bool {
-        self.inner.lock().unwrap_or_else(|p| p.into_inner()).0
+        self.inner.lock().unwrap_or_else(|p| p.into_inner()).armed
     }
     /// `streamHardware.get(key)`.
     pub fn status(&self, key: &str) -> Option<StreamHardwareStatus> {
         let g = self.inner.lock().unwrap_or_else(|p| p.into_inner());
-        g.1.get(key).copied()
+        g.statuses.get(key).copied()
     }
+    /// Camera report: everything the passes found, in one consistent copy.
+    pub fn snapshot(&self) -> StreamHardwareSnapshot {
+        self.inner.lock().unwrap_or_else(|p| p.into_inner()).clone()
+    }
+    /// B5: may the capture daemon launch this stream's camera?
+    /// (`camera_truth::capture_allowed` over the last verdicts.)
+    pub fn capture_allowed(&self, key: &str) -> bool {
+        let g = self.inner.lock().unwrap_or_else(|p| p.into_inner());
+        xorgate_core::camera_truth::capture_allowed(g.armed, g.statuses.get(key).copied())
+    }
+}
+
+/// Reads the text of the boot config (`None` = no file, or unreadable).
+pub type BootConfigTextFn = Arc<dyn Fn() -> Option<String> + Send + Sync>;
+
+/// The real [`BootConfigTextFn`]: `/boot/firmware/config.txt`, then
+/// `/boot/config.txt`. Read-only.
+pub fn real_boot_config_text() -> BootConfigTextFn {
+    Arc::new(xorgate_hal::boot_config_io::read_boot_config_text)
 }
 
 /// `config.media.streamGuard` (`worker.ts:205-218`, replay branch out — P14).
@@ -102,6 +137,10 @@ pub struct MediaReconciler {
     /// `rpicam-hello --list-cameras` — [`crate::media::real_list_exec`] (the
     /// `exec` tape record) in the worker; a fake in tests.
     pub list_exec: crate::media::ListExec,
+    /// Rust-only: the boot config text for the mismatch warning's
+    /// "declared" sensor ([`real_boot_config_text`] in the worker). `None` =
+    /// the model alone, as the TS has it.
+    pub boot_config: Option<BootConfigTextFn>,
 }
 
 impl HardwareReconciler for MediaReconciler {
@@ -142,19 +181,27 @@ impl HardwareReconciler for MediaReconciler {
                     }),
                     list_exec: Some(self.list_exec.clone()),
                     log: Some(log),
+                    boot_config: self.boot_config.as_ref().and_then(|f| f()),
                 },
             )
             // A throw (first failed mkdir/write, Node's message) leaves the
             // verdicts untouched (TS parity, review-wp5 M1).
             .await?;
-            if res.cameras.is_some() {
+            {
                 let mut g = self
                     .stream_hw
                     .inner
                     .lock()
                     .unwrap_or_else(|p| p.into_inner());
-                // `streamHardware.clear(); set(...)…; streamGuardArmed = true`.
-                *g = (true, res.statuses.clone());
+                if res.cameras.is_some() {
+                    // `streamHardware.clear(); set(...)…; streamGuardArmed = true`.
+                    g.armed = true;
+                    g.statuses = res.statuses.clone();
+                }
+                // Camera report: what THIS pass saw (the guard's verdicts
+                // above stay those of the last pass that could enumerate).
+                g.passes += 1;
+                g.cameras = res.cameras.clone();
             }
             Ok(res.changed_streams)
         })

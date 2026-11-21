@@ -539,6 +539,16 @@ pub struct StateSnapshot {
     /// first `setRecording`, so the key lands after `recording`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub obd: Option<ObdStatus>,
+    /// The per-port camera report (`crate::camera_truth`; RUST-ONLY, the JS
+    /// `StateSnapshot` has no such key): stream key → port report, the same
+    /// value as `effective.cameras`. Read by `xorgate-rs status`. The LAST
+    /// key; absent without a hardware block.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "crate::js::json_value_opt::serialize"
+    )]
+    pub cameras: Option<serde_json::Value>,
 }
 
 /// `ObdStatus` (`ts:src/agent/telemetry.ts:166-204` @ 09da38d): the OBD

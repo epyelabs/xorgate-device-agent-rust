@@ -895,6 +895,14 @@ pub const AGENT_RUNTIME: &str = "rust";
 /// "device defaults". `build` replaces the TS `loadBuildInfo()` call (`:639`).
 /// `obd` is the OBD collector's report (I2: opaque, already in the TS key
 /// order), present only with the peripheral (`config-sync.ts:699-709` @ 09da38d).
+///
+/// `cameras` is the per-port camera report ([`crate::camera_truth`];
+/// support-other-camera-models Phase 0, RUST-ONLY, the JS agent sends no
+/// such key): reported-only like `sim` / `uplink` / `apn`, appended as the
+/// LAST key so the JS key order is kept, and never under a namespace key
+/// (the console would then compute "Device differs" for it). Absent without
+/// a hardware block or before the first hardware reconcile.
+#[allow(clippy::too_many_arguments)]
 pub fn build_effective(
     settings: &AgentSettings,
     modem: &ModemBiasSample,
@@ -902,6 +910,7 @@ pub fn build_effective(
     camera_mount: Option<&CameraMountState>,
     telemetry_scope: Option<&TelemetryScopeReport>,
     obd: Option<&Value>,
+    cameras: Option<&Value>,
     build: &BuildInfo,
 ) -> Map<String, Value> {
     let to = |v: &dyn erased::Ser| v.to_json();
@@ -967,8 +976,18 @@ pub fn build_effective(
     if let Some(obd) = obd.filter(|v| !v.is_null()) {
         out.insert("obd".into(), obd.clone());
     }
+    // Rust-only, after every JS key ([`EFFECTIVE_CAMERAS_KEY`]).
+    if let Some(cameras) = cameras.filter(|v| !v.is_null()) {
+        out.insert(EFFECTIVE_CAMERAS_KEY.into(), cameras.clone());
+    }
     out
 }
+
+/// The reported-only key of the per-port camera report in `effective`
+/// (Rust-only; see [`build_effective`]). It must never be a config
+/// namespace key: `config_namespaces::CONFIG_APPLY_CLASSES` has no entry of
+/// this name (pinned by a test below).
+pub const EFFECTIVE_CAMERAS_KEY: &str = "cameras";
 
 /// Object-safe "serialize to a JSON value" so [`build_effective`] can take
 /// every namespace through one closure.
@@ -1574,6 +1593,15 @@ pub struct ReportInput {
         serialize_with = "js::json_value_opt::serialize"
     )]
     pub obd: Option<Value>,
+    /// The per-port camera report (`effective.cameras`, RUST-ONLY;
+    /// [`crate::camera_truth`]); reported-only, absent without a hardware
+    /// block. Not part of the TS `ReportInput`.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        serialize_with = "js::json_value_opt::serialize"
+    )]
+    pub cameras: Option<Value>,
 }
 
 /// `buildConfigReport` (`config-sync.ts:1059`): assemble a complete report.
@@ -1586,6 +1614,7 @@ pub fn build_config_report(input: &ReportInput, build: &BuildInfo) -> ConfigRepo
         input.camera_mount.as_ref(),
         input.telemetry_scope.as_ref(),
         input.obd.as_ref(),
+        input.cameras.as_ref(),
         build,
     );
     let status = build_status(
@@ -1713,7 +1742,16 @@ mod tests {
         let settings = AgentSettings::default();
         let modem = ModemBiasSample::default();
         for mode in ["real", "sim", "replay"] {
-            let eff = build_effective(&settings, &modem, Some(mode), None, None, None, &build);
+            let eff = build_effective(
+                &settings,
+                &modem,
+                Some(mode),
+                None,
+                None,
+                None,
+                None,
+                &build,
+            );
             let agent = eff["agent"].as_object().expect("agent block");
             assert_eq!(
                 agent.keys().map(String::as_str).collect::<Vec<_>>(),
@@ -1728,7 +1766,7 @@ mod tests {
                 )
             );
         }
-        let eff = build_effective(&settings, &modem, None, None, None, None, &build);
+        let eff = build_effective(&settings, &modem, None, None, None, None, None, &build);
         assert!(!eff.contains_key("agent"));
         assert!(!js::map_to_json_string(&eff).contains("runtime"));
         // ...and on the wire, inside the whole report.
@@ -1746,11 +1784,78 @@ mod tests {
             telemetry_scope: None,
             changed: None,
             obd: None,
+            cameras: None,
         };
         let wire = build_config_report(&input, &build).to_wire();
         let v: Value = serde_json::from_str(&wire).unwrap();
         assert_eq!(v["effective"]["agent"]["runtime"], "rust");
         assert_eq!(wire.matches(r#""runtime":"rust""#).count(), 1, "{wire}");
+    }
+
+    /// The per-port camera report (support-other-camera-models Phase 0,
+    /// Rust-only): `effective.cameras` is the LAST key of `effective`
+    /// (after `obd`, the last JS key), is carried verbatim, gets no `status`
+    /// entry, is absent when the agent has none, and its key is not a config
+    /// namespace (a reported block under a namespace key makes the console
+    /// say "Device differs").
+    #[test]
+    fn effective_cameras_is_reported_only_and_last() {
+        assert_eq!(EFFECTIVE_CAMERAS_KEY, "cameras");
+        assert!(crate::config_namespaces::CONFIG_APPLY_CLASSES
+            .iter()
+            .all(|(k, _)| *k != EFFECTIVE_CAMERAS_KEY));
+        let build = BuildInfo {
+            version: "abc1234".into(),
+            channel: "dev".into(),
+            built_at: None,
+            package_version: "0.1.0".into(),
+        };
+        let cameras: Value = serde_json::from_str(
+            r#"{"cam0":{"connector":"csi0","declared":{"sensor":"imx708","source":"boot-config"},"bootConfig":{"overlay":"imx708","line":"dtoverlay=imx708,cam0","lines":1},"bound":{"driver":true,"node":"imx708@1a","listed":"imx708","path":"/base/soc/i2c0mux/i2c@0/imx708@1a","identity":"chip-id"},"capture":{"state":"streaming","backoffStep":0,"lastError":null},"verdict":"ok","detail":"imx708 on csi0 is detected and streaming."}}"#,
+        )
+        .unwrap();
+        let obd: Value = serde_json::from_str(r#"{"state":"connected"}"#).unwrap();
+        let mut input = ReportInput {
+            device_id: "dev-1".into(),
+            ts: 1_700_000_000_000,
+            origin: ReportOrigin::Boot,
+            last_applied_rev: 0,
+            settings: AgentSettings::default(),
+            modem: ModemBiasSample::default(),
+            desired: None,
+            hints: None,
+            mode: Some("real".into()),
+            camera_mount: None,
+            telemetry_scope: None,
+            changed: None,
+            obd: Some(obd),
+            cameras: Some(cameras.clone()),
+        };
+        let report = build_config_report(&input, &build);
+        assert_eq!(
+            report
+                .effective
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["agent", "obd", "cameras"]
+        );
+        assert_eq!(report.effective["cameras"], cameras);
+        assert!(!report.status.contains_key("cameras"));
+        // Byte-exact on the wire: integers stay integers, `null` stays `null`.
+        let wire = report.to_wire();
+        assert!(
+            wire.contains(
+                r#""capture":{"state":"streaming","backoffStep":0,"lastError":null},"verdict":"ok""#
+            ),
+            "{wire}"
+        );
+        // Without a camera report the key is absent, and so is it for `null`.
+        for none in [None, Some(Value::Null)] {
+            input.cameras = none;
+            let report = build_config_report(&input, &build);
+            assert!(!report.effective.contains_key("cameras"));
+        }
     }
 
     #[test]

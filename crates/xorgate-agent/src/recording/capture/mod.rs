@@ -63,6 +63,14 @@
 //! reports the source down (`on_source_absent(key, true)`) so the agent
 //! holds the camera's KVS master; a probe that runs stable (or the camera
 //! retiring) reports it up again. Other cameras are untouched.
+//!
+//! Camera report (support-other-camera-models Phase 0, Rust-only):
+//! [`VideoCaptureSupervisor::health`] exposes, per camera, what the per-port
+//! report needs and `status()` does not carry: whether a child died or
+//! stalled since the last recovery (`unstable`), how long the current child
+//! has been past the stable window, the D86 back-off step and the last
+//! `ERROR` line a child printed. It is bookkeeping only: it changes no
+//! spawn, signal, timer, event or callback.
 
 pub mod backend;
 pub mod recover;
@@ -78,6 +86,7 @@ use serde::{Deserialize, Serialize};
 use tokio::sync::{mpsc, watch};
 use tokio::task::AbortHandle;
 use tracing::error;
+use xorgate_core::camera_truth::{capture_recovered, error_line, CaptureLive};
 use xorgate_core::capture_ladder::{
     absent_backoff, camera_disabled_event, exit_verdict, is_recording, progress_verdict,
     spawn_event, stagger_delay_ms, stall_event, stderr_log_line, AbsentState, CaptureState,
@@ -326,6 +335,14 @@ struct Run {
     counters: LadderCounters,
     /// D86: the start-failure back-off state (`capture_ladder::absent_backoff`).
     absent: AbsentState,
+    /// Camera report: a child died or stalled while wanted, and none has
+    /// been stable for `camera_truth::RECOVER_MS` since ([`Run::live`]).
+    unstable: bool,
+    /// Camera report: monotonic ms at which the CURRENT child passed the
+    /// stable window; `None` when there is no such child.
+    stable_since: Option<u64>,
+    /// Camera report: the last `ERROR` line a child printed.
+    last_error: Option<String>,
     stable_timer: Option<Timer>,
     restart_timer: Option<Timer>,
     /// fs.watch + its pump task; `watch_gen` guards both sweep sources.
@@ -358,6 +375,9 @@ impl Run {
             started_at: 0,
             counters: LadderCounters::default(),
             absent: AbsentState::default(),
+            unstable: false,
+            stable_since: None,
+            last_error: None,
             stable_timer: None,
             restart_timer: None,
             watcher: None,
@@ -374,6 +394,30 @@ impl Run {
             playing_reported: false,
             tape_active: None,
         }
+    }
+
+    /// Camera report: this run as `camera_truth` reads it. Clears the
+    /// failure memory once the run has recovered.
+    fn live(&mut self, record: bool, now_mono: u64) -> CaptureLive {
+        let mut live = CaptureLive {
+            state: self.state,
+            record,
+            bytes_seen: self.progress.bytes > 0,
+            unstable: self.unstable,
+            stable_ms: self
+                .stable_since
+                .filter(|_| self.child.is_some())
+                .map(|at| now_mono.saturating_sub(at)),
+            backoff_step: self.absent.steps,
+            last_error: self.last_error.clone(),
+        };
+        if self.unstable && capture_recovered(&live) {
+            self.unstable = false;
+            self.last_error = None;
+            live.unstable = false;
+            live.last_error = None;
+        }
+        live
     }
 
     fn stop_watching(&mut self) {
@@ -773,6 +817,19 @@ impl VideoCaptureSupervisor {
             .collect()
     }
 
+    /// Camera report (Rust-only): every camera's run as the per-port report
+    /// reads it, in insertion order. See the module doc.
+    pub fn health(&self) -> Vec<(String, CaptureLive)> {
+        let record = self.shared.opts.record;
+        let now = self.shared.opts.clock.mono_ms();
+        self.shared
+            .lock()
+            .runs
+            .values_mut()
+            .map(|r| (r.cam.stream_key.clone(), r.live(record, now)))
+            .collect()
+    }
+
     /// `shmSocketPath(streamKey)` (`video-capture.ts:596-598`): `<shmDir>/<key>.sock`.
     pub fn shm_socket_path(&self, key: &str) -> PathBuf {
         self.shared.shm_socket_path(key)
@@ -786,6 +843,17 @@ impl Shared {
 
     fn shm_socket_path(&self, key: &str) -> PathBuf {
         self.opts.shm_dir.join(format!("{key}.sock"))
+    }
+
+    /// Camera report: keep the last `ERROR` line of the CURRENT child.
+    fn note_error(&self, key: &str, child_id: u64, line: &str) {
+        let Some(e) = error_line(line) else { return };
+        let mut g = self.lock();
+        if let Some(run) = g.runs.get_mut(key) {
+            if run.child.as_ref().map(|c| c.id) == Some(child_id) {
+                run.last_error = Some(e);
+            }
+        }
     }
 
     /// Replay: track `Got EOS` and the first `New clock:` of the CURRENT
@@ -1092,6 +1160,7 @@ fn fire(s: &Arc<Shared>, key: &str, run_id: u64, slot: Slot, gen: u64) {
                 }
                 if run.child.is_some() {
                     run.state = CaptureState::Running;
+                    run.stable_since = Some(s.opts.clock.mono_ms());
                     run.counters.quick_failures = 0;
                     run.counters.backoff_ms = BASE_BACKOFF_MS;
                     out.fx.push(Fx::Status);
@@ -1303,6 +1372,7 @@ async fn consume(
             // replay hooks, which a real device never installs.
             ChildEvent::Stdout(line) => {
                 s.opts.tape.child_line(ROLE_CAPTURE, &key, 1, &line);
+                s.note_error(&key, child_id, &line);
                 // ACTED on only by the replay hooks (`video-capture.ts:676-683`).
                 if let Some(h) = &s.opts.replay {
                     if let Some(wall) = s.note_stdout(&key, child_id, &line) {
@@ -1312,6 +1382,7 @@ async fn consume(
             }
             ChildEvent::Stderr(line) => {
                 s.opts.tape.child_line(ROLE_CAPTURE, &key, 2, &line);
+                s.note_error(&key, child_id, &line);
                 if let Some(l) = stderr_log_line(&key, &line) {
                     error!("{l}");
                 }
@@ -1350,6 +1421,7 @@ fn on_exit(s: &Arc<Shared>, key: &str, child_id: u64, done: &ChildDone) {
         }
         cancel(&mut run.stable_timer);
         let slot = run.child.take().expect("checked");
+        run.stable_since = None;
         if exiting {
             // R-WP5R-1: killed by the agent-exit cleanup. Nothing but the shm
             // reap — as when the runtime drop killed it unobserved: no final
@@ -1429,6 +1501,11 @@ fn on_exit(s: &Arc<Shared>, key: &str, child_id: u64, done: &ChildDone) {
                 ended_session: ended.as_deref(),
                 counters: run.counters,
             };
+            // Camera report: an exit the supervisor did not ask for (a
+            // `cycle()` asked for this one).
+            if !cycled {
+                run.unstable = true;
+            }
             // D86 (F-DA21-KVSLOOP): the TS ladder until the first park, then
             // one probe per exponential back-off step (60 s → 5 min cap).
             let prev_steps = run.absent.steps;

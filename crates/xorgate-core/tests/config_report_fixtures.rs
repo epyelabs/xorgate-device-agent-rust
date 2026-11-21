@@ -111,6 +111,7 @@ fn config_report_suites() {
                     cam.as_ref(),
                     scope.as_ref(),
                     obd.as_ref(),
+                    None,
                     &build,
                 )))
             }

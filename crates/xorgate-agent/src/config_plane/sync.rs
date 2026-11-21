@@ -88,6 +88,9 @@ pub struct ConfigSyncOptions {
     /// `obd: () => source.obdReport?.() ?? null` (`worker.ts:790` @ 09da38d):
     /// the OBD collector's `effective.obd` (I2, opaque); a snapshot read.
     pub obd: Option<Arc<dyn Fn() -> Option<serde_json::Value> + Send + Sync>>,
+    /// The per-port camera report (`effective.cameras`, Rust-only;
+    /// `ops::camera_truth::CameraTruth::for_report`); a snapshot read.
+    pub cameras: Option<Arc<dyn Fn() -> Option<serde_json::Value> + Send + Sync>>,
     pub on_event: Option<EventFn>,
     /// `Date.now()` (report `ts`, `lastReportTs`).
     pub now: Arc<dyn Fn() -> i64 + Send + Sync>,
@@ -131,6 +134,7 @@ impl ConfigSyncOptions {
             camera_mount: None,
             telemetry_scope: None,
             obd: None,
+            cameras: None,
             on_event: None,
             now: Arc::new(crate::now_ms),
             state_path,
@@ -528,6 +532,7 @@ impl ConfigSync {
                 mode: opts.mode.clone(),
                 changed: res.changed,
                 obd: opts.obd.as_ref().and_then(|f| f()),
+                cameras: opts.cameras.as_ref().and_then(|f| f()),
             },
             &opts.build,
         );
