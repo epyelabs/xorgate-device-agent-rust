@@ -1182,12 +1182,22 @@ fn verdict_of(r: &Resolved<'_>) -> (CameraVerdict, String) {
                         ),
                     )
                 }
-                None => (
-                    CameraVerdict::NoFrames,
-                    format!(
-                        "{listed} is listed on {port} but delivers no frames: its capture process keeps failing.{note} Check the ribbon cable and that the dtoverlay line in config.txt names the sensor that is really attached."
-                    ),
-                ),
+                None => {
+                    // Where the user looks: a managed port's line is written
+                    // from the camera sensor setting, so that is what to
+                    // check (a hand edit of config.txt would be overwritten).
+                    // A hand-written or model-derived line: config.txt.
+                    let names = match r.declared.map(|d| d.source) {
+                        Some(DeclaredSource::Config) => "the camera sensor setting",
+                        _ => "the dtoverlay line in config.txt",
+                    };
+                    (
+                        CameraVerdict::NoFrames,
+                        format!(
+                            "{listed} is listed on {port} but delivers no frames: its capture process keeps failing.{note} Check the ribbon cable and that {names} names the sensor that is really attached."
+                        ),
+                    )
+                }
             },
             _ if f.unsupervised => (
                 CameraVerdict::Unchecked,
@@ -2057,7 +2067,7 @@ mod tests {
         );
         // A chip-ID driver gets no identity caveat.
         let nodes = [node("csi1", "imx219@10", Some("imx219"))];
-        let p = derive_port(&PortFacts {
+        let hand_written = PortFacts {
             boot_text: Some(BENCH2),
             nodes: Some(&nodes),
             listed: Some((
@@ -2066,10 +2076,32 @@ mod tests {
             )),
             capture: CaptureTruth::Failing,
             ..facts("cam1", "csi1")
-        });
+        };
+        let p = derive_port(&hand_written);
+        assert_eq!(
+            p.declared.as_ref().map(|d| d.source),
+            Some(DeclaredSource::BootConfig)
+        );
         assert_eq!(
             p.detail,
             "imx219 is listed on csi1 but delivers no frames: its capture process keeps failing. Check the ribbon cable and that the dtoverlay line in config.txt names the sensor that is really attached."
+        );
+        // The same port MANAGED (its line is written from the camera sensor
+        // setting, `declared.source` = `config`): the sentence points at the
+        // setting. Sending the user to config.txt would have them edit by
+        // hand a line the agent writes.
+        let p = derive_port(&PortFacts {
+            setting: managed("imx219"),
+            ..hand_written
+        });
+        assert_eq!(p.verdict, CameraVerdict::NoFrames);
+        assert_eq!(
+            p.declared.as_ref().map(|d| d.source),
+            Some(DeclaredSource::Config)
+        );
+        assert_eq!(
+            p.detail,
+            "imx219 is listed on csi1 but delivers no frames: its capture process keeps failing. Check the ribbon cable and that the camera sensor setting names the sensor that is really attached."
         );
     }
 
@@ -2984,8 +3016,12 @@ mod tests {
         // Nothing else wrong: reboot-required.
         assert_eq!(derive_port(&running).verdict, CameraVerdict::RebootRequired);
         // The capture is failing: `no-frames`, with the usual sentence and
-        // the closing clause. Managed or not.
-        for sensor in [None, Some("imx290")] {
+        // the closing clause. Managed or not; what to check is the camera
+        // sensor setting on a managed port, the line in config.txt otherwise.
+        for (sensor, names) in [
+            (None, "the dtoverlay line in config.txt"),
+            (Some("imx290"), "the camera sensor setting"),
+        ] {
             let p = derive_port(&PortFacts {
                 capture: CaptureTruth::Failing,
                 last_error: Some("ERROR: Camera frontend has timed out!"),
@@ -2998,9 +3034,12 @@ mod tests {
             assert_eq!(p.verdict, CameraVerdict::NoFrames, "{sensor:?}");
             assert_eq!(
                 p.detail,
-                format!("imx290 is listed on csi0 but delivers no frames: its capture process keeps failing. The imx290 driver cannot confirm which chip is attached, so the camera on this port may be a different sensor, or nothing may be attached. Check the ribbon cable and that the dtoverlay line in config.txt names the sensor that is really attached.{ALSO}"),
+                format!("imx290 is listed on csi0 but delivers no frames: its capture process keeps failing. The imx290 driver cannot confirm which chip is attached, so the camera on this port may be a different sensor, or nothing may be attached. Check the ribbon cable and that {names} names the sensor that is really attached.{ALSO}"),
                 "{sensor:?}"
             );
+            // The longest this sentence gets stays inside the 500 characters
+            // a status text may have.
+            assert!(p.detail.encode_utf16().count() <= 500, "{}", p.detail.len());
         }
         // Nothing answers on a line whose overlay did not change (an option
         // was rewritten on a chip-ID sensor that is not there).

@@ -852,6 +852,119 @@ pub fn listing(plan: &SetPlan, held: Option<&[String]>, record: Option<&SetRecor
     out
 }
 
+/// What the listing says about the package sets NO declared sensor needs
+/// (any more) while the record shows this command's work on them still in
+/// place: one block per such set. `needed` = the ids of the sets in the
+/// plan (listed by [`listing`]); `installed` = the versions installed now
+/// (`None` = `dpkg-query` could not be run); `held` = the packages on hold
+/// (`None` = `apt-mark` could not be asked).
+///
+/// "Still in place" is what [`rollback_commands`] would undo: a package
+/// that is still at the version this command put there, a hold it set that
+/// still exists. A set with nothing in place (it was never installed here,
+/// or someone went back) gets no line. Nothing here asks for anything: the
+/// packages do no harm, the block only says that they are there, that the
+/// hold keeps apt from updating them, and how to go back.
+pub fn leftover_listing(
+    record: &InstallRecord,
+    needed: &[&str],
+    catalog: &Catalog,
+    installed: Option<&BTreeMap<String, String>>,
+    held: Option<&[String]>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for (id, rec) in &record.sets {
+        if needed.contains(&id.as_str()) || (rec.packages.is_empty() && rec.held.is_empty()) {
+            continue;
+        }
+        // Which set that is, and whose: the catalog's words when it still
+        // lists the set.
+        let what = match catalog.package_sets.iter().find(|s| &s.id == id) {
+            Some(set) => {
+                let sensors: Vec<&str> = catalog
+                    .sensors
+                    .iter()
+                    .filter(|s| s.package_set.as_deref() == Some(id.as_str()))
+                    .map(|s| s.id.as_str())
+                    .collect();
+                if sensors.is_empty() {
+                    format!("{id} ({})", set.label)
+                } else {
+                    format!("{id} ({}), the set {} needs", set.label, sensors.join(", "))
+                }
+            }
+            None => format!("{id} (a package set this agent build no longer lists)"),
+        };
+        let Some(installed) = installed else {
+            out.push(format!(
+                "{what}: no declared sensor needs it any more; whether what xorgate-rs installed for it is still in place could not be read (dpkg-query)"
+            ));
+            continue;
+        };
+        let ours: Vec<&PackageRecord> = rec
+            .packages
+            .iter()
+            .filter(|p| installed.get(&p.name) == Some(&p.installed))
+            .collect();
+        let still_held: Vec<&String> = rec
+            .held
+            .iter()
+            .filter(|n| held.is_some_and(|h| h.contains(n)))
+            .collect();
+        if ours.is_empty() && still_held.is_empty() {
+            continue;
+        }
+        out.push(format!(
+            "{what}: no declared sensor needs it any more, but what xorgate-rs installed for it is still in place:"
+        ));
+        // The packages this command installed that are still there, then
+        // those of which only its hold is left.
+        let mut names: Vec<&str> = ours.iter().map(|p| p.name.as_str()).collect();
+        for n in &still_held {
+            if !names.contains(&n.as_str()) {
+                names.push(n.as_str());
+            }
+        }
+        let width = names.iter().map(|n| n.len()).max().unwrap_or(0);
+        for name in &names {
+            let hold = match held {
+                Some(h) if h.iter().any(|x| x == name) => "held",
+                Some(_) => "not held",
+                None => "hold not read",
+            };
+            let was = ours
+                .iter()
+                .find(|p| p.name == *name)
+                .map(|p| match &p.replaced {
+                    Some(v) => format!("  (installed by xorgate-rs; it replaced {v})"),
+                    None => "  (installed by xorgate-rs; it was not installed before)".to_string(),
+                })
+                .unwrap_or_default();
+            out.push(format!(
+                "  {name:width$}  installed {}  {hold}{was}",
+                installed.get(*name).map(String::as_str).unwrap_or("-"),
+            ));
+        }
+        if !still_held.is_empty() {
+            out.push(format!("  {HELD_MEANS}"));
+        }
+        let back = rollback_commands(rec, installed, held);
+        let packages = back.iter().any(|c| c.contains("apt-get"));
+        for cmd in &back {
+            out.push(format!("  to go back: {cmd}"));
+        }
+        if packages {
+            out.push(format!("  to go back: {AFTER_GOING_BACK}"));
+        }
+    }
+    out
+}
+
+/// What a hold that is left behind means (the block of
+/// [`leftover_listing`]).
+pub const HELD_MEANS: &str =
+    "while they are held, apt does not update these packages: the OS's own updates of them do not reach this device";
+
 /// What is still to do for `plan`, given the holds: `true` = `--install`
 /// has work (a package to install, or a hold to set).
 pub fn needs_work(plan: &SetPlan, held: Option<&[String]>) -> bool {
@@ -1471,6 +1584,88 @@ mod tests {
         assert_eq!(
             rollback_commands(&first, &BTreeMap::new(), Some(&held)),
             ["sudo apt-mark unhold libcamera0.5 libcamera-ipa"]
+        );
+
+        // THE SENSOR LEFT THE DEVICE: no declared sensor needs the set any
+        // more, and what this command installed is still there and held.
+        // One block says so, with the same lines to go back.
+        let record = InstallRecord {
+            v: 1,
+            sets: [("arducam-libcamera".to_string(), first.clone())].into(),
+        };
+        let left = |needed: &[&str],
+                    installed: Option<&BTreeMap<String, String>>,
+                    held: Option<&[String]>| {
+            leftover_listing(&record, needed, c, installed, held)
+        };
+        assert_eq!(
+            left(&[], Some(&both), Some(&held)),
+            [
+                "arducam-libcamera (Arducam's libcamera build (adds the IMX335 camera helper)), the set imx335 needs: no declared sensor needs it any more, but what xorgate-rs installed for it is still in place:",
+                "  libcamera0.5   installed 0.5.2+rpt20250909-1  held  (installed by xorgate-rs; it replaced 0.5.2+rpt20250903-1)",
+                "  libcamera-ipa  installed 0.5.2+rpt20250909-1  held  (installed by xorgate-rs; it replaced 0.5.2+rpt20250903-1)",
+                "  while they are held, apt does not update these packages: the OS's own updates of them do not reach this device",
+                "  to go back: sudo apt-mark unhold libcamera0.5 libcamera-ipa",
+                "  to go back: sudo apt-get install -y --allow-downgrades libcamera0.5=0.5.2+rpt20250903-1 libcamera-ipa=0.5.2+rpt20250903-1",
+                "  to go back: then: sudo systemctl restart xorgate-agent-rs (until the agent restarts, its running captures keep the replaced library loaded and the port still reads ok)",
+            ]
+        );
+        // A set a declared sensor needs is the plan's to list, not this.
+        assert!(left(&["arducam-libcamera"], Some(&both), Some(&held)).is_empty());
+        // The hold was released, the packages are still ours: no hold line,
+        // no unhold.
+        assert_eq!(
+            left(&[], Some(&both), Some(no_holds)),
+            [
+                "arducam-libcamera (Arducam's libcamera build (adds the IMX335 camera helper)), the set imx335 needs: no declared sensor needs it any more, but what xorgate-rs installed for it is still in place:",
+                "  libcamera0.5   installed 0.5.2+rpt20250909-1  not held  (installed by xorgate-rs; it replaced 0.5.2+rpt20250903-1)",
+                "  libcamera-ipa  installed 0.5.2+rpt20250909-1  not held  (installed by xorgate-rs; it replaced 0.5.2+rpt20250903-1)",
+                "  to go back: sudo apt-get install -y --allow-downgrades libcamera0.5=0.5.2+rpt20250903-1 libcamera-ipa=0.5.2+rpt20250903-1",
+                "  to go back: then: sudo systemctl restart xorgate-agent-rs (until the agent restarts, its running captures keep the replaced library loaded and the port still reads ok)",
+            ]
+        );
+        // The packages were put back by hand, the hold was left: the hold
+        // is what remains, and the stock versions are not called ours.
+        let stock = now(&[("libcamera0.5", STOCK), ("libcamera-ipa", STOCK)]);
+        assert_eq!(
+            left(&[], Some(&stock), Some(&held)),
+            [
+                "arducam-libcamera (Arducam's libcamera build (adds the IMX335 camera helper)), the set imx335 needs: no declared sensor needs it any more, but what xorgate-rs installed for it is still in place:",
+                "  libcamera0.5   installed 0.5.2+rpt20250903-1  held",
+                "  libcamera-ipa  installed 0.5.2+rpt20250903-1  held",
+                "  while they are held, apt does not update these packages: the OS's own updates of them do not reach this device",
+                "  to go back: sudo apt-mark unhold libcamera0.5 libcamera-ipa",
+            ]
+        );
+        // The holds could not be read: the packages are still said, and no
+        // unhold is offered.
+        let blind = left(&[], Some(&both), None);
+        assert_eq!(blind.len(), 5, "{blind:?}");
+        assert!(blind[1].ends_with(
+            "hold not read  (installed by xorgate-rs; it replaced 0.5.2+rpt20250903-1)"
+        ));
+        // Everything was put back: nothing is said.
+        assert!(left(&[], Some(&stock), Some(no_holds)).is_empty());
+        // dpkg could not be asked: that is said, nothing is concluded.
+        assert_eq!(
+            left(&[], None, Some(&held)),
+            ["arducam-libcamera (Arducam's libcamera build (adds the IMX335 camera helper)), the set imx335 needs: no declared sensor needs it any more; whether what xorgate-rs installed for it is still in place could not be read (dpkg-query)"]
+        );
+        // A record without anything in it, and a set this build's catalog
+        // does not list.
+        let other = InstallRecord {
+            v: 1,
+            sets: [
+                ("empty".to_string(), SetRecord::default()),
+                ("old-set".to_string(), first.clone()),
+            ]
+            .into(),
+        };
+        let lines = leftover_listing(&other, &[], c, Some(&both), Some(&held));
+        assert_eq!(lines.len(), 7, "{lines:?}");
+        assert_eq!(
+            lines[0],
+            "old-set (a package set this agent build no longer lists): no declared sensor needs it any more, but what xorgate-rs installed for it is still in place:"
         );
     }
 }
