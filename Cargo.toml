@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.1"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.99"
 license = "UNLICENSED"
@@ -20,9 +20,9 @@ repository = "https://github.com/epyelabs/xorgate-device-agent-rust"
 # `version` alongside `path`: cargo-deny `[bans] wildcards = "deny"` treats a
 # bare path dependency as a wildcard requirement. Keep in step with
 # [workspace.package].version.
-xorgate-core = { path = "crates/xorgate-core", version = "0.1.1" }
-xorgate-hal = { path = "crates/xorgate-hal", version = "0.1.1" }
-xorgate-cloud = { path = "crates/xorgate-cloud", version = "0.1.1" }
+xorgate-core = { path = "crates/xorgate-core", version = "0.2.0" }
+xorgate-hal = { path = "crates/xorgate-hal", version = "0.2.0" }
+xorgate-cloud = { path = "crates/xorgate-cloud", version = "0.2.0" }
 
 anyhow = "1"
 thiserror = "2"

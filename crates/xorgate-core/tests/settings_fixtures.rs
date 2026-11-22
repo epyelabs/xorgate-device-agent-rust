@@ -128,7 +128,11 @@ fn recording_settings_test_ts() {
         extra["defaultVideoPreset"].as_str().unwrap(),
         DEFAULT_VIDEO_PRESET
     );
-    let classes: serde_json::Map<String, Value> = CONFIG_APPLY_CLASSES
+    // D108: the Rust registry ends with the Rust-only `cameraSensors`;
+    // everything before it is the JS registry, in its order.
+    let (last, js) = CONFIG_APPLY_CLASSES.split_last().unwrap();
+    assert_eq!(last.0, "cameraSensors", "D108");
+    let classes: serde_json::Map<String, Value> = js
         .iter()
         .map(|(k, c)| (k.to_string(), Value::String(c.as_str().to_string())))
         .collect();
@@ -137,10 +141,10 @@ fn recording_settings_test_ts() {
         extra["configApplyClassesJson"].as_str().unwrap(),
         "CONFIG_APPLY_CLASSES"
     );
-    let keys: Vec<Value> = CONFIG_NAMESPACE_KEYS
-        .iter()
-        .map(|k| Value::String(k.to_string()))
-        .collect();
+    // D108 again: the JS keys, then the Rust-only `cameraSensors`.
+    let (last, js) = CONFIG_NAMESPACE_KEYS.split_last().unwrap();
+    assert_eq!(*last, "cameraSensors", "D108");
+    let keys: Vec<Value> = js.iter().map(|k| Value::String(k.to_string())).collect();
     assert_eq!(
         Value::Array(keys),
         extra["configNamespaceKeys"],

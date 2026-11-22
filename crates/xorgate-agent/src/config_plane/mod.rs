@@ -145,6 +145,8 @@ pub fn options_for(ctx: &AgentCtx, deps: &ConfigPlaneDeps) -> ConfigSyncOptions 
     // `cameraMount: () => cameraMountState` (Phase 4: None = not reconciled yet).
     let hooks = ctx.hooks.clone();
     o.camera_mount = Some(Arc::new(move || hooks.camera_mount_state()));
+    let hooks = ctx.hooks.clone();
+    o.camera_sensors = Some(Arc::new(move || hooks.camera_sensors_state()));
     let scope = deps.scope.clone();
     o.telemetry_scope = Some(Arc::new(move || Some(scope.report())));
     // `obd: () => source.obdReport?.() ?? null` (`worker.ts:790` @ 09da38d).

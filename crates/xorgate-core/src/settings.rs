@@ -626,6 +626,149 @@ pub fn parse_camera_mount_settings(v: &Value) -> Option<CameraMountSettings> {
 }
 
 // ---------------------------------------------------------------------------
+// cameraSensors — RUST-ONLY (support-other-camera-models plan, Phase 2; the
+// JS agent has no such namespace and ignores the key)
+// ---------------------------------------------------------------------------
+
+/// `cameraSensors`: which image sensor is attached to each camera port,
+/// keyed by stream key. An ABSENT port key is UNMANAGED: the agent leaves
+/// that port's camera line in config.txt exactly as it found it.
+///
+/// Each entry is kept AS DELIVERED (a JSON value), not normalised: the
+/// agent has to be able to say "this entry was refused, and why" for a
+/// sensor id or an option its compiled-in catalog lacks and for an entry
+/// of the wrong type, and it must hand the value back unchanged in a local
+/// fold-back (`changed.cameraSensors`). What an entry means is decided by
+/// [`camera_sensor_choice`], and against the catalog by the reconciler.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct CameraSensorsSettings {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub cameras: Option<IndexMap<String, Value>>,
+}
+
+/// The most port keys `cameraSensors.cameras` holds (the backend's bound);
+/// keys beyond it are dropped.
+pub const MAX_CAMERA_SENSOR_PORTS: usize = 16;
+
+/// The largest entry (its JSON text, in bytes) `cameraSensors.cameras`
+/// holds as delivered.
+pub const MAX_CAMERA_SENSOR_ENTRY_BYTES: usize = 512;
+
+/// The `sensor` value of a port declared empty.
+pub const CAMERA_SENSOR_NONE: &str = "none";
+
+/// Forgiving like `parse_camera_mount_settings`: `{cameras: {}}` parses to
+/// itself; no `cameras` object → None (the cloud's "revert this namespace"
+/// marker). A key that is not a stream key is dropped; every other entry is
+/// kept whatever it holds.
+pub fn parse_camera_sensors_settings(v: &Value) -> Option<CameraSensorsSettings> {
+    let Value::Object(src) = v else {
+        return None;
+    };
+    let Some(Value::Object(cameras)) = src.get("cameras") else {
+        return None;
+    };
+    let mut out: IndexMap<String, Value> = IndexMap::new();
+    for (key, entry) in cameras {
+        if !stream_key_re_test(key) || js_assign_drops_key(key) {
+            continue;
+        }
+        // The backend's bound on ports; only a hand-edited file exceeds it.
+        if out.len() >= MAX_CAMERA_SENSOR_PORTS {
+            break;
+        }
+        // An entry is held as delivered, so its size is what the report
+        // carries (twice, with a local fold-back), and the backend drops a
+        // report over 32 KB. A real entry is some 60 bytes; one over the
+        // bound (a hand-edited file) is replaced by a marker the reconciler
+        // refuses, so nothing is written for the port.
+        let bytes = serde_json::to_string(entry).map_or(0, |s| s.len());
+        if bytes > MAX_CAMERA_SENSOR_ENTRY_BYTES {
+            let mut marker = serde_json::Map::new();
+            marker.insert("oversized".to_string(), Value::from(bytes));
+            out.insert(key.clone(), Value::Object(marker));
+            continue;
+        }
+        out.insert(key.clone(), entry.clone());
+    }
+    Some(CameraSensorsSettings {
+        cameras: Some(object_key_order(out)),
+    })
+}
+
+/// What one `cameraSensors.cameras.<key>` entry asks for.
+#[derive(Debug, Clone, PartialEq)]
+pub enum CameraSensorChoice {
+    /// `{"sensor": "none"}`: the port is declared empty.
+    Empty,
+    /// A sensor id (not checked against the catalog here) and its options
+    /// in the entry's order.
+    Sensor {
+        id: String,
+        options: Vec<(String, f64)>,
+    },
+}
+
+/// Read one entry. `Err` is a sentence fragment that completes "the camera
+/// sensor setting of <key> …" (the port is then refused, config.txt is left
+/// alone). Unknown keys of the entry are ignored.
+pub fn camera_sensor_choice(entry: &Value) -> Result<CameraSensorChoice, String> {
+    let Value::Object(e) = entry else {
+        return Err("is not an object".to_string());
+    };
+    let Some(Value::String(id)) = e.get("sensor") else {
+        if let Some(bytes) = e.get("oversized").and_then(Value::as_u64) {
+            return Err(format!(
+                "is larger than the agent keeps ({bytes} bytes; at most {MAX_CAMERA_SENSOR_ENTRY_BYTES})"
+            ));
+        }
+        return Err("has no \"sensor\" name".to_string());
+    };
+    let options = match e.get("options") {
+        None => Vec::new(),
+        Some(Value::Object(o)) => {
+            let mut out = Vec::new();
+            for (k, v) in o {
+                let Some(n) = v.as_f64().filter(|n| n.is_finite()) else {
+                    return Err(format!(
+                        "has an option \"{}\" that is not a number",
+                        clip(k)
+                    ));
+                };
+                out.push((k.clone(), n));
+            }
+            out
+        }
+        Some(_) => return Err("has \"options\" that is not an object".to_string()),
+    };
+    if id == CAMERA_SENSOR_NONE {
+        if !options.is_empty() {
+            return Err("declares the port empty (\"none\") and still carries options".to_string());
+        }
+        return Ok(CameraSensorChoice::Empty);
+    }
+    Ok(CameraSensorChoice::Sensor {
+        id: id.clone(),
+        options,
+    })
+}
+
+/// A name out of a setting, as it may appear in a sentence: at most 32
+/// characters, and only `[A-Za-z0-9_.-]` (anything else becomes `?`).
+pub fn clip(s: &str) -> String {
+    s.chars()
+        .take(32)
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-') {
+                c
+            } else {
+                '?'
+            }
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------
 // simulation — `settings.ts:290-327`
 // ---------------------------------------------------------------------------
 
@@ -879,6 +1022,9 @@ pub struct AgentSettings {
     /// Vehicle OBD-II adapter (`settings.ts:477-482` @ 09da38d).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub obd: Option<ObdSettings>,
+    /// Camera sensor per port (RUST-ONLY, after every JS key).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera_sensors: Option<CameraSensorsSettings>,
 }
 
 /// `parseSettingsObject` (`settings.ts:616`): the allowlist rewriter — every
@@ -897,6 +1043,7 @@ pub fn parse_settings_object(obj: &serde_json::Map<String, Value>) -> AgentSetti
         camera_mount: parse_camera_mount_settings(get("cameraMount")),
         simulation: parse_simulation_settings(get("simulation")),
         obd: parse_obd_settings(get("obd")),
+        camera_sensors: parse_camera_sensors_settings(get("cameraSensors")),
     }
 }
 

@@ -115,6 +115,7 @@ What gets uploaded, and the guard rails:
 | `/etc/sudoers.d/024_xorgate-update-rs` | lets the agent start exactly the updater unit, nothing else |
 | `/usr/local/bin/xorgate-camcfg` (+ `xorgate-camcfg.overlays`) | the camera-line owner: the root helper through which the agent changes the camera `dtoverlay=` lines of `config.txt`, and its allow-list: the overlay names it may write and, per overlay, the parameter names (generated from the sensor catalog). It builds every line itself from checked parts and never reboots |
 | `/etc/sudoers.d/025_xorgate-camcfg` | lets the agent run that helper, nothing else |
+| `/var/lib/xorgate/camera-boot-lines.json` | each camera port's `dtoverlay=` line as the agent first saw it in the current boot (keyed by the kernel's boot id). A line that differs now waits for a reboot. Rust-only; rewritten once per boot; safe to delete |
 | `/etc/xorgate/` | identity, `agent.env`, manifests: shared with the reference agent, read-only for the converter |
 | `/var/lib/xorgate/` | settings and state: shared with the reference agent |
 

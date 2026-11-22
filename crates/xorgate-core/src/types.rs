@@ -268,6 +268,68 @@ pub struct CameraMountCameraState {
     pub detail: Option<String>,
 }
 
+/// What the camera reconciler found for one port of the `cameraSensors`
+/// namespace (RUST-ONLY, support-other-camera-models Phase 2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CameraSensorsVerdict {
+    /// config.txt's line for the port is the declared sensor's line (or the
+    /// port has no line, for `none`), and the device booted with it.
+    Applied,
+    /// The line is as declared, but it was changed since this boot: it
+    /// takes effect at the next reboot.
+    PendingReboot,
+    /// The declaration cannot be applied and config.txt is left alone: the
+    /// device has no such port, this build's catalog lacks the sensor or an
+    /// option, the entry is malformed, or the helper refused the edit.
+    Rejected,
+    /// The privileged write did not happen (helper or grant missing, or it
+    /// failed).
+    WriteFailed,
+}
+
+impl CameraSensorsVerdict {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CameraSensorsVerdict::Applied => "applied",
+            CameraSensorsVerdict::PendingReboot => "pending-reboot",
+            CameraSensorsVerdict::Rejected => "rejected",
+            CameraSensorsVerdict::WriteFailed => "write-failed",
+        }
+    }
+}
+
+/// One port of [`CameraSensorsState`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraSensorsPortState {
+    pub stream_key: String,
+    /// The declared sensor id as held (`none` included); `None` when the
+    /// entry names none.
+    pub sensor: Option<String>,
+    pub verdict: CameraSensorsVerdict,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+/// The camera reconciler's last pass over the `cameraSensors` namespace.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CameraSensorsState {
+    pub at: i64,
+    pub cameras: Vec<CameraSensorsPortState>,
+    /// Some port's line is written and waits for a reboot.
+    pub reboot_required: bool,
+    /// The boot config changed on THIS pass.
+    pub wrote: bool,
+    /// The namespace this pass looked at, as JSON (`null` = absent). The
+    /// status says `applied` only for the value the pass was computed
+    /// from: a value held since (a cloud message applied a moment ago, a
+    /// local edit) is "saved, not reconciled yet".
+    #[serde(default)]
+    pub settings: String,
+}
+
 /// `CameraMountState` (`boot-config.ts:246`): the reconciler's last pass.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

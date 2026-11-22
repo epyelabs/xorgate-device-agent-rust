@@ -452,13 +452,20 @@ async fn the_hold_line_names_the_declared_sensor() {
         .await,
         held("imx335")
     );
-    // No config.txt, no line for the port, or a line that agrees with the
-    // model: the model's sensor, the TS line word for word.
-    for boot in [
-        None,
-        Some("dtoverlay=imx290\n"),
-        Some("dtoverlay=imx290,cam0\n"),
-    ] {
+    // No config.txt, or a line that agrees with the model: the model's
+    // sensor, the TS line word for word.
+    for boot in [None, Some("dtoverlay=imx290,cam0\n")] {
         assert_eq!(warnings(none(), boot).await, held("imx290"), "{boot:?}");
+    }
+    // config.txt was read and has NO camera line for the port (D112): the
+    // port is not configured (the report says `empty`), so the line does
+    // not send the reader to a ribbon cable. (`dtoverlay=imx290` without a
+    // port token is CAM1's line, D106.)
+    for boot in ["dtoverlay=imx290\n", "dtoverlay=vc4-kms-v3d\n", ""] {
+        assert_eq!(
+            warnings(none(), Some(boot)).await,
+            ["cam0: no camera is configured on csi0 (config.txt has no camera line for it; the device model expects imx290) — stream held down"],
+            "{boot:?}"
+        );
     }
 }

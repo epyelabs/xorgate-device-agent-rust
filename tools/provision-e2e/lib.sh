@@ -189,6 +189,62 @@ elif a[:1] == ["update"]:
     sys.exit(3)
 elif a[:1] == ["led"]:
     log("rs led " + " ".join(a[1:]))
+elif a[:3] == ["camera", "apply", "--from-claim"] and len(a) == 4:
+    # The stand-in for `xorgate-rs camera apply` (step 8b). The REAL command
+    # is tested against the REAL helper on fixture files by
+    # crates/xorgate-agent/tests/camera_apply.rs; this models what the
+    # provisioner sees of it: the claim file it is handed, the lines it
+    # writes (always an explicit rotation=, one line per port, a line of the
+    # same sensor left alone), its per-port output and its last line.
+    import json, re
+    log("rs camera apply --from-claim " + a[3])
+    DEFAULT = {"imx290": 0, "imx219": 180, "imx708": 180, "imx335": 180}
+    claim = json.load(open(a[3]))
+    video = (claim.get("hardware") or {}).get("video") or []
+    setting = (claim.get("cameraSensors") or {}).get("cameras")
+    if setting is not None:
+        ports = {k: e.get("sensor") for k, e in setting.items()}
+    elif video:
+        ports = {v["connector"].replace("csi", "cam"): v["sensor"] for v in video}
+    else:
+        ports = {"cam0": "imx290", "cam1": "imx290"}
+    path = "/boot/firmware/config.txt"
+    lines = open(path).read().split("\n")
+    changed = False
+    failed = False
+    for cam, sensor in ports.items():
+        mine = [l for l in lines if re.match(r"dtoverlay=imx[0-9]+(,|$)", l) and (("cam0" in l.split(",")) == (cam == "cam0"))]
+        if sensor == "none":
+            if mine:
+                lines = [l for l in lines if l not in mine]
+                changed = True
+                print(cam + ": camera line removed (was: " + mine[-1] + ")")
+            else:
+                print(cam + ": no change (no camera line)")
+            continue
+        if sensor not in DEFAULT:
+            why = "this agent build does not know the camera sensor \"" + str(sensor) + "\""
+            print(cam + ": FAILED: " + why)
+            if not mine:
+                # The real command's line for a port left with no camera line.
+                print(cam + ": NO CAMERA LINE: " + cam + " has NO camera line in " + path + ", so no camera will appear on that port (" + why + "). To fix it: correct the cause, then `xorgate-rs set cameraSensors." + cam + ".sensor <imx290|imx219|imx708|imx335>` (the agent writes the line within a minute; reboot after), or add the dtoverlay line for " + cam + " by hand and reboot")
+            failed = True
+            continue
+        if len(mine) == 1 and mine[0].split(",")[0] == "dtoverlay=" + sensor:
+            print(cam + ": no change (" + mine[0] + ")")
+            continue
+        want = "dtoverlay=%s,%s,rotation=%d" % (sensor, cam, DEFAULT[sensor])
+        lines = [l for l in lines if l not in mine]
+        while lines and lines[-1] == "":
+            lines.pop()
+        lines += [want, ""]
+        changed = True
+        print(cam + ": " + want + " written")
+    if changed:
+        with open(path, "w") as f:
+            f.write("\n".join(lines))
+    print("config.txt changed: REBOOT required before the cameras stream" if changed else "config.txt unchanged: the camera lines were already as declared")
+    sys.exit(1 if failed else 0)
 PY
   chmod 0755 "$1"
 }

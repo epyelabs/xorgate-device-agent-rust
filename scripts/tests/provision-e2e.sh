@@ -44,7 +44,8 @@ run_boot
 expect_rc 0 "happy"
 [ "$(claims)" = 1 ] && [ "$(jq -r .body.agent "$E/claims.log")" = rust ] && [ "$(jq -r .body.platform "$E/claims.log")" = aarch64 ] \
   && ok "one claim, body.agent=rust (+ the JS fields)" || bad "claims: $(cat "$E/claims.log")"
-[ "$(jq -r '.body | keys | join(",")' "$E/claims.log")" = agent,cameras,dtModel,hostname,platform,serial ] && ok "claim body keys = JS's + agent" || bad "claim body keys"
+[ "$(jq -r '.body | keys | join(",")' "$E/claims.log")" = agent,cameras,capabilities,dtModel,hostname,platform,serial ] && ok "claim body keys = JS's + agent + capabilities" || bad "claim body keys"
+[ "$(jq -c '.body.capabilities' "$E/claims.log")" = '["camera.sensors"]' ] && ok "claim body declares capabilities [camera.sensors] (the claim seeds cameraSensors only then)" || bad "claim capabilities: $(jq -c '.body.capabilities' "$E/claims.log")"
 first_claim=$(grep -n 'POST .*claim' "$E/requests.log" | head -1 | cut -d: -f1)
 PL=/var/log/xorgate-provision-rs.log
 sl=$(grep -n 'staged xorgate-rs' "$PL" | head -1 | cut -d: -f1); cl=$(grep -n 'claiming registration code' "$PL" | head -1 | cut -d: -f1)
@@ -91,8 +92,10 @@ grep -qx "DEVICE_DIST_BUCKET_URL=https://$(golden_host DIST_BUCKET_URL)" /etc/xo
   && grep -qx KVS_RUNTIME_LIB_DIR=/opt/xorgate-rs/media/lib /etc/xorgate/agent.env && ok "agent.env: bucket + KVS runtime under /opt/xorgate-rs/media" || bad "agent.env paths"
 [ "$(jq -r .deviceId /etc/xorgate/kvs.json)" = dev-abcdefghijkmnpq2 ] && [ "$(jq -r .platform /etc/xorgate/hardware.json)" = rpi-cm5 ] \
   && ok "kvs.json + hardware.json from the claim" || bad "kvs/hardware json"
-grep -qx 'dtoverlay=imx290,cam0' /boot/firmware/config.txt && grep -qx 'dtoverlay=imx290,cam1' /boot/firmware/config.txt && grep -qx camera_auto_detect=0 /boot/firmware/config.txt \
-  && grep -q 'REBOOT required' "$OUT" && ok "overlays added + the REBOOT notice" || bad "overlays"
+grep -qx 'dtoverlay=imx290,cam0,rotation=0' /boot/firmware/config.txt && grep -qx 'dtoverlay=imx290,cam1,rotation=0' /boot/firmware/config.txt && grep -qx camera_auto_detect=0 /boot/firmware/config.txt \
+  && grep -q 'REBOOT required' "$OUT" && ok "camera lines written by xorgate-rs camera apply (the stand-in) + the REBOOT notice" || bad "overlays"
+grep -q "camera apply --from-claim .*/claim.json" "$E/agent.log" && grep -q 'camera: cam0: dtoverlay=imx290,cam0,rotation=0 written' "$OUT" \
+  && ok "step 8b ran the installed binary on the claim response and logged its per-port lines" || bad "camera apply: $(grep 'camera' "$E/agent.log" "$OUT" | head -5)"
 case "$(systemctl is-active xorgate-agent-rs)/$(systemctl is-enabled xorgate-agent-rs)" in active/generated | active/enabled-runtime) true ;; *) false ;; esac && ok "xorgate-agent-rs active + wanted by the generator ($(systemctl is-enabled xorgate-agent-rs))" || bad "agent $(systemctl is-active xorgate-agent-rs)"
 grep -q "rs start .*uid=$(id -u pi) device=dev-abcdefghijkmnpq2 dist=latest kvs=/opt/xorgate-rs/media/xorgate-kvs-webrtc" "$E/agent.log" && ok "the agent runs as pi with the new identity" || bad "agent.log: $(tail -2 "$E/agent.log")"
 [ "$(systemctl is-active sim7600-lte)/$(systemctl is-enabled sim7600-lte)" = active/enabled ] && ok "sim7600-lte enabled + started (the stub daemon)" || bad "sim7600-lte"
@@ -129,6 +132,33 @@ PID2=$(systemctl show -p MainPID --value xorgate-agent-rs)
 [ "$(snap | grep -E ' /(usr/local/bin/(sim7600|xorgate-cam)|etc/(sudoers.d|udev|NetworkManager|systemd/logind|apt))')" = "$SHARED_BEFORE" ] \
   && ok "reprovision: identical shared files never rewritten (same inodes)" || bad "reprovision rewrote shared files"
 [ "$(wc -l < "$E/nm-reloads")" = "$NMR" ] && ok "reprovision: NM not reloaded" || bad "reprovision reloaded NM"
+# Step 8b on a re-provision: the same claim's sensors, so nothing is written
+# and no port ends up with two lines (the append-only jq render it replaces
+# could leave two after a sensor swap).
+[ "$(grep -c '^dtoverlay=imx' /boot/firmware/config.txt)" = 2 ] && grep -q 'overlays already present' "$OUT" \
+  && ok "reprovision: still one camera line per port, config.txt not rewritten" || bad "reprovision camera lines: $(grep '^dtoverlay=imx' /boot/firmware/config.txt | tr '\n' ' ')"
+# ... and with ANOTHER sensor chosen for this registration: the port's line
+# is replaced, the empty port's line removed.
+: > "$E/claims.log"; rm -f "$E/used-codes"; echo ok-sensors > "$E/claim-mode"
+CODE=e2ecode3 run_prov /opt/xorgate-rs/provision-rs.sh --reprovision
+expect_rc 0 "--reprovision with a chosen sensor"
+[ "$(grep '^dtoverlay=imx' /boot/firmware/config.txt)" = 'dtoverlay=imx708,cam0,rotation=180' ] && grep -q 'REBOOT required' "$OUT" \
+  && ok "reprovision with cameraSensors in the claim: cam0 is the imx708 line, cam1 (declared empty) has none, REBOOT notice" \
+  || bad "reprovision sensors: $(grep '^dtoverlay=imx' /boot/firmware/config.txt | tr '\n' ' ')"
+grep -q 'camera: cam0: dtoverlay=imx708,cam0,rotation=180 written' "$OUT" && grep -q 'camera: cam1: camera line removed' "$OUT" \
+  && ok "…and the per-port lines are in the log" || bad "camera log lines"
+rm -f "$E/claim-mode"
+
+echo "== a port that cannot be applied on a fresh device: the install still completes, with a WARN that names the port, the reason and the fix"
+reset_device; echo ok-newsensor > "$E/claim-mode"; run_boot
+expect_rc 0 "a camera port that could not be applied"
+grep -q "WARN: cam0 has NO camera line in /boot/firmware/config.txt, so no camera will appear on that port (this agent build does not know the camera sensor \"imx999\"). To fix it: correct the cause, then \`xorgate-rs set cameraSensors.cam0.sensor <imx290|imx219|imx708|imx335>\`" "$OUT" \
+  && ok "the WARN says which port has no camera line, why, and the command that fixes it" || bad "no-line WARN: $(grep -n 'camera\|WARN' "$OUT" | tail -6)"
+[ "$(grep '^dtoverlay=imx' /boot/firmware/config.txt)" = 'dtoverlay=imx219,cam1,rotation=180' ] \
+  && ok "…the other port was written, and no fallback line was invented for cam0" || bad "lines: $(grep '^dtoverlay=imx' /boot/firmware/config.txt | tr '\n' ' ')"
+grep -q "camera: cam0: FAILED: this agent build does not know the camera sensor" "$OUT" && [ "$(systemctl is-active xorgate-agent-rs)" = active ] \
+  && ok "…its FAILED line is in the log and the agent runs" || bad "FAILED line / agent state"
+rm -f "$E/claim-mode"
 
 echo "== the bootstrap's pre-claim failures: no claim, nothing installed"
 reset_device; bucket_bad_sha; run_boot; expect_rc 1 "bad sha"; nothing_claimed "bad sha"

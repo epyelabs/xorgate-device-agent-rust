@@ -176,6 +176,40 @@ The consumer's compatibility rule (unknown keys ignored, an unknown `schemaVersi
 unknown enum member costs only its entry) is in the module docs of
 `crates/xorgate-core/src/camera_catalog.rs`.
 
+## Declare or change a camera sensor on one device
+
+The sensor is a setting of the device, per port (`cameraSensors`). Normally it is set in the console
+(Settings → Media → Camera sensors) or chosen in the Register dialog. On the device itself:
+
+```sh
+xorgate-rs set cameraSensors.cam0.sensor imx708          # one of the catalog's ids
+xorgate-rs set cameraSensors.cam0.options.linkFrequency 447000000   # an option of that sensor; `default` removes it
+xorgate-rs set cameraSensors.cam1.sensor none            # the port has no camera: its line is removed
+xorgate-rs set cameraSensors.cam1.sensor unmanaged       # hands the port back: its line is left as it is
+```
+
+Within about a minute the agent rewrites that port's `dtoverlay=` line in `config.txt` (one write,
+through `xorgate-camcfg`), reports "REBOOT REQUIRED", and the change is folded back to the cloud. It
+never reboots: reboot the device, then `xorgate-rs status` shows the port's verdict. A port without
+an entry is unmanaged and is never rewritten for its sensor.
+
+A line that already names the chosen sensor keeps what the setting does not name: a hand-set
+option stays "as found", and a parameter the catalog does not list (`4lane`, …) is never dropped
+silently. If a named option would force a rewrite of such a line, the port is `rejected` with a
+sentence that names the parameter: edit the line by hand or remove the parameter. Choosing
+another sensor replaces the whole line.
+
+What to expect when it does not work, as `xorgate-rs status` and the console show it:
+
+| Verdict | Meaning |
+|---|---|
+| `reboot-required` | the line was changed since this boot: reboot |
+| `not-detected` | no camera of that sensor answered: the cable, or the wrong sensor was chosen |
+| `no-frames` | a camera is listed but delivers no picture (an `imx290` line lists a camera for anything) |
+| `requirements-missing` | the sensor needs packages or an OS release this device does not have (IMX335: Arducam's libcamera packages) |
+| `unknown-sensor` | the setting names a sensor this agent build does not know: update the agent |
+| `mismatch` | the setting is not written to `config.txt` (the status of the setting says why), or another sensor is listed than the declared one |
+
 ## Handle a new cloud command
 
 1. **Contract first:** the backend sends it, the reference agent handles it, and you have its exact

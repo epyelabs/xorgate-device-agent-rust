@@ -10,6 +10,7 @@
 //! `update` (WP4). The self-managed daemon verbs `start` / `stop` /
 //! `restart` are systemd's job.
 
+pub mod camera;
 pub mod led;
 pub mod logs;
 pub mod manage;
@@ -132,6 +133,8 @@ pub fn main(argv: &[String]) -> i32 {
         Some("update") => update::main(&rest),
         Some("pipeline") => pipeline::main(&rest),
         Some("recording") => recording::main(&rest),
+        // Rust-only (the installer's step 8b): `camera apply --from-claim <file>`.
+        Some("camera") => camera::main(&rest),
         // `monitor`: deprecated alias for `manage`, kept working (cli.tsx:102-108).
         Some(c @ ("manage" | "monitor")) => {
             if c == "monitor" {

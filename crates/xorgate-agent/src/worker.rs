@@ -331,9 +331,11 @@ fn camera_mount_reconciler(
     runner: Arc<dyn xorgate_hal::privileged::PrivilegedRunner>,
     stream_hw: Arc<StreamHardware>,
     on_change: Arc<dyn Fn() + Send + Sync>,
+    boot_lines: Arc<crate::ops::camera_mount::BootLineStore>,
 ) -> crate::ops::camera_mount::CameraMountReconciler {
     use crate::ops::camera_mount as cm;
     let settings = ctx.paths.settings.clone();
+    let sensors_from = ctx.paths.settings.clone();
     let hw = ctx.hardware.clone();
     let (catalog, catalog_error) = xorgate_core::camera_catalog::loaded();
     if let Some(e) = catalog_error {
@@ -347,6 +349,10 @@ fn camera_mount_reconciler(
             settings: Box::new(move || {
                 xorgate_hal::settings_io::load_settings(&settings).camera_mount
             }),
+            sensors: Box::new(move || {
+                xorgate_hal::settings_io::load_settings(&sensors_from).camera_sensors
+            }),
+            boot_lines,
             hardware: Box::new(move || hw.borrow().clone()),
             pipeline_dir: pipeline_dir.to_string(),
             boot_config_path: cm::BootConfigPath::Resolve,
@@ -385,6 +391,7 @@ fn camera_truth(
     stream_hw: &Arc<StreamHardware>,
     hooks: &Arc<RecordingHooks>,
     ops: &Arc<OpsHooks>,
+    boot_lines: Arc<crate::ops::camera_mount::BootLineStore>,
 ) -> crate::ops::camera_truth::CameraTruth {
     use crate::ops::camera_truth as ct;
     let hw = ctx.hardware.clone();
@@ -394,7 +401,26 @@ fn camera_truth(
     // report, so no reference cycle).
     let recheck = hooks.clone();
     let (settings, media_on) = (ctx.paths.settings.clone(), ctx.env.config.media.enabled);
+    let (sensors_from, preset_from) = (settings.clone(), settings.clone());
     ct::CameraTruth::new(ct::CameraTruthOptions {
+        setting: ct::SettingSources {
+            sensors: Box::new(move || {
+                xorgate_hal::settings_io::load_settings(&sensors_from).camera_sensors
+            }),
+            boot_lines: Some(boot_lines),
+            host: Box::new(xorgate_hal::camera_host::host_facts),
+            preset: Box::new(move || {
+                Some(
+                    xorgate_core::recording_config::resolve_recording_config(
+                        xorgate_hal::settings_io::load_settings(&preset_from)
+                            .recording
+                            .as_ref(),
+                    )
+                    .video
+                    .preset,
+                )
+            }),
+        },
         hardware: Box::new(move || hw.borrow().clone()),
         stream_hw: Box::new(move || stream_hw.snapshot()),
         boot_config: crate::recording::hooks::real_boot_config_text(),
@@ -916,6 +942,14 @@ async fn run(args: &[String]) -> Result<i32> {
         .reconcile_hardware_boot()
         .await
         .map_err(|e| anyhow::anyhow!("hardware reconcile failed: {e}"))?;
+    // Each camera port's line as first seen in this boot (Rust-only): what
+    // tells "written, not booted" from "in force" for the reconciler and
+    // the per-port report alike.
+    let boot_lines = Arc::new(crate::ops::camera_mount::BootLineStore::real(
+        ctx.paths
+            .home
+            .join(crate::ops::camera_mount::BOOT_LINES_FILE),
+    ));
     // Camera mount (`:150-199`): real mode only (`:170`).
     if cfg.mode == RunMode::Real {
         ops.bind_camera(Arc::new(camera_mount_reconciler(
@@ -924,6 +958,7 @@ async fn run(args: &[String]) -> Result<i32> {
             runner.clone(),
             stream_hw.clone(),
             ops.camera_mount_on_change(),
+            boot_lines.clone(),
         )));
     }
     ctx.hooks.reconcile_camera_mount_boot().await;
@@ -945,7 +980,14 @@ async fn run(args: &[String]) -> Result<i32> {
     // boot pass reads config.txt and sysfs once; the heartbeat keeps the
     // verdicts current and the 60 s poll re-reads the slow facts.
     if crate::ops::camera_truth::camera_report_enabled(cfg.mode, cfg.offline) {
-        let truth = camera_truth(&ctx, &media_cfg.pipeline_dir, &stream_hw, &hooks, &ops);
+        let truth = camera_truth(
+            &ctx,
+            &media_cfg.pipeline_dir,
+            &stream_hw,
+            &hooks,
+            &ops,
+            boot_lines.clone(),
+        );
         truth.refresh();
         ops.bind_cameras(truth);
     }

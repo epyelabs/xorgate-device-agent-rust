@@ -9,7 +9,9 @@
 #      (10-user.conf, 020, 021, 023, logind, uplink, apt lock, the legacy
 #      pipeline writer), and agent.env == the JS heredoc under the FIXED
 #      Rust mapping (media root, CLI name; DEVICE_DIST_VERSION=latest literal);
-#   4. the apt package set == the JS set minus nodejs; NEEDED providers are a
+#   4. the apt package set == the JS set minus nodejs plus rpicam-apps-lite
+#      (the camera lister, Rust-only, only when rpicam-hello is missing);
+#      NEEDED providers are a
 #      subset; no apt call overrides apt's configuration (a window-only
 #      APT::Get::Upgrade "false" is honoured);
 #   5. no JS-only step (node, npm, the JS unit/updater, 022, the `xorgate`
@@ -141,7 +143,13 @@ pkgs() {
 }
 JSP=$(pkgs "$JSG" | sort -u)
 RSP=$( { pkgs "$PROV" | grep -v '^"\$@"$' | grep -v '^"\${APT_'; printf '%s\n' curl ca-certificates jq build-essential python3 "${APT_NEEDED[@]}" "${APT_GST_PLUGINS[@]}"; } | sort -u)
-same "Rust apt set == JS apt set minus nodejs" "$(printf '%s\n' "$JSP" | grep -vx nodejs)" "$RSP"
+# rpicam-apps-lite: Rust-only (support-other-camera-models Phase 2). The
+# claim probe and the agent list cameras with rpicam-hello; JS never installs
+# it. Only when rpicam-hello is missing, so a Lite image's package is never
+# swapped for the full one.
+same "Rust apt set == JS apt set minus nodejs plus rpicam-apps-lite" "$( { printf '%s\n' "$JSP" | grep -vx nodejs; echo rpicam-apps-lite; } | sort -u)" "$RSP"
+grep -B1 'apt-get install -y -qq rpicam-apps-lite' "$PROV" | grep -q 'if ! command -v rpicam-hello' \
+  && pass "rpicam-apps-lite is installed only when rpicam-hello is missing" || failc "rpicam-apps-lite is not guarded by command -v rpicam-hello"
 for p in "${APT_NEEDED[@]}"; do printf '%s\n' "$JSP" | grep -qx "$p" && pass "NEEDED provider $p is a JS package" || failc "NEEDED provider $p not in the JS set"; done
 grep -E 'apt-get .*(-o |--only-upgrade|--upgrade|-u |--allow-downgrades|--reinstall)' "$PROV" >/dev/null && failc "an apt-get call overrides apt's configuration" || pass "no apt-get call overrides apt's configuration (APT::Get::Upgrade \"false\" is honoured)"
 

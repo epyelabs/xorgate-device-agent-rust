@@ -20,7 +20,7 @@
 # ModemManager off + stale usb0 default routes -> 1 apt -> 1b IMU -> 1c GStreamer ->
 # P2 stage + smoke-exec -> 2 claim -> 3 /etc/xorgate -> 4 swap -> 5b wrapper
 # -> 6 units, sudoers, helpers, updater, logind -> 7 modem -> 7b uplink ->
-# 8 kvs.json, hardware.json, pipelines -> 8b overlays -> P9 enable + start +
+# 8 kvs.json, hardware.json, pipelines -> 8b camera lines -> P9 enable + start +
 # wait <= 90 s for active.
 #
 # Every system file is written cmp-before-write (identical bytes + mode +
@@ -760,6 +760,15 @@ provision_main() {
     || log "WARN: GStreamer runtime install failed; media streaming disabled. Re-run: sudo apt-get install -y gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly"
   apt-get install -y -qq gstreamer1.0-libcamera 2>/dev/null \
     || log "WARN: gstreamer1.0-libcamera not installed; Raspberry Pi cameras will not stream"
+  # Rust-only (no JS counterpart): rpicam-hello is how the claim probe below
+  # and the agent list the cameras. Without it the agent cannot check a port.
+  # Installed ONLY when it is missing, and then the Lite package (no desktop
+  # dependencies): an image that already has rpicam-hello, through either
+  # package, keeps what it has.
+  if ! command -v rpicam-hello >/dev/null 2>&1; then
+    apt-get install -y -qq rpicam-apps-lite 2>/dev/null \
+      || log "WARN: rpicam-apps-lite not installed; the agent cannot list cameras and reports every camera port as unchecked"
+  fi
 
   # P2. Stage the build and smoke-run it, still before the claim.
   log "staging the build in $STAGING"
@@ -784,7 +793,13 @@ provision_main() {
   fi
   log "  staged ${out%%$'\n'*}"
 
-  # 2. Claim (JS step 2's body + agent:"rust"). https only, as the bootstrap.
+  # 2. Claim (JS step 2's body + agent:"rust" + capabilities). https only, as
+  #    the bootstrap. `capabilities` tells the backend this installer applies
+  #    the camera sensor setting (step 8b runs `xorgate-rs camera apply`): the
+  #    claim then seeds `cameraSensors` and echoes it. Without it the device
+  #    starts unmanaged. The string is the agent's own
+  #    (xorgate_core::config_report::CAPABILITY_CAMERA_SENSORS; a test ties
+  #    the two).
   local HOSTNAME_VAL PLATFORM_VAL SERIAL_VAL DT_MODEL CAM_COUNT body
   HOSTNAME_VAL=$(hostname || echo unknown)
   PLATFORM_VAL=$(uname -m || echo unknown)
@@ -796,7 +811,7 @@ provision_main() {
   CAM_COUNT="${CAM_COUNT:-0}"
   body=$(jq -n --arg s "$SERIAL_VAL" --arg h "$HOSTNAME_VAL" --arg p "$PLATFORM_VAL" \
         --arg d "$DT_MODEL" --argjson c "${CAM_COUNT:-0}" \
-        '{serial:$s, hostname:$h, platform:$p, dtModel:$d, cameras:$c, agent:"rust"}')
+        '{serial:$s, hostname:$h, platform:$p, dtModel:$d, cameras:$c, agent:"rust", capabilities:["camera.sensors"]}')
   log "claiming registration code via $API_BASE (model: $DT_MODEL, cameras: $CAM_COUNT)"
   local RESP=$PRIV/claim.json
   PHASE=claiming   # N1: from here until an HTTP answer, the claim state is unknown
@@ -988,9 +1003,16 @@ provision_main() {
     log "WARN: media runtime binary missing from build ($RS_PREFIX/media); streaming disabled"
   fi
 
-  # 8b. Camera device-tree overlays (JS step 8b). The same lines; config.txt is
-  #     rewritten only when a line is actually missing or wrong.
-  local CONFIG_TXT=/boot/firmware/config.txt CAM_OVERLAY_ADDED=0 OVERLAY_LINES overlay_line
+  # 8b. Camera lines. `camera_auto_detect=0` as JS step 8b; the lines
+  #     themselves are no longer rendered here with jq (JS: one
+  #     `dtoverlay=<model sensor>,<camN>` per camera, appended when a
+  #     substring grep missed it, never replaced, so a sensor swap left two
+  #     lines on a port). The agent binary writes them, through the
+  #     camera-line owner installed in step 6a1b: from the claim's
+  #     cameraSensors when it carries one, else hardware.video[].sensor, else
+  #     the two imx290 lines. One implementation for the installer and the
+  #     running agent; idempotent on a re-provision.
+  local CONFIG_TXT=/boot/firmware/config.txt cam_out cam_rc cam_line
   [ -f "$CONFIG_TXT" ] || CONFIG_TXT=/boot/config.txt
   if [ -f "$CONFIG_TXT" ]; then
     cp -n "$CONFIG_TXT" "$CONFIG_TXT.bak-xorgate" 2>/dev/null || true
@@ -1001,21 +1023,28 @@ provision_main() {
     else
       echo 'camera_auto_detect=0' >> "$CONFIG_TXT"
     fi
-    OVERLAY_LINES=$(jq -r '.hardware.video // [] | .[] | "dtoverlay=\(.sensor),\(.connector | sub("^csi"; "cam"))"' "$RESP" 2>/dev/null || true)
-    if [ -z "$OVERLAY_LINES" ]; then
-      OVERLAY_LINES=$(printf 'dtoverlay=imx290,cam0\ndtoverlay=imx290,cam1')
-    fi
-    while IFS= read -r overlay_line; do
-      [ -n "$overlay_line" ] || continue
-      grep -qF "$overlay_line" "$CONFIG_TXT" || { echo "$overlay_line" >> "$CONFIG_TXT"; CAM_OVERLAY_ADDED=1; }
-    done <<EOF
-$OVERLAY_LINES
-EOF
-    if [ "$CAM_OVERLAY_ADDED" = "1" ]; then
-      log "camera overlays added to $CONFIG_TXT — REBOOT required before cameras stream"
-    else
-      log "camera overlays already present in $CONFIG_TXT"
-    fi
+    cam_rc=0
+    cam_out=$(timeout 120 "$RS_PREFIX/bin/xorgate-rs" camera apply --from-claim "$RESP" 2>&1) || cam_rc=$?
+    # A port left with NO camera line gets its own WARN, in the command's
+    # words (which port, why, how to fix it); the other lines are the log.
+    printf '%s\n' "$cam_out" | while IFS= read -r cam_line; do
+      case $cam_line in
+        '') ;;
+        *': NO CAMERA LINE: '*) log "WARN: ${cam_line#*: NO CAMERA LINE: }" ;;
+        *) log "  camera: $cam_line" ;;
+      esac
+    done
+    case $cam_rc in
+      0)
+        if printf '%s\n' "$cam_out" | grep -q '^config.txt changed'; then
+          log "camera overlays added to $CONFIG_TXT — REBOOT required before cameras stream"
+        else
+          log "camera overlays already present in $CONFIG_TXT"
+        fi
+        ;;
+      1) log "WARN: a camera port could not be applied to $CONFIG_TXT (its 'camera: … FAILED' line above says which and why); the other ports were written" ;;
+      *) log "WARN: xorgate-rs camera apply failed (exit $cam_rc); the camera lines in $CONFIG_TXT were not written" ;;
+    esac
   else
     log "WARN: no config.txt found; skipping camera overlays"
   fi

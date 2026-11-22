@@ -57,7 +57,7 @@ const NONE: &str = "no camera at all, as the benches print it";
 const BROKEN: &str = "libcamera broken";
 
 const HELD: &str = "cam0: no camera enumerated on csi0 (expected imx335) — stream held down until one appears (check the ribbon + overlays, reboot after install)";
-const HEALED: &str = "cam0: a camera is enumerated now — restarting the capture of cam1 so the new camera can be acquired, then starting the stream";
+const HEALED: &str = "cam0: a camera is enumerated now — starting the stream; the capture of cam1 is restarted so the new camera can be acquired";
 
 /// A bench listing by (a unique part of) its fixture name.
 fn bench_listing(name_part: &str) -> RunResult {
@@ -261,6 +261,7 @@ impl World {
             recheck: Box::new(move || recheck.hardware_recheck()),
             capture_off: Box::new(|_| None),
             hold_ms: REPORT_HOLD_MS,
+            setting: xorgate_agent::ops::camera_truth::SettingSources::none(),
         });
         truth.refresh();
         // The boot report went out with this block.
@@ -527,6 +528,6 @@ fn the_heal_line_names_the_captures_it_restarts() {
     assert_eq!(heal_line("cam0", &["cam1"]), HEALED);
     assert_eq!(
         heal_line("cam2", &["cam0", "cam1"]),
-        "cam2: a camera is enumerated now — restarting the capture of cam0, cam1 so the new camera can be acquired, then starting the stream"
+        "cam2: a camera is enumerated now — starting the stream; the capture of cam0, cam1 is restarted so the new camera can be acquired"
     );
 }

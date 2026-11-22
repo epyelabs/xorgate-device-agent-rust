@@ -27,11 +27,11 @@ use serde_json::{Map, Value};
 use crate::hardware_block::{parse_hardware_block, DeviceHardwareBlock};
 use crate::orientation::{parse_imu_mount, ImuMount};
 use crate::settings::{
-    parse_camera_mount_settings, parse_cellular_settings, parse_lte_recovery_settings,
-    parse_obd_settings, parse_recording_settings, parse_simulation_settings,
-    parse_time_sync_settings, AgentSettings, CameraMountSettings, CellularSettings,
-    LteRecoverySettings, ObdSettings, RecordingSettings, SettingsReadFailure, SettingsReadResult,
-    SimulationSettings, TimeSyncSettings,
+    parse_camera_mount_settings, parse_camera_sensors_settings, parse_cellular_settings,
+    parse_lte_recovery_settings, parse_obd_settings, parse_recording_settings,
+    parse_simulation_settings, parse_time_sync_settings, AgentSettings, CameraMountSettings,
+    CameraSensorsSettings, CellularSettings, LteRecoverySettings, ObdSettings, RecordingSettings,
+    SettingsReadFailure, SettingsReadResult, SimulationSettings, TimeSyncSettings,
 };
 use crate::telemetry_scope::TenantScope;
 
@@ -117,6 +117,15 @@ pub struct CloudConfig {
         deserialize_with = "double_option"
     )]
     pub obd: Option<Option<ObdSettings>>,
+    /// Camera sensor per port (RUST-ONLY): same replace-whole-namespace
+    /// semantics; `Some(None)` = carried without a `cameras` object (`{}`,
+    /// the cloud's clear) → remove the local key.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "double_option"
+    )]
+    pub camera_sensors: Option<Option<CameraSensorsSettings>>,
     /// Device hardware block; `Some(None)` = carried but failed validation
     /// (log + keep the current block); absent = keep the current block too.
     #[serde(
@@ -225,6 +234,9 @@ pub fn parse_namespaces(obj: &Map<String, Value>) -> CloudConfig {
     if let Some(v) = plain_object(obj.get("obd")) {
         out.obd = Some(parse_obd_settings(v));
     }
+    if let Some(v) = plain_object(obj.get("cameraSensors")) {
+        out.camera_sensors = Some(parse_camera_sensors_settings(v));
+    }
     if let Some(v) = plain_object(obj.get("hardware")) {
         out.hardware = Some(parse_hardware_block(v));
     }
@@ -262,7 +274,7 @@ pub struct MergeOutcome {
     /// `{...current, ...next}` with the namespace sets/deletes applied):
     /// existing keys keep the parsed file's order, newly-added keys append in
     /// `gnssAntBias, imuMount, recording, lteRecovery, timeSync, cellular,
-    /// cameraMount, simulation, obd` order. Present only when `changed`.
+    /// cameraMount, simulation, obd, cameraSensors` order. Present only when `changed`.
     /// Write it as [`MergeOutcome::document_json`] — NOT a plain
     /// `serde_json::to_string`/`to_vec` of the map, whose number formatter
     /// differs from JS (`0.000005` → `5e-6`; review-integration M1).
@@ -376,6 +388,7 @@ pub fn merge(before: &SettingsReadResult, config: &CloudConfig, path: &str) -> M
     let camera_mount_change = namespace_change(&config.camera_mount, &current.camera_mount);
     let simulation_change = namespace_change(&config.simulation, &current.simulation);
     let obd_change = namespace_change(&config.obd, &current.obd);
+    let camera_sensors_change = namespace_change(&config.camera_sensors, &current.camera_sensors);
 
     if gnss_change.is_none()
         && imu_change.is_none()
@@ -386,6 +399,7 @@ pub fn merge(before: &SettingsReadResult, config: &CloudConfig, path: &str) -> M
         && camera_mount_change.is_none()
         && simulation_change.is_none()
         && obd_change.is_none()
+        && camera_sensors_change.is_none()
     {
         return MergeOutcome {
             changed: false,
@@ -419,6 +433,12 @@ pub fn merge(before: &SettingsReadResult, config: &CloudConfig, path: &str) -> M
         &config.simulation,
     );
     apply_change(&mut doc, "obd", obd_change, &config.obd);
+    apply_change(
+        &mut doc,
+        "cameraSensors",
+        camera_sensors_change,
+        &config.camera_sensors,
+    );
 
     let next: AgentSettings =
         serde_json::from_value(Value::Object(doc.clone())).expect("merged document is settings");
@@ -464,6 +484,119 @@ mod tests {
             .config
             .rev
             .is_none());
+    }
+
+    /// `cameraSensors` (RUST-ONLY) on the retained message: key absent =
+    /// keep the local value, `{}` = drop it, a value = replace whole. Its
+    /// entries are held AS DELIVERED.
+    #[test]
+    fn camera_sensors_follow_the_retained_message_rule() {
+        use crate::settings::parse_settings_text;
+        let held = parse_settings_text(
+            r#"{"gnssAntBias":true,"cameraSensors":{"cameras":{"cam0":{"sensor":"imx708"}}}}"#,
+        );
+        let cloud = |payload: &str| parse_cloud_config(payload).expect("a v1 message");
+        // Absent: the local value stays, nothing is written.
+        let m = merge(&held, &cloud(r#"{"v":1,"rev":2,"gnssAntBias":true}"#), "p");
+        assert!(!m.changed);
+        // The wrong container type is ignored like an absent key.
+        for bad in [r#"[]"#, r#""imx708""#, "7", "true"] {
+            let m = merge(
+                &held,
+                &cloud(&format!(r#"{{"v":1,"cameraSensors":{bad}}}"#)),
+                "p",
+            );
+            assert!(!m.changed, "{bad}");
+        }
+        // `{}` (the cloud's clear, what a PATCH null publishes): dropped.
+        let m = merge(&held, &cloud(r#"{"v":1,"rev":3,"cameraSensors":{}}"#), "p");
+        assert_eq!(m.document_json().unwrap(), r#"{"gnssAntBias":true}"#);
+        assert!(m.next.unwrap().camera_sensors.is_none());
+        // A value: replaced whole (cam0 is gone, not merged).
+        let m = merge(
+            &held,
+            &cloud(r#"{"v":1,"cameraSensors":{"cameras":{"cam1":{"sensor":"none"}}}}"#),
+            "p",
+        );
+        assert_eq!(
+            m.document_json().unwrap(),
+            r#"{"gnssAntBias":true,"cameraSensors":{"cameras":{"cam1":{"sensor":"none"}}}}"#
+        );
+        // The same value again: no change, no write.
+        let m = merge(
+            &held,
+            &cloud(r#"{"v":1,"cameraSensors":{"cameras":{"cam0":{"sensor":"imx708"}}}}"#),
+            "p",
+        );
+        assert!(!m.changed);
+        // `{"cameras":{}}` is a value: the namespace is held, no port managed.
+        let m = merge(
+            &held,
+            &cloud(r#"{"v":1,"cameraSensors":{"cameras":{}}}"#),
+            "p",
+        );
+        assert_eq!(
+            m.document_json().unwrap(),
+            r#"{"gnssAntBias":true,"cameraSensors":{"cameras":{}}}"#
+        );
+        // Entries are kept as delivered: a sensor and an option this build
+        // does not know, an unknown key, a wrong type. Only a key that is
+        // not a stream key is dropped.
+        let odd = r#"{"cameras":{"cam0":{"sensor":"imx999","options":{"lanes":4},"future":[1]},"cam1":7,"bad key!":{"sensor":"imx290"},"__proto__":{"sensor":"imx290"}}}"#;
+        let m = merge(
+            &Ok(AgentSettings::default()),
+            &cloud(&format!(r#"{{"v":1,"cameraSensors":{odd}}}"#)),
+            "p",
+        );
+        assert_eq!(
+            m.document_json().unwrap(),
+            r#"{"cameraSensors":{"cameras":{"cam0":{"sensor":"imx999","options":{"lanes":4},"future":[1]},"cam1":7}}}"#
+        );
+        // ... and what is written reads back as itself.
+        let again = parse_settings_text(&m.document_json().unwrap());
+        assert_eq!(again.as_ref().ok(), m.next.as_ref());
+        let m2 = merge(
+            &again,
+            &cloud(&format!(r#"{{"v":1,"cameraSensors":{odd}}}"#)),
+            "p",
+        );
+        assert!(!m2.changed, "the stored form is stable");
+        // Bounds (only a hand-edited file reaches them): at most 16 ports,
+        // the backend's own limit; an entry over 512 bytes is not held as
+        // delivered but as a marker the reconciler refuses.
+        let many: String = (0..20)
+            .map(|i| format!(r#""p{i}":{{"sensor":"imx290"}}"#))
+            .collect::<Vec<_>>()
+            .join(",");
+        let m = merge(
+            &Ok(AgentSettings::default()),
+            &cloud(&format!(
+                r#"{{"v":1,"cameraSensors":{{"cameras":{{{many}}}}}}}"#
+            )),
+            "p",
+        );
+        let held = m.next.unwrap().camera_sensors.unwrap().cameras.unwrap();
+        assert_eq!(held.len(), crate::settings::MAX_CAMERA_SENSOR_PORTS);
+        assert!(held.contains_key("p15") && !held.contains_key("p16"));
+        let big = format!(r#"{{"sensor":"imx290","junk":"{}"}}"#, "x".repeat(600));
+        let m = merge(
+            &Ok(AgentSettings::default()),
+            &cloud(&format!(
+                r#"{{"v":1,"cameraSensors":{{"cameras":{{"cam0":{big},"cam1":{{"sensor":"none"}}}}}}}}"#
+            )),
+            "p",
+        );
+        assert_eq!(
+            m.document_json().unwrap(),
+            format!(
+                r#"{{"cameraSensors":{{"cameras":{{"cam0":{{"oversized":{}}},"cam1":{{"sensor":"none"}}}}}}}}"#,
+                big.len()
+            )
+        );
+        assert_eq!(
+            crate::settings::camera_sensor_choice(&serde_json::json!({"oversized": 633})),
+            Err("is larger than the agent keeps (633 bytes; at most 512)".to_string())
+        );
     }
 
     #[test]

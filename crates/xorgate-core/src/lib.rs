@@ -26,6 +26,7 @@ pub mod boot_config;
 pub mod boot_policy;
 pub mod build_info;
 pub mod camera_catalog;
+pub mod camera_sensors;
 pub mod camera_truth;
 pub mod cameras;
 pub mod capture_ladder;
