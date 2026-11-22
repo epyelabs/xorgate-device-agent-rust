@@ -994,6 +994,7 @@ async fn camera_report_rides_effective_and_reports_on_change_only() {
         recheck: Box::new(|| {}),
         capture_off: Box::new(|_| None),
         hold_ms: REPORT_HOLD_MS,
+        setting: xorgate_agent::ops::camera_truth::SettingSources::none(),
     });
     truth.refresh();
 

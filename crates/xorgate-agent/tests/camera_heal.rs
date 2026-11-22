@@ -261,6 +261,7 @@ impl World {
             recheck: Box::new(move || recheck.hardware_recheck()),
             capture_off: Box::new(|_| None),
             hold_ms: REPORT_HOLD_MS,
+            setting: xorgate_agent::ops::camera_truth::SettingSources::none(),
         });
         truth.refresh();
         // The boot report went out with this block.

@@ -31,11 +31,12 @@ use std::sync::{Arc, Mutex};
 use serde_json::{json, Value};
 use xorgate_agent::ctx::BoxFut;
 use xorgate_agent::ops::camera_mount::{
-    reconcile_camera_mount, BootConfigPath, CameraMountReconciler, CameraMountReconcilerOptions,
-    HelperRotationWriter, OverlayProbe, PortEvidence, ReconcileCameraMountOptions, RotationResult,
-    RotationWriter, WriteMemo, HELPER_NOT_INSTALLED, RETRY_FAILED_WRITE_MS,
+    reconcile_camera_mount, reconcile_cameras, BootConfigPath, BootLineStore, CameraMountReconciler,
+    CameraMountReconcilerOptions, CameraStates, HelperRotationWriter, OverlayProbe, PortEvidence,
+    ReconcileCameraMountOptions, RotationResult, RotationWriter, WriteMemo, HELPER_NOT_INSTALLED,
+    RETRY_FAILED_WRITE_MS,
 };
-use xorgate_core::boot_config::CamPort;
+use xorgate_core::boot_config::CamCfgOp;
 use xorgate_core::camera_catalog::catalog;
 use xorgate_core::camera_truth::PortNode;
 use xorgate_core::cameras::EnumeratedCamera;
@@ -311,19 +312,22 @@ impl RotationWriter for Writer {
     fn unavailable(&self) -> Option<String> {
         self.inner.as_ref().and_then(|w| w.unavailable())
     }
-    fn apply<'a>(
-        &'a self,
-        port: CamPort,
-        overlay: &'a str,
-        rotation: u16,
-    ) -> BoxFut<'a, RotationResult> {
-        self.calls
-            .lock()
-            .unwrap()
-            .push(json!([overlay, port.token(), rotation]));
+    fn apply(&self, op: CamCfgOp) -> BoxFut<'_, RotationResult> {
+        // The TS scenario's `applyRotation(overlay, cam, rotation)` record.
+        if let CamCfgOp::Rotate {
+            port,
+            overlay,
+            rotation,
+        } = &op
+        {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(json!([overlay, port.token(), rotation]));
+        }
         Box::pin(async move {
             match (&self.inner, &self.fixed) {
-                (Some(w), _) => w.apply(port, overlay, rotation).await,
+                (Some(w), _) => w.apply(op).await,
                 (None, Some(r)) => r.clone(),
                 _ => unreachable!(),
             }
@@ -421,6 +425,7 @@ async fn the_ts_golden_pass_by_pass_with_the_named_divergences() {
         assert_eq!(expected.len() as u64, c["passCount"].as_u64().unwrap());
         // One memo per case: the passes of a case are one agent run.
         let memo: Arc<Mutex<WriteMemo>> = Arc::default();
+        let boot_lines = memory_boot_lines(&Arc::new(Mutex::new("boot-1".to_string())));
         for (pi, ts) in expected.iter().enumerate() {
             passes_total += 1;
             let logs = Arc::new(Mutex::new(Vec::<Value>::new()));
@@ -448,6 +453,8 @@ async fn the_ts_golden_pass_by_pass_with_the_named_divergences() {
             });
             let state = reconcile_camera_mount(ReconcileCameraMountOptions {
                 settings: settings.clone(),
+                sensors: None,
+                boot_lines: boot_lines.clone(),
                 hardware: hw.clone(),
                 pipeline_dir: d.pipeline_dir.display().to_string(),
                 boot_config_path: boot_config_path.clone(),
@@ -529,9 +536,21 @@ struct Rig {
     /// listing copy): only when a line is about to be edited.
     evidence_reads: Arc<AtomicUsize>,
     now: i64,
+    /// The kernel's boot id as the pass sees it; [`Rig::reboot`] moves it.
+    boot_id: Arc<Mutex<String>>,
+    boot_lines: Arc<BootLineStore>,
 }
 
 const NOW: i64 = 1_785_326_400_000;
+
+/// A [`BootLineStore`] kept in memory, reading the boot id from `id`.
+fn memory_boot_lines(id: &Arc<Mutex<String>>) -> Arc<BootLineStore> {
+    let id = id.clone();
+    Arc::new(BootLineStore::new(
+        None,
+        Box::new(move || id.lock().unwrap().clone()),
+    ))
+}
 
 /// Two cameras on a CM5 whose MODEL says imx290 on both ports (as every
 /// device model does today): the sensor that counts is config.txt's.
@@ -566,6 +585,7 @@ fn node(key: &str, node: &str, driver: Option<&str>) -> PortNode {
 impl Rig {
     fn new(d: Device) -> Self {
         let runner = HelperExecRunner::new(&d);
+        let boot_id = Arc::new(Mutex::new("boot-1".to_string()));
         Self {
             d,
             runner,
@@ -577,20 +597,46 @@ impl Rig {
             evidence: PortEvidence::default(),
             evidence_reads: Arc::default(),
             now: NOW,
+            boot_lines: memory_boot_lines(&boot_id),
+            boot_id,
         }
     }
 
-    /// One reconcile pass with `cameraMount` = `mounts` (stream key → deg).
-    async fn pass(&self, mounts: &[(&str, u32)]) -> CameraMountState {
-        let cameras: serde_json::Map<String, Value> = mounts
-            .iter()
-            .map(|(k, deg)| (k.to_string(), json!({ "rotationDeg": deg })))
-            .collect();
-        let settings: CameraMountSettings =
-            serde_json::from_value(json!({ "cameras": cameras })).unwrap();
+    /// The device reboots: a new boot id (the caller moves the device tree
+    /// to what the file now says, as the firmware would).
+    fn reboot(&self) {
+        let mut id = self.boot_id.lock().unwrap();
+        *id = format!("{id}+");
+    }
+
+    /// One pass over both namespaces: `cameraMount` = `mounts` (`None` =
+    /// the namespace is absent), `cameraSensors` = `sensors` (the
+    /// namespace's `cameras` value; `None` = absent).
+    async fn pass_both(&self, mounts: Option<&[(&str, u32)]>, sensors: Option<Value>) -> CameraStates {
+        let settings: Option<CameraMountSettings> = mounts.map(|mounts| {
+            let cameras: serde_json::Map<String, Value> = mounts
+                .iter()
+                .map(|(k, deg)| (k.to_string(), json!({ "rotationDeg": deg })))
+                .collect();
+            serde_json::from_value(json!({ "cameras": cameras })).unwrap()
+        });
+        let sensors = sensors.map(|cameras| {
+            xorgate_core::settings::parse_camera_sensors_settings(&json!({ "cameras": cameras }))
+                .expect("a cameras object")
+        });
+        reconcile_cameras(self.options(settings, sensors)).await
+    }
+
+    fn options(
+        &self,
+        settings: Option<CameraMountSettings>,
+        sensors: Option<xorgate_core::settings::CameraSensorsSettings>,
+    ) -> ReconcileCameraMountOptions {
         let (logs, dir) = (self.logs.clone(), self.d.dir.display().to_string());
-        reconcile_camera_mount(ReconcileCameraMountOptions {
-            settings: Some(settings),
+        ReconcileCameraMountOptions {
+            settings,
+            sensors,
+            boot_lines: self.boot_lines.clone(),
             hardware: self.hardware.clone(),
             pipeline_dir: self.d.pipeline_dir.display().to_string(),
             boot_config_path: BootConfigPath::Fixed(Some(self.d.boot_config.display().to_string())),
@@ -614,9 +660,15 @@ impl Rig {
                 })
             },
             memo: self.memo.clone(),
-        })
-        .await
-        .expect("the namespace is present")
+        }
+    }
+
+    /// One reconcile pass with `cameraMount` = `mounts` (stream key → deg).
+    async fn pass(&self, mounts: &[(&str, u32)]) -> CameraMountState {
+        self.pass_both(Some(mounts), None)
+            .await
+            .mount
+            .expect("the namespace is present")
     }
 
     fn logs(&self) -> Vec<String> {
@@ -1839,6 +1891,8 @@ async fn reconciler_requests_a_report_only_when_the_summary_moves() {
                     .unwrap()
                 })
             }),
+            sensors: Box::new(|| None),
+            boot_lines: memory_boot_lines(&Arc::new(Mutex::new("boot-1".to_string()))),
             hardware: Box::new(|| None),
             pipeline_dir: d.pipeline_dir.display().to_string(),
             boot_config_path: BootConfigPath::Fixed(Some(d.boot_config.display().to_string())),

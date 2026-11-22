@@ -237,6 +237,9 @@ pub async fn reconcile_hardware(
             let who = match d.source {
                 DeclaredSource::Model => "model expects",
                 DeclaredSource::BootConfig => "config.txt declares",
+                // Not reached: the reconcile reads config.txt and the model,
+                // never the sensor setting.
+                DeclaredSource::Config => "the camera sensor setting declares",
             };
             log(
                 ReconcileLevel::Warn,

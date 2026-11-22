@@ -27,9 +27,10 @@ use serde_json::{Map, Value};
 use crate::hardware_block::{parse_hardware_block, DeviceHardwareBlock};
 use crate::orientation::{parse_imu_mount, ImuMount};
 use crate::settings::{
-    parse_camera_mount_settings, parse_cellular_settings, parse_lte_recovery_settings,
+    parse_camera_mount_settings, parse_camera_sensors_settings, parse_cellular_settings, parse_lte_recovery_settings,
     parse_obd_settings, parse_recording_settings, parse_simulation_settings,
-    parse_time_sync_settings, AgentSettings, CameraMountSettings, CellularSettings,
+    parse_time_sync_settings, AgentSettings, CameraMountSettings, CameraSensorsSettings,
+    CellularSettings,
     LteRecoverySettings, ObdSettings, RecordingSettings, SettingsReadFailure, SettingsReadResult,
     SimulationSettings, TimeSyncSettings,
 };
@@ -117,6 +118,15 @@ pub struct CloudConfig {
         deserialize_with = "double_option"
     )]
     pub obd: Option<Option<ObdSettings>>,
+    /// Camera sensor per port (RUST-ONLY): same replace-whole-namespace
+    /// semantics; `Some(None)` = carried without a `cameras` object (`{}`,
+    /// the cloud's clear) → remove the local key.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "double_option"
+    )]
+    pub camera_sensors: Option<Option<CameraSensorsSettings>>,
     /// Device hardware block; `Some(None)` = carried but failed validation
     /// (log + keep the current block); absent = keep the current block too.
     #[serde(
@@ -225,6 +235,9 @@ pub fn parse_namespaces(obj: &Map<String, Value>) -> CloudConfig {
     if let Some(v) = plain_object(obj.get("obd")) {
         out.obd = Some(parse_obd_settings(v));
     }
+    if let Some(v) = plain_object(obj.get("cameraSensors")) {
+        out.camera_sensors = Some(parse_camera_sensors_settings(v));
+    }
     if let Some(v) = plain_object(obj.get("hardware")) {
         out.hardware = Some(parse_hardware_block(v));
     }
@@ -262,7 +275,7 @@ pub struct MergeOutcome {
     /// `{...current, ...next}` with the namespace sets/deletes applied):
     /// existing keys keep the parsed file's order, newly-added keys append in
     /// `gnssAntBias, imuMount, recording, lteRecovery, timeSync, cellular,
-    /// cameraMount, simulation, obd` order. Present only when `changed`.
+    /// cameraMount, simulation, obd, cameraSensors` order. Present only when `changed`.
     /// Write it as [`MergeOutcome::document_json`] — NOT a plain
     /// `serde_json::to_string`/`to_vec` of the map, whose number formatter
     /// differs from JS (`0.000005` → `5e-6`; review-integration M1).
@@ -376,6 +389,7 @@ pub fn merge(before: &SettingsReadResult, config: &CloudConfig, path: &str) -> M
     let camera_mount_change = namespace_change(&config.camera_mount, &current.camera_mount);
     let simulation_change = namespace_change(&config.simulation, &current.simulation);
     let obd_change = namespace_change(&config.obd, &current.obd);
+    let camera_sensors_change = namespace_change(&config.camera_sensors, &current.camera_sensors);
 
     if gnss_change.is_none()
         && imu_change.is_none()
@@ -386,6 +400,7 @@ pub fn merge(before: &SettingsReadResult, config: &CloudConfig, path: &str) -> M
         && camera_mount_change.is_none()
         && simulation_change.is_none()
         && obd_change.is_none()
+        && camera_sensors_change.is_none()
     {
         return MergeOutcome {
             changed: false,
@@ -419,6 +434,12 @@ pub fn merge(before: &SettingsReadResult, config: &CloudConfig, path: &str) -> M
         &config.simulation,
     );
     apply_change(&mut doc, "obd", obd_change, &config.obd);
+    apply_change(
+        &mut doc,
+        "cameraSensors",
+        camera_sensors_change,
+        &config.camera_sensors,
+    );
 
     let next: AgentSettings =
         serde_json::from_value(Value::Object(doc.clone())).expect("merged document is settings");

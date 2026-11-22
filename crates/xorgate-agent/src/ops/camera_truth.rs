@@ -66,11 +66,18 @@ use std::time::Duration;
 
 use indexmap::IndexMap;
 use serde_json::{Map, Value};
+use xorgate_core::boot_config::CamPort;
+use xorgate_core::camera_catalog::catalog;
+use xorgate_core::camera_sensors::{
+    changed_since_boot, declared_id, missing_requirements, required_package_names, HostFacts,
+    LineChange,
+};
 use xorgate_core::camera_truth::{
     capture_allowed, capture_truth, derive_port, next_relist_ms, next_report_hold_ms,
     node_for_port, port_needs_relist, settle_capture, summarise_port, CaptureLive, CaptureOff,
-    CaptureTruth, PortFacts, PortNode, RELIST_AFTER_START_MS, REPORT_HOLD_RESET_MS,
+    CaptureTruth, PortFacts, PortNode, PortSetting, RELIST_AFTER_START_MS, REPORT_HOLD_RESET_MS,
 };
+use xorgate_core::settings::CameraSensorsSettings;
 use xorgate_core::hardware_block::{DeviceHardwareBlock, Platform};
 use xorgate_core::telemetry::RunMode;
 use xorgate_core::video_capture::{is_bridged_pipeline, pipeline_file_for};
@@ -156,6 +163,38 @@ pub struct CameraTruthOptions {
     pub capture_off: CaptureOffFn,
     /// [`REPORT_HOLD_MS`] (a test seam).
     pub hold_ms: u64,
+    /// What the `cameraSensors` namespace adds (Phase 2). Read on
+    /// [`CameraTruth::refresh`].
+    pub setting: SettingSources,
+}
+
+/// The Phase 2 inputs of the report: the sensor setting, the lines as
+/// booted, what the device has, and the video preset in use.
+pub struct SettingSources {
+    /// The `cameraSensors` namespace as settings.json holds it.
+    pub sensors: Box<dyn Fn() -> Option<CameraSensorsSettings> + Send + Sync>,
+    /// Each port's camera line as first seen in this boot (shared with the
+    /// camera reconciler); `None` = not tracked.
+    pub boot_lines: Option<Arc<crate::ops::camera_mount::BootLineStore>>,
+    /// The device's OS release, architecture and the installed versions of
+    /// the packages named (`xorgate_hal::camera_host::host_facts`). Asked
+    /// only while a managed port names a sensor.
+    pub host: Box<dyn Fn(&[String]) -> HostFacts + Send + Sync>,
+    /// The video preset capture runs (`recording.video.preset`).
+    pub preset: Box<dyn Fn() -> Option<String> + Send + Sync>,
+}
+
+impl SettingSources {
+    /// No sensor setting, nothing tracked: the report as it was before
+    /// Phase 2.
+    pub fn none() -> Self {
+        Self {
+            sensors: Box::new(|| None),
+            boot_lines: None,
+            host: Box::new(|_| HostFacts::default()),
+            preset: Box::new(|| None),
+        }
+    }
 }
 
 /// The slow facts, as of the last [`CameraTruth::refresh`].
@@ -169,6 +208,14 @@ struct Statics {
     bridged: HashMap<String, Option<bool>>,
     /// The streams whose capture is not wanted, and why (`capture_off`).
     unwanted: HashMap<String, CaptureOff>,
+    /// Stream key → the sensor id the `cameraSensors` setting declares.
+    setting: HashMap<String, String>,
+    /// Stream key → its port's camera line changed since this boot.
+    changed: HashMap<String, LineChange>,
+    /// Stream key → what its declared sensor needs and the device lacks.
+    missing: HashMap<String, String>,
+    /// The video preset capture runs.
+    preset: Option<String>,
 }
 
 /// One camera's settled capture state.
@@ -313,12 +360,18 @@ fn build_block(
                 .get(&video.key)
                 .copied()
                 .unwrap_or(CaptureOff::NotBegun),
+            setting: PortSetting {
+                sensor: statics.setting.get(&video.key).map(String::as_str),
+                line_change: statics.changed.get(&video.key),
+                missing: statics.missing.get(&video.key).map(String::as_str),
+                preset: statics.preset.as_deref(),
+            },
         });
         // The sentence of a "driver bound, nothing listed" port changes when
         // the re-listing has confirmed it, and so does the summary; a stall
         // reads differently from a start failure.
         summary.push(format!(
-            "{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}",
             summarise_port(&video.key, &port),
             u8::from(relisted && driver_bound && listed.is_none()),
             u8::from(
@@ -327,6 +380,10 @@ fn build_block(
             ),
             // The reason an `off` capture is off is part of its sentence.
             statics.unwanted.get(&video.key).map_or(0, |r| *r as u8 + 1),
+            // So is what a declared sensor still needs, and a preset the
+            // sensor cannot run.
+            statics.missing.get(&video.key).map_or("", String::as_str),
+            u8::from(port.detail.contains(" The video preset ")),
         ));
         ports.insert(
             video.key.as_str(),
@@ -385,9 +442,57 @@ impl CameraTruth {
                 )
             })
             .collect();
+        let boot_text = (o.boot_config)();
+        let board = (o.board)();
+        // The sensor setting: the id each managed port names.
+        let setting: HashMap<String, String> = (o.setting.sensors)()
+            .and_then(|s| s.cameras)
+            .map(|cams| {
+                cams.iter()
+                    .filter_map(|(k, entry)| Some((k.clone(), declared_id(entry)?)))
+                    .collect()
+            })
+            .unwrap_or_default();
+        // A port whose line differs from the one this boot started with.
+        let changed: HashMap<String, LineChange> = match (&boot_text, &o.setting.boot_lines) {
+            (Some(text), Some(store)) => {
+                let booted = store.booted(text, board, catalog());
+                block
+                    .video
+                    .iter()
+                    .filter_map(|v| {
+                        let port = CamPort::from_connector(&v.connector)?;
+                        let ch = changed_since_boot(&booted, text, board, port, catalog())?;
+                        Some((v.key.clone(), ch))
+                    })
+                    .collect()
+            }
+            _ => HashMap::new(),
+        };
+        // What a declared sensor needs and the device lacks. The device is
+        // asked only while some managed port names a catalog sensor.
+        let declared: Vec<(&String, &xorgate_core::camera_catalog::Sensor)> = setting
+            .iter()
+            .filter_map(|(k, id)| Some((k, catalog().by_id(id)?)))
+            .collect();
+        let missing: HashMap<String, String> = if declared.is_empty() {
+            HashMap::new()
+        } else {
+            let mut names: Vec<String> = declared
+                .iter()
+                .flat_map(|(_, s)| required_package_names(s, catalog()))
+                .collect();
+            names.sort();
+            names.dedup();
+            let host = (o.setting.host)(&names);
+            declared
+                .iter()
+                .filter_map(|(k, s)| Some(((*k).clone(), missing_requirements(s, catalog(), &host)?)))
+                .collect()
+        };
         let statics = Statics {
-            boot_text: (o.boot_config)(),
-            board: (o.board)(),
+            boot_text,
+            board,
             nodes: (o.port_nodes)(block.platform),
             bridged,
             unwanted: block
@@ -395,6 +500,10 @@ impl CameraTruth {
                 .iter()
                 .filter_map(|v| Some((v.key.clone(), (o.capture_off)(&v.key)?)))
                 .collect(),
+            setting,
+            changed,
+            missing,
+            preset: (o.setting.preset)(),
         };
         lock(&self.inner.st).statics = Some(statics);
         self.tick();
@@ -640,6 +749,7 @@ mod tests {
                     .then_some(CaptureOff::Disabled)
             }),
             hold_ms: REPORT_HOLD_MS,
+            setting: SettingSources::none(),
         });
         Rig {
             truth,

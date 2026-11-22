@@ -71,6 +71,10 @@ pub trait CameraMountControl: Send + Sync + 'static {
     fn now(&self) -> BoxFut<'_, ()>;
     /// `cameraMountState` — a snapshot read (ConfigSync mutex rule).
     fn state(&self) -> Option<CameraMountState>;
+    /// The `cameraSensors` half of the same pass (Rust-only); a snapshot read.
+    fn sensors_state(&self) -> Option<xorgate_core::types::CameraSensorsState> {
+        None
+    }
 }
 
 /// The Phase 4 hooks.
@@ -258,7 +262,16 @@ impl PhaseHooks for OpsHooks {
     /// fire-and-forget; a no-op off real mode.
     fn reconcile_camera_mount(&self) {
         if let Some(cam) = self.camera.get().cloned() {
-            tokio::spawn(async move { cam.now().await });
+            // The per-port report re-reads config.txt once the pass is
+            // done, so a line the pass wrote shows as "reboot required"
+            // with the status that says so, not a minute later.
+            let cameras = self.cameras.get().cloned();
+            tokio::spawn(async move {
+                cam.now().await;
+                if let Some(c) = cameras {
+                    c.refresh();
+                }
+            });
         }
     }
 
@@ -274,6 +287,11 @@ impl PhaseHooks for OpsHooks {
     /// `cameraMount: () => cameraMountState` (`:713`).
     fn camera_mount_state(&self) -> Option<CameraMountState> {
         self.camera.get().and_then(|c| c.state())
+    }
+
+    /// The `cameraSensors` half of the reconciler's last pass (Rust-only).
+    fn camera_sensors_state(&self) -> Option<xorgate_core::types::CameraSensorsState> {
+        self.camera.get().and_then(|c| c.sensors_state())
     }
 
     /// `effective.cameras` (Rust-only): the block for the report being built.
@@ -395,6 +413,9 @@ impl CameraMountControl for crate::ops::camera_mount::CameraMountReconciler {
     }
     fn state(&self) -> Option<CameraMountState> {
         crate::ops::camera_mount::CameraMountReconciler::state(self)
+    }
+    fn sensors_state(&self) -> Option<xorgate_core::types::CameraSensorsState> {
+        crate::ops::camera_mount::CameraMountReconciler::sensors_state(self)
     }
 }
 

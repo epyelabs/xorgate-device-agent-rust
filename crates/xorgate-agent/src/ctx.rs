@@ -34,7 +34,9 @@ use xorgate_core::obd::ObdScanResult;
 use xorgate_core::telemetry::{
     MetricGroup, ObdStatus, RecordingStatus, TelemetryMedia, TelemetryReading,
 };
-use xorgate_core::types::{CameraMountState, GnssView, GpsClockReading, PowerSampleReading};
+use xorgate_core::types::{
+    CameraMountState, CameraSensorsState, GnssView, GpsClockReading, PowerSampleReading,
+};
 use xorgate_hal::io::TapeSink;
 
 use crate::env::AgentEnv;
@@ -445,6 +447,12 @@ pub trait PhaseHooks: Send + Sync + 'static {
     }
     /// `cameraMountState` (Phase 4). `None` = not reconciled yet.
     fn camera_mount_state(&self) -> Option<CameraMountState> {
+        None
+    }
+    /// The camera reconciler's last pass over `cameraSensors` (Rust-only).
+    /// `None` = not reconciled yet, or the namespace is absent. A snapshot
+    /// read, called under ConfigSync's mutex like `camera_mount_state`.
+    fn camera_sensors_state(&self) -> Option<CameraSensorsState> {
         None
     }
     /// The per-port camera report for a config report (`effective.cameras`;

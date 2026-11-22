@@ -84,6 +84,10 @@ pub struct ConfigSyncOptions {
     pub modem: ModemFn,
     pub hints: Option<Arc<dyn Fn() -> ReportHints + Send + Sync>>,
     pub camera_mount: Option<Arc<dyn Fn() -> Option<CameraMountState> + Send + Sync>>,
+    /// The camera reconciler's last pass over `cameraSensors` (Rust-only);
+    /// a snapshot read.
+    pub camera_sensors:
+        Option<Arc<dyn Fn() -> Option<xorgate_core::types::CameraSensorsState> + Send + Sync>>,
     pub telemetry_scope: Option<Arc<dyn Fn() -> Option<TelemetryScopeReport> + Send + Sync>>,
     /// `obd: () => source.obdReport?.() ?? null` (`worker.ts:790` @ 09da38d):
     /// the OBD collector's `effective.obd` (I2, opaque); a snapshot read.
@@ -136,6 +140,7 @@ impl ConfigSyncOptions {
             modem,
             hints: None,
             camera_mount: None,
+            camera_sensors: None,
             telemetry_scope: None,
             obd: None,
             cameras: None,
@@ -538,6 +543,7 @@ impl ConfigSync {
                 changed: res.changed,
                 obd: opts.obd.as_ref().and_then(|f| f()),
                 cameras: opts.cameras.as_ref().and_then(|f| f()),
+                camera_sensors: opts.camera_sensors.as_ref().and_then(|f| f()),
             },
             &opts.build,
         );

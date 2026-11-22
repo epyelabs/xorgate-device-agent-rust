@@ -27,13 +27,15 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::boot_config::{CameraMountState, CameraMountVerdict};
+use crate::types::{CameraSensorsState, CameraSensorsVerdict};
 use crate::build_info::BuildInfo;
 use crate::clock_trust::ClockTrustState;
 use crate::cloud_config::CloudConfig;
 use crate::js::{self, trim as js_trim};
 use crate::js::{date_parse_ms, number_to_string, object_key_order, parsed_key_order};
 use crate::settings::{
-    AgentSettings, CameraMountSettings, CellularSettings, ObdSettings, OBD_NAMESPACE_KEYS,
+    AgentSettings, CameraMountSettings, CameraSensorsSettings, CellularSettings, ObdSettings,
+    OBD_NAMESPACE_KEYS,
 };
 use crate::telemetry::JsNumber;
 use crate::telemetry_scope::TelemetryScopeReport;
@@ -486,6 +488,7 @@ fn carried_namespace(parsed: &CloudConfig, key: &str) -> bool {
         "cameraMount" => matches!(parsed.camera_mount, Some(Some(_))),
         "simulation" => matches!(parsed.simulation, Some(Some(_))),
         "obd" => matches!(parsed.obd, Some(Some(_))),
+        "cameraSensors" => matches!(parsed.camera_sensors, Some(Some(_))),
         _ => false,
     }
 }
@@ -507,6 +510,7 @@ pub fn adoption_subset(parsed: &CloudConfig, adopt: &[&str]) -> CloudConfig {
             "cameraMount" => out.camera_mount = parsed.camera_mount.clone(),
             "simulation" => out.simulation = parsed.simulation.clone(),
             "obd" => out.obd = parsed.obd.clone(),
+            "cameraSensors" => out.camera_sensors = parsed.camera_sensors.clone(),
             _ => {}
         }
     }
@@ -876,7 +880,24 @@ pub struct ReportHints {
 /// and its `…/sms` result, `sms.clear` = `clear_sms`, `obd.scan` and
 /// `obd.forget` = the two OBD one-shots (which still need the model's
 /// `peripherals.obd`; the cloud gates on that, not here).
-pub const AGENT_CAPABILITIES: &[&str] = &["sms.read", "sms.clear", "obd.scan", "obd.forget"];
+///
+/// `camera.sensors` (RUST-ONLY, support-other-camera-models Phase 2): this
+/// build acts on the `cameraSensors` namespace. The cloud refuses the
+/// namespace for an agent that does not advertise it, and WITHDRAWS a
+/// stored value on the first report whose capability list lacks it. So the
+/// list is this one compile-time constant, emitted whole in every report
+/// that has an `agent` block (and by the provisioner in its claim body):
+/// nothing may build it conditionally.
+pub const AGENT_CAPABILITIES: &[&str] = &[
+    "sms.read",
+    "sms.clear",
+    "obd.scan",
+    "obd.forget",
+    CAPABILITY_CAMERA_SENSORS,
+];
+
+/// The capability that says "this agent manages camera sensors".
+pub const CAPABILITY_CAMERA_SENSORS: &str = "camera.sensors";
 
 /// D85 (Phase 8 D9, Q-8.3; `phase-1/evidence/accepted-divergences.md`): the
 /// Rust agent's own report marker, `effective.agent.runtime`, the LAST key of
@@ -911,6 +932,7 @@ pub fn build_effective(
     telemetry_scope: Option<&TelemetryScopeReport>,
     obd: Option<&Value>,
     cameras: Option<&Value>,
+    camera_sensors: Option<&CameraSensorsState>,
     build: &BuildInfo,
 ) -> Map<String, Value> {
     let to = |v: &dyn erased::Ser| v.to_json();
@@ -980,7 +1002,93 @@ pub fn build_effective(
     if let Some(cameras) = cameras.filter(|v| !v.is_null()) {
         out.insert(EFFECTIVE_CAMERAS_KEY.into(), cameras.clone());
     }
+    // Rust-only namespace, after every other key; absent while not held.
+    if let Some(c) = effective_camera_sensors(settings.camera_sensors.as_ref(), camera_sensors) {
+        out.insert("cameraSensors".into(), Value::Object(c));
+    }
     out
+}
+
+/// `effective.cameraSensors` (RUST-ONLY): absent → None; otherwise the
+/// namespace AS HELD (each entry as delivered), plus `reconciled: false`
+/// while the camera reconciler has not run, or `rebootRequired` once it
+/// has. What is actually on a port is the per-port report's business
+/// (`effective.cameras`), not this block's.
+pub fn effective_camera_sensors(
+    settings: Option<&CameraSensorsSettings>,
+    state: Option<&CameraSensorsState>,
+) -> Option<Map<String, Value>> {
+    let settings = settings?;
+    let Value::Object(mut out) = serde_json::to_value(settings).expect("cameraSensors") else {
+        unreachable!()
+    };
+    match state {
+        None => out.insert("reconciled".into(), Value::Bool(false)),
+        Some(s) => out.insert("rebootRequired".into(), Value::Bool(s.reboot_required)),
+    };
+    Some(out)
+}
+
+/// The `cameraSensors` verdict off the camera reconciler's last pass,
+/// worst first (like [`camera_mount_status`]): a port that could not be
+/// applied makes the namespace `rejected`, with every such port named (and
+/// the ports that wait for a reboot named after them); a port whose line is
+/// written and not booted makes it `adjusted`: "saved, not in force yet".
+pub fn camera_sensors_status(state: Option<&CameraSensorsState>, at: i64) -> NamespaceStatus {
+    let Some(state) = state else {
+        return NamespaceStatus::adjusted(
+            at,
+            "saved; the device has not reconciled its boot config yet".into(),
+        );
+    };
+    let pending: Vec<String> = state
+        .cameras
+        .iter()
+        .filter(|c| c.verdict == CameraSensorsVerdict::PendingReboot)
+        .map(|c| match c.sensor.as_deref() {
+            Some(s) => format!("{} {s}", c.stream_key),
+            None => c.stream_key.clone(),
+        })
+        .collect();
+    let blocked: Vec<String> = state
+        .cameras
+        .iter()
+        .filter(|c| {
+            matches!(
+                c.verdict,
+                CameraSensorsVerdict::Rejected | CameraSensorsVerdict::WriteFailed
+            )
+        })
+        .map(|c| {
+            format!(
+                "{}: {}",
+                c.stream_key,
+                c.detail
+                    .clone()
+                    .unwrap_or_else(|| c.verdict.as_str().to_string())
+            )
+        })
+        .collect();
+    if !blocked.is_empty() {
+        let mut reason = blocked.join("; ");
+        if !pending.is_empty() {
+            reason.push_str(&format!(
+                "; written to the boot config and waiting for a reboot: {}",
+                pending.join(", ")
+            ));
+        }
+        return NamespaceStatus::rejected(at, reason);
+    }
+    if !pending.is_empty() {
+        return NamespaceStatus::adjusted(
+            at,
+            format!(
+                "written to the boot config — REBOOT REQUIRED to apply: {}",
+                pending.join(", ")
+            ),
+        );
+    }
+    NamespaceStatus::applied(at)
 }
 
 /// The reported-only key of the per-port camera report in `effective`
@@ -1130,6 +1238,7 @@ fn parsed_namespace(parsed: &CloudConfig, key: &str) -> Option<Option<Value>> {
         "cameraMount" => triple(&parsed.camera_mount),
         "simulation" => triple(&parsed.simulation),
         "obd" => triple(&parsed.obd),
+        "cameraSensors" => triple(&parsed.camera_sensors),
         _ => None,
     }
 }
@@ -1150,6 +1259,7 @@ pub fn build_status(
     hints: &ReportHints,
     camera_mount: Option<&CameraMountState>,
     settings: Option<&AgentSettings>,
+    camera_sensors: Option<&CameraSensorsState>,
 ) -> IndexMap<String, NamespaceStatus> {
     let mut out = IndexMap::new();
     let Some(desired) = desired else {
@@ -1170,6 +1280,9 @@ pub fn build_status(
             // settings.json (`config-sync.ts:857-860` @ 09da38d; CF74).
             let still_held = if *key == "obd" {
                 settings.is_some_and(|s| s.obd.is_some())
+            } else if *key == "cameraSensors" {
+                // `effective.cameraSensors` is the namespace as held.
+                settings.is_some_and(|s| s.camera_sensors.is_some())
             } else {
                 effective.get(*key).is_some()
             };
@@ -1226,6 +1339,11 @@ pub fn build_status(
 
         if *key == "cameraMount" {
             out.insert(key_s, camera_mount_status(camera_mount, at));
+            continue;
+        }
+
+        if *key == "cameraSensors" {
+            out.insert(key_s, camera_sensors_status(camera_sensors, at));
             continue;
         }
 
@@ -1602,6 +1720,10 @@ pub struct ReportInput {
         serialize_with = "js::json_value_opt::serialize"
     )]
     pub cameras: Option<Value>,
+    /// The camera reconciler's last pass over `cameraSensors` (RUST-ONLY);
+    /// None = it has not run yet, or the namespace is absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub camera_sensors: Option<CameraSensorsState>,
 }
 
 /// `buildConfigReport` (`config-sync.ts:1059`): assemble a complete report.
@@ -1615,6 +1737,7 @@ pub fn build_config_report(input: &ReportInput, build: &BuildInfo) -> ConfigRepo
         input.telemetry_scope.as_ref(),
         input.obd.as_ref(),
         input.cameras.as_ref(),
+        input.camera_sensors.as_ref(),
         build,
     );
     let status = build_status(
@@ -1625,6 +1748,7 @@ pub fn build_config_report(input: &ReportInput, build: &BuildInfo) -> ConfigRepo
         input.hints.as_ref().unwrap_or(&ReportHints::default()),
         input.camera_mount.as_ref(),
         Some(&input.settings),
+        input.camera_sensors.as_ref(),
     );
     // Only a local report carries `changed`.
     let changed = match (&input.origin, &input.changed) {
@@ -1717,10 +1841,21 @@ mod tests {
         assert!(should_apply_rev(Some(0), 99));
         assert!(should_apply_rev(Some(43), 42));
         assert!(!should_apply_rev(Some(42), 42));
+        // The JS list (`config-sync.ts:631-639`), then the Rust-only
+        // `camera.sensors` (D107): the cloud withdraws `cameraSensors` from
+        // a device whose report lacks it, so it is pinned here and in
+        // `the_capability_list_is_one_constant_in_every_agent_block`.
         assert_eq!(
             AGENT_CAPABILITIES,
-            ["sms.read", "sms.clear", "obd.scan", "obd.forget"]
+            [
+                "sms.read",
+                "sms.clear",
+                "obd.scan",
+                "obd.forget",
+                "camera.sensors"
+            ]
         );
+        assert_eq!(CAPABILITY_CAMERA_SENSORS, "camera.sensors");
         assert_eq!(MODEM_TELEMETRY_STALE_MS, 180_000);
     }
 
@@ -1762,7 +1897,7 @@ mod tests {
             assert_eq!(
                 js::map_to_json_string(&eff),
                 format!(
-                    r#"{{"agent":{{"mode":"{mode}","build":{{"version":"abc1234","channel":"dev","builtAt":null,"packageVersion":"0.1.0"}},"capabilities":["sms.read","sms.clear","obd.scan","obd.forget"],"runtime":"rust"}}}}"#
+                    r#"{{"agent":{{"mode":"{mode}","build":{{"version":"abc1234","channel":"dev","builtAt":null,"packageVersion":"0.1.0"}},"capabilities":["sms.read","sms.clear","obd.scan","obd.forget","camera.sensors"],"runtime":"rust"}}}}"#
                 )
             );
         }
@@ -1785,6 +1920,7 @@ mod tests {
             changed: None,
             obd: None,
             cameras: None,
+            camera_sensors: None,
         };
         let wire = build_config_report(&input, &build).to_wire();
         let v: Value = serde_json::from_str(&wire).unwrap();
@@ -1830,6 +1966,7 @@ mod tests {
             changed: None,
             obd: Some(obd),
             cameras: Some(cameras.clone()),
+            camera_sensors: None,
         };
         let report = build_config_report(&input, &build);
         assert_eq!(

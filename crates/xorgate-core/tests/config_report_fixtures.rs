@@ -66,10 +66,19 @@ fn desired_from(payload: Option<&Value>) -> Option<DesiredSnapshot> {
 /// goldens carry no such key. Assert it sits exactly there (once per `agent`
 /// block, nowhere else) and remove it, so everything else is still compared
 /// byte for byte with the JS. Returns the stripped text and the strip count.
+///
+/// D107 (support-other-camera-models Phase 2): the Rust agent also
+/// advertises `camera.sensors`, as the LAST capability; the JS list ends at
+/// `obd.forget`. It is asserted and removed in the same step.
 fn strip_d85(got: &str) -> (String, usize) {
+    assert_eq!(AGENT_CAPABILITIES.last(), Some(&"camera.sensors"), "D107");
+    let js_caps = &AGENT_CAPABILITIES[..AGENT_CAPABILITIES.len() - 1];
     let caps = serde_json::to_string(AGENT_CAPABILITIES).unwrap();
     let with = format!(r#""capabilities":{caps},"runtime":"rust"}}"#);
-    let without = format!(r#""capabilities":{caps}}}"#);
+    let without = format!(
+        r#""capabilities":{}}}"#,
+        serde_json::to_string(js_caps).unwrap()
+    );
     let n = got.matches(&with).count();
     assert_eq!(
         n,
@@ -112,6 +121,7 @@ fn config_report_suites() {
                     scope.as_ref(),
                     obd.as_ref(),
                     None,
+                    None,
                     &build,
                 )))
             }
@@ -133,6 +143,7 @@ fn config_report_suites() {
                     &hints,
                     cam.as_ref(),
                     settings_opt.as_ref(),
+                    None,
                 )))
             }
             "buildConfigReport" => {

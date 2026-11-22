@@ -31,6 +31,8 @@ use crate::boot_config::{
     ScopedLine,
 };
 use crate::camera_catalog::{catalog, Sensor};
+use crate::camera_sensors::LineChange;
+use crate::settings::CAMERA_SENSOR_NONE;
 use crate::capture_ladder::CaptureState;
 use crate::stream_guard::StreamHardwareStatus;
 
@@ -200,6 +202,8 @@ fn line_targets(line: &OverlayLine, connector: &str, hints: &[&str]) -> bool {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum DeclaredSource {
+    /// The `cameraSensors` setting (Phase 2: the port is managed).
+    Config,
     /// The port's `dtoverlay=` line in config.txt.
     BootConfig,
     /// The device model's hardware block (`hardware.video[].sensor`).
@@ -209,6 +213,7 @@ pub enum DeclaredSource {
 impl DeclaredSource {
     pub fn as_str(self) -> &'static str {
         match self {
+            DeclaredSource::Config => "config",
             DeclaredSource::BootConfig => "boot-config",
             DeclaredSource::Model => "model",
         }
@@ -217,6 +222,7 @@ impl DeclaredSource {
     /// How the source reads in a sentence.
     fn words(self) -> &'static str {
         match self {
+            DeclaredSource::Config => "the camera sensor setting",
             DeclaredSource::BootConfig => "config.txt",
             DeclaredSource::Model => "the device model",
         }
@@ -245,7 +251,7 @@ impl Declared {
             (SensorMatch::Same, _) => false,
             (SensorMatch::Different, _) => true,
             (SensorMatch::Unknown, DeclaredSource::Model) => true,
-            (SensorMatch::Unknown, DeclaredSource::BootConfig) => false,
+            (SensorMatch::Unknown, DeclaredSource::BootConfig | DeclaredSource::Config) => false,
         }
     }
 }
@@ -262,10 +268,22 @@ pub fn resolve_declared(sources: &[(DeclaredSource, Option<&str>)]) -> Option<De
     })
 }
 
-/// The Phase 0 declaration of a port: the boot config line's overlay, else
-/// the model's sensor.
+/// The declaration of an UNMANAGED port: the boot config line's overlay,
+/// else the model's sensor.
 pub fn declared_for(boot: Option<&BootConfigPort>, model_sensor: &str) -> Option<Declared> {
+    declared_with(None, boot, model_sensor)
+}
+
+/// The declaration of a port: the `cameraSensors` setting when it names a
+/// sensor for the port (`none` included), else the boot config line's
+/// overlay, else the model's sensor.
+pub fn declared_with(
+    setting: Option<&str>,
+    boot: Option<&BootConfigPort>,
+    model_sensor: &str,
+) -> Option<Declared> {
     resolve_declared(&[
+        (DeclaredSource::Config, setting),
         (
             DeclaredSource::BootConfig,
             boot.and_then(|b| b.overlay.as_deref()),
@@ -561,10 +579,11 @@ pub fn capture_allowed(armed: bool, status: Option<StreamHardwareStatus>) -> boo
 // verdict
 // ---------------------------------------------------------------------------
 
-/// The wire `verdict`. Phase 0 produces these seven. Later phases add
-/// `requirements-missing`, `unknown-sensor` and
-/// `unmanaged` (Phase 2: no sensor setting for the port), so a reader must
-/// tolerate a value it does not know.
+/// The wire `verdict`. Phase 0 produced the first seven; Phase 2 adds
+/// `requirements-missing` and `unknown-sensor`. A later phase may add more,
+/// so a reader must tolerate a value it does not know. (There is no
+/// `unmanaged` verdict: a port without a sensor setting reports as it did
+/// before, with `declared.source` `boot-config` or `model`.)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CameraVerdict {
@@ -586,6 +605,12 @@ pub enum CameraVerdict {
     /// device (and the camera is not streaming), or the stream's pipeline
     /// is not one it supervises. Not a fault by itself.
     Unchecked,
+    /// The sensor setting names a sensor whose requirements the device does
+    /// not meet (extra packages not installed in the required versions, or
+    /// another OS release), and the camera is not listed.
+    RequirementsMissing,
+    /// The sensor setting names a sensor this build's catalog lacks.
+    UnknownSensor,
 }
 
 impl CameraVerdict {
@@ -598,6 +623,8 @@ impl CameraVerdict {
             CameraVerdict::NoFrames => "no-frames",
             CameraVerdict::Empty => "empty",
             CameraVerdict::Unchecked => "unchecked",
+            CameraVerdict::RequirementsMissing => "requirements-missing",
+            CameraVerdict::UnknownSensor => "unknown-sensor",
         }
     }
 }
@@ -637,6 +664,27 @@ pub struct PortFacts<'a> {
     pub unsupervised: bool,
     /// Why capture is off, when it is (`capture` = `off`).
     pub off_reason: CaptureOff,
+    /// What the `cameraSensors` namespace and its machinery add (Phase 2).
+    /// `PortSetting::default()` = an unmanaged port with nothing pending:
+    /// the report as it was before.
+    pub setting: PortSetting<'a>,
+}
+
+/// The Phase 2 facts of a port.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PortSetting<'a> {
+    /// The sensor id the `cameraSensors` setting declares for the port
+    /// (`none` = declared empty; an id the catalog lacks included). `None`
+    /// = the port is unmanaged.
+    pub sensor: Option<&'a str>,
+    /// The port's camera line changed since this boot
+    /// (`camera_sensors::changed_since_boot`): it waits for a reboot.
+    pub line_change: Option<&'a LineChange>,
+    /// What the declared sensor needs and the device does not have
+    /// (`camera_sensors::missing_requirements`).
+    pub missing: Option<&'a str>,
+    /// The video preset capture runs on this device.
+    pub preset: Option<&'a str>,
 }
 
 /// Why a camera has no capture process, as far as the agent knows.
@@ -729,13 +777,14 @@ impl Resolved<'_> {
     /// a sensor whose overlay is not in the running device tree, while
     /// another overlay's node is. Returns that other overlay's sensor.
     fn stale_overlay(&self) -> Option<&str> {
-        let d = self
-            .declared
-            .filter(|d| d.source == DeclaredSource::BootConfig)?;
-        // Only for an overlay in the catalog: outside it the node's name is
-        // not known (`arducam-pivariety` and its like name their node
-        // differently), so a name that differs proves nothing.
-        let want = &camera_overlay(&d.sensor)?.dt_node_names;
+        self.declared
+            .filter(|d| d.source != DeclaredSource::Model)?;
+        // The overlay of the port's LINE (for an unmanaged port that is the
+        // declared sensor itself). Only for an overlay in the catalog:
+        // outside it the node's name is not known (`arducam-pivariety` and
+        // its like name their node differently), so a name that differs
+        // proves nothing.
+        let want = &camera_overlay(self.boot?.overlay.as_deref()?)?.dt_node_names;
         let node = self.node?;
         let loaded = self
             .port_nodes
@@ -784,17 +833,19 @@ pub fn derive_port(f: &PortFacts<'_>) -> CameraPort {
     let boot = f
         .boot_text
         .map(|t| boot_config_port_on(t, f.connector, &hints, f.board));
-    let declared = declared_for(boot.as_ref(), f.model_sensor);
+    let declared = declared_with(f.setting.sensor, boot.as_ref(), f.model_sensor);
     let identity = identity_of(node, boot.as_ref(), listed);
     let driver = f.nodes.map(|_| node.is_some_and(|n| n.driver.is_some()));
-    let (verdict, detail) = verdict_of(&Resolved {
+    let resolved = Resolved {
         f,
         boot: boot.as_ref(),
         declared: declared.as_ref(),
         node,
         port_nodes: &port_nodes,
         identity,
-    });
+    };
+    let (verdict, detail) = setting_verdict(&resolved).unwrap_or_else(|| verdict_of(&resolved));
+    let preset = preset_note(f, declared.as_ref(), verdict);
     let extra_lines = boot
         .as_ref()
         .filter(|b| b.lines > 1)
@@ -829,7 +880,144 @@ pub fn derive_port(f: &PortFacts<'_>) -> CameraPort {
             last_error: f.last_error.map(str::to_string),
         },
         verdict,
-        detail: format!("{detail}{extra_lines}"),
+        detail: format!("{detail}{preset}{extra_lines}"),
+    }
+}
+
+/// " The video preset … cannot run on this sensor. <the catalog's reason>"
+/// for a camera that is there (`ok` / `no-frames`) and whose sensor the
+/// catalog knows; else nothing.
+fn preset_note(f: &PortFacts<'_>, declared: Option<&Declared>, verdict: CameraVerdict) -> String {
+    if !matches!(verdict, CameraVerdict::Ok | CameraVerdict::NoFrames) || f.listed.is_none() {
+        return String::new();
+    }
+    let c = catalog();
+    let sensor = declared.and_then(|d| match d.source {
+        DeclaredSource::Config => c.by_id(&d.sensor),
+        DeclaredSource::BootConfig => c.by_overlay(&d.sensor),
+        DeclaredSource::Model => None,
+    });
+    match (f.setting.preset, sensor) {
+        (Some(preset), Some(s)) => s
+            .preset_unsupported(preset)
+            .map(|reason| {
+                format!(" The video preset {preset} cannot run on this sensor. {reason}")
+            })
+            .unwrap_or_default(),
+        _ => String::new(),
+    }
+}
+
+/// The verdicts that come from the `cameraSensors` setting and from a line
+/// that waits for a reboot, before anything else is looked at. In order:
+///
+/// 1. `unknown-sensor`: the setting names a sensor this build's catalog
+///    lacks. Nothing is written for the port.
+/// 2. `requirements-missing`: the declared sensor needs something the
+///    device lacks, and the camera is not listed. Ahead of a pending
+///    reboot, because a reboot alone would not bring the camera.
+/// 3. `reboot-required`: the port's camera line changed since this boot
+///    (managed or not, whoever changed it).
+/// 4. `mismatch`: config.txt does not hold the declared line (yet): the
+///    setting is not applied.
+/// 5. a port declared empty and applied: `empty`, or `reboot-required`
+///    while the running kernel still has a camera there.
+fn setting_verdict(r: &Resolved<'_>) -> Option<(CameraVerdict, String)> {
+    let f = r.f;
+    let (key, port) = (f.stream_key, f.connector);
+    let c = catalog();
+    let set = f.setting.sensor;
+    let sensor = set.and_then(|id| c.by_id(id));
+    if let Some(id) = set.filter(|id| *id != CAMERA_SENSOR_NONE && sensor.is_none()) {
+        return Some((
+            CameraVerdict::UnknownSensor,
+            format!(
+                "{key} on {port} is set to \"{id}\", a camera sensor this agent build does not know (it knows: {}). Update the agent, or choose another sensor. The camera line in config.txt is left as it is.",
+                c.sensors
+                    .iter()
+                    .map(|s| s.id.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            ),
+        ));
+    }
+    if let (Some(s), Some(missing)) = (sensor, f.setting.missing) {
+        let listed_as_declared = f
+            .listed
+            .is_some_and(|(l, _)| sensor_match(&s.overlay, l) == SensorMatch::Same);
+        if !listed_as_declared {
+            let reboot = if f.setting.line_change.is_some() {
+                " Its camera line in config.txt also waits for a reboot."
+            } else {
+                ""
+            };
+            return Some((
+                CameraVerdict::RequirementsMissing,
+                format!("{port} is set to {}, which {missing}.{reboot}", s.id),
+            ));
+        }
+    }
+    if let Some(ch) = f.setting.line_change {
+        let detail = match (&ch.booted, &ch.now) {
+            (Some(was), Some(now)) => format!(
+                "The camera line of {port} in config.txt was changed since this device booted (it booted with `{was}`, the file now says `{now}`). Reboot to apply."
+            ),
+            (None, Some(now)) => format!(
+                "config.txt has a camera line for {port} that was added since this device booted (`{now}`). Reboot to apply."
+            ),
+            (Some(was), None) => format!(
+                "The camera line of {port} was removed from config.txt since this device booted (it booted with `{was}`); the running kernel still has that camera configured. Reboot to apply."
+            ),
+            (None, None) => format!(
+                "The camera lines of {port} in config.txt were changed since this device booted. Reboot to apply."
+            ),
+        };
+        return Some((CameraVerdict::RebootRequired, detail));
+    }
+    let set = set?;
+    // From here: a managed port whose line did not change since boot.
+    let boot = r.boot?;
+    const WHY: &str = "the setting has not been applied (the status of the camera sensor setting says why)";
+    match (sensor, boot.overlay.as_deref()) {
+        (Some(s), Some(overlay)) if overlay != s.overlay => Some((
+            CameraVerdict::Mismatch,
+            format!(
+                "{port} is set to {}, but its camera line in config.txt still names {overlay}: {WHY}.",
+                s.id
+            ),
+        )),
+        (Some(s), None) => Some((
+            CameraVerdict::Mismatch,
+            format!(
+                "{port} is set to {}, but config.txt has no camera line for it: {WHY}.",
+                s.id
+            ),
+        )),
+        (None, Some(overlay)) => Some((
+            CameraVerdict::Mismatch,
+            format!(
+                "{port} is declared empty by the camera sensor setting, but config.txt still has a camera line for it ({overlay}): {WHY}."
+            ),
+        )),
+        (None, None) => {
+            debug_assert_eq!(set, CAMERA_SENSOR_NONE);
+            if f.listed.is_some() || r.node.is_some() {
+                Some((
+                    CameraVerdict::RebootRequired,
+                    format!(
+                        "{port} is declared empty and config.txt has no camera line for it, but the running kernel still has a camera configured there. Reboot to apply."
+                    ),
+                ))
+            } else {
+                Some((
+                    CameraVerdict::Empty,
+                    format!(
+                        "{port} is declared empty by the camera sensor setting: no camera is configured on it."
+                    ),
+                ))
+            }
+        }
+        _ => None,
     }
 }
 
@@ -890,6 +1078,10 @@ fn verdict_of(r: &Resolved<'_>) -> (CameraVerdict, String) {
                     ),
                     DeclaredSource::BootConfig => format!(
                         "{port} is declared as {} by config.txt, but {found}. It is used as found; make the dtoverlay line in config.txt name the sensor that is really attached, then reboot.",
+                        d.sensor
+                    ),
+                    DeclaredSource::Config => format!(
+                        "{port} is set to {}, but {found}. It is used as found; choose the sensor that is really attached, then reboot.",
                         d.sensor
                     ),
                 },
@@ -991,13 +1183,33 @@ fn verdict_of(r: &Resolved<'_>) -> (CameraVerdict, String) {
             ),
         );
     }
+    let managed = r.declared.is_some_and(|d| d.source == DeclaredSource::Config);
     if r.node.is_some() {
+        if managed {
+            return (
+                CameraVerdict::NotDetected,
+                format!(
+                    "{port} is set to {what}, but no {what} answered on this port (the kernel driver did not bind). Check the ribbon cable and the selected sensor."
+                ),
+            );
+        }
         return (
             CameraVerdict::NotDetected,
             format!(
                 "{port} is declared as {what} by {}, but no {what} answered on this port (the kernel driver did not bind). Check the ribbon cable and that the dtoverlay line in config.txt names the sensor that is really attached, then reboot.",
                 r.declared.map(|d| d.source.words()).unwrap_or("config.txt"),
             ),
+        );
+    }
+    if has_line && managed {
+        let loaded = if f.nodes.is_some() {
+            " its overlay is not loaded in the running kernel. Reboot if the setting was just changed; otherwise check that the overlay file exists on this device."
+        } else {
+            " no camera was found there. Check the ribbon cable and the selected sensor, then reboot."
+        };
+        return (
+            CameraVerdict::NotDetected,
+            format!("{port} is set to {what}, but{loaded}"),
         );
     }
     if has_line {
@@ -1622,6 +1834,7 @@ mod tests {
             stalled_preset: None,
             unsupervised: false,
             off_reason: CaptureOff::NotBegun,
+            setting: PortSetting::default(),
         }
     }
 

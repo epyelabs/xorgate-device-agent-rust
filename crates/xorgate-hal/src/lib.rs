@@ -14,6 +14,7 @@ pub mod atomic_write;
 pub mod boot_config_io;
 pub mod boot_id;
 pub mod boot_sources;
+pub mod camera_host;
 pub mod camera_list;
 pub mod camera_probe;
 pub mod child;

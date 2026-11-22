@@ -50,6 +50,11 @@ pub const CONFIG_APPLY_CLASSES: &[(&str, ApplyClass)] = &[
     // message, and restarts its helper when the adapter/PIN/rate/fields/
     // power source move.
     ("obd", ApplyClass::AgentPoll),
+    // Camera sensor per port (RUST-ONLY: the JS agent has no such key and
+    // the cloud never sends it to one). The camera reconciler picks it up
+    // like `cameraMount`: the config.txt edit is immediate, the effect
+    // waits for the next boot.
+    ("cameraSensors", ApplyClass::AgentPoll),
 ];
 
 /// `CONFIG_NAMESPACE_KEYS` (`config-sync.ts:153`): `Object.keys(CONFIG_APPLY_CLASSES)`.
@@ -63,6 +68,7 @@ pub const CONFIG_NAMESPACE_KEYS: &[&str] = &[
     "cameraMount",
     "simulation",
     "obd",
+    "cameraSensors",
 ];
 
 /// Apply class of a namespace key, or None for an unknown key.
