@@ -170,10 +170,7 @@ pub fn boot_config_port_on(
     board: Board,
 ) -> BootConfigPort {
     let lines = parse_scoped_lines(text, board);
-    let mine: Vec<&ScopedLine> = lines
-        .iter()
-        .filter(|l| l.scope != LineScope::NotApplies && line_targets(&l.line, connector, hints))
-        .collect();
+    let mine = port_camera_lines(&lines, connector, hints);
     BootConfigPort {
         overlay: mine.last().map(|l| l.line.name.clone()),
         line: mine
@@ -181,6 +178,33 @@ pub fn boot_config_port_on(
             .map(|l| l.line.text.trim().chars().take(BOOT_LINE_MAX).collect()),
         lines: mine.len(),
     }
+}
+
+/// The lines of a parsed config.txt that count as `connector`'s camera
+/// lines for the report (see [`boot_config_port_on`]).
+fn port_camera_lines<'a>(
+    lines: &'a [ScopedLine],
+    connector: &str,
+    hints: &[&str],
+) -> Vec<&'a ScopedLine> {
+    lines
+        .iter()
+        .filter(|l| l.scope != LineScope::NotApplies && line_targets(&l.line, connector, hints))
+        .collect()
+}
+
+/// The `[section]` the port's reported line sits under, when it is one the
+/// agent cannot evaluate for this board ([`LineScope::Unknown`]): the line
+/// may or may not take effect, and the agent does not edit it.
+pub fn unknown_section_of(
+    text: &str,
+    connector: &str,
+    hints: &[&str],
+    board: Board,
+) -> Option<String> {
+    let lines = parse_scoped_lines(text, board);
+    let last = port_camera_lines(&lines, connector, hints).pop()?;
+    (last.scope == LineScope::Unknown).then(|| last.section.clone().unwrap_or_default())
 }
 
 /// Does `line` configure `connector`'s camera? (See [`boot_config_port_on`].)
@@ -846,6 +870,20 @@ pub fn derive_port(f: &PortFacts<'_>) -> CameraPort {
     };
     let (verdict, detail) = setting_verdict(&resolved).unwrap_or_else(|| verdict_of(&resolved));
     let preset = preset_note(f, declared.as_ref(), verdict);
+    // What the reconciler knows about the line and the report would
+    // otherwise not say: it sits under a section the agent cannot evaluate,
+    // so the agent neither knows that it applies nor edits it. The verdict
+    // stays about the camera.
+    let section = f
+        .boot_text
+        .and_then(|t| unknown_section_of(t, f.connector, &hints, f.board))
+        .map(|name| {
+            format!(
+                " The camera line of {} in config.txt sits under [{name}], a section the agent cannot evaluate for this board: the agent does not edit that line.",
+                f.connector
+            )
+        })
+        .unwrap_or_default();
     let extra_lines = boot
         .as_ref()
         .filter(|b| b.lines > 1)
@@ -880,7 +918,7 @@ pub fn derive_port(f: &PortFacts<'_>) -> CameraPort {
             last_error: f.last_error.map(str::to_string),
         },
         verdict,
-        detail: format!("{detail}{preset}{extra_lines}"),
+        detail: format!("{detail}{preset}{section}{extra_lines}"),
     }
 }
 
@@ -3142,5 +3180,78 @@ mod tests {
             p.detail,
             "imx290 on csi0 is detected; capture is starting. The imx290 driver cannot confirm which chip is attached, so the camera on this port may be a different sensor, or nothing may be attached."
         );
+    }
+
+    /// Bench finding (Phase 1b run): with a port's line under a section
+    /// the agent cannot evaluate, the reconciler refused to touch it while
+    /// the report read it as the port's line and said nothing. The report
+    /// now says what the reconciler knows; the verdict stays about the
+    /// camera.
+    #[test]
+    fn a_line_under_a_section_the_agent_cannot_evaluate_is_named() {
+        let text =
+            "dtoverlay=imx335,cam0\n[x-unknown]\ndtoverlay=imx219,cam1,rotation=180\n[all]\n";
+        let nodes = [node("csi1", "imx219@10", Some("imx219"))];
+        let base = PortFacts {
+            boot_text: Some(text),
+            board: Board::Cm5,
+            nodes: Some(&nodes),
+            listed: Some((
+                "imx219",
+                "/base/axi/pcie@1000120000/rp1/i2c@70000/imx219@10",
+            )),
+            capture: CaptureTruth::Streaming,
+            ..facts("cam1", "csi1")
+        };
+        let p = derive_port(&base);
+        assert_eq!(p.verdict, CameraVerdict::Ok);
+        assert_eq!(p.boot_config.as_ref().unwrap().lines, 1);
+        assert_eq!(
+            p.detail,
+            "imx219 on csi1 is detected and streaming. The camera line of csi1 in config.txt sits under [x-unknown], a section the agent cannot evaluate for this board: the agent does not edit that line."
+        );
+        // The same on a managed port.
+        let p = derive_port(&PortFacts {
+            setting: managed("imx219"),
+            ..base.clone()
+        });
+        assert_eq!(p.verdict, CameraVerdict::Ok);
+        assert!(
+            p.detail.ends_with("the agent does not edit that line."),
+            "{}",
+            p.detail
+        );
+        // A section the agent CAN evaluate says nothing: this board's, and
+        // the other family's (whose line is not the port's at all).
+        for (section, lines) in [("cm5", 1), ("all", 1), ("cm4", 0)] {
+            let text = format!("[{section}]\ndtoverlay=imx219,cam1,rotation=180\n[all]\n");
+            let p = derive_port(&PortFacts {
+                boot_text: Some(&text),
+                ..base.clone()
+            });
+            assert_eq!(p.boot_config.as_ref().unwrap().lines, lines, "{section}");
+            assert!(
+                !p.detail.contains("cannot evaluate"),
+                "{section}: {}",
+                p.detail
+            );
+        }
+        // With the board unknown every model filter is one it cannot evaluate.
+        let p = derive_port(&PortFacts {
+            boot_text: Some("[cm5]\ndtoverlay=imx219,cam1\n"),
+            board: Board::Unknown,
+            ..base.clone()
+        });
+        assert!(
+            p.detail
+                .contains("sits under [cm5], a section the agent cannot evaluate"),
+            "{}",
+            p.detail
+        );
+        assert_eq!(
+            unknown_section_of(text, "csi1", &[], Board::Cm5).as_deref(),
+            Some("x-unknown")
+        );
+        assert_eq!(unknown_section_of(text, "csi0", &[], Board::Cm5), None);
     }
 }

@@ -1,198 +1,274 @@
 {
- "about": "Where the Rust camera-mount reconciler answers a case of the TS golden (camera-mount.json, dumped from reconcileCameraMount @89b5c64) differently BY DESIGN since Phase 1 of the support-other-camera-models plan. crates/xorgate-agent/tests/camera_mount.rs runs every TS case: a field named here (state, logs, applies, file) must equal THIS value and must differ from the TS value; every such field not named here must equal the TS value. `probes` is judged apart: the TS probes `dtoverlay -h` before each write (probes: [\"imx290\"]); the Rust reconciler asks only for an overlay outside the sensor catalog (D96), so its probes are [] unless a case names them here.",
- "rows": {
-  "D95": "the Rust agent calls xorgate-camcfg, not xorgate-camrotate",
-  "D96": "the sensor catalog, not the dtoverlay -h probe, says whether a catalog overlay can rotate",
-  "D98": "0 is written as an explicit rotation=0, never as a dropped token",
-  "D99": "a camera line under a [section] is edited only when the section is known to apply to this board",
-  "D100": "two camera lines on one port: nothing is edited"
- },
- "cases": {
-  "refuses to edit a sensor whose overlay has no rotation parameter": {
-   "row": "D96",
-   "why": "the fixture's probe says `no rotation parameter` for imx290; the catalog says imx290 can flip, and the probe is not asked",
-   "passes": [
-    {
-     "state": {
-      "at": 1785326400000,
-      "cameras": [
-       {
-        "streamKey": "cam0",
-        "desiredDeg": 180,
-        "inForceDeg": 0,
-        "bootDeg": 180,
-        "verdict": "pending-reboot"
-       }
-      ],
-      "rebootRequired": true,
-      "wrote": true
-     },
-     "logs": [
-      {
-       "level": "info",
-       "msg": "cam0: imx290/cam0 rotation set to 180° in <dir>/config.txt — REBOOT required before the image changes (the agent never reboots itself)"
-      }
-     ],
-     "applies": [
-      [
-       "imx290",
-       "cam0",
-       180
+  "about": "Where the Rust camera-mount reconciler answers a case of the TS golden (camera-mount.json, dumped from reconcileCameraMount @89b5c64) differently BY DESIGN since Phase 1 of the support-other-camera-models plan. crates/xorgate-agent/tests/camera_mount.rs runs every TS case: a field named here (state, logs, applies, file) must equal THIS value and must differ from the TS value; every such field not named here must equal the TS value. `probes` is judged apart: the TS probes `dtoverlay -h` before each write (probes: [\"imx290\"]); the Rust reconciler asks only for an overlay outside the sensor catalog (D96), so its probes are [] unless a case names them here.",
+  "rows": {
+    "D95": "the Rust agent calls xorgate-camcfg, not xorgate-camrotate",
+    "D96": "the sensor catalog, not the dtoverlay -h probe, says whether a catalog overlay can rotate",
+    "D98": "0 is written as an explicit rotation=0, never as a dropped token",
+    "D99": "a camera line under a [section] is edited only when the section is known to apply to this board",
+    "D100": "two camera lines on one port: nothing is edited",
+    "D115": "a rejection reaches the journal once per change; a write back to the rotation in force says no reboot is needed"
+  },
+  "cases": {
+    "refuses to edit a sensor whose overlay has no rotation parameter": {
+      "row": "D96",
+      "why": "the fixture's probe says `no rotation parameter` for imx290; the catalog says imx290 can flip, and the probe is not asked",
+      "passes": [
+        {
+          "state": {
+            "at": 1785326400000,
+            "cameras": [
+              {
+                "streamKey": "cam0",
+                "desiredDeg": 180,
+                "inForceDeg": 0,
+                "bootDeg": 180,
+                "verdict": "pending-reboot"
+              }
+            ],
+            "rebootRequired": true,
+            "wrote": true
+          },
+          "logs": [
+            {
+              "level": "info",
+              "msg": "cam0: imx290/cam0 rotation set to 180° in <dir>/config.txt — REBOOT required before the image changes (the agent never reboots itself)"
+            }
+          ],
+          "applies": [
+            [
+              "imx290",
+              "cam0",
+              180
+            ]
+          ],
+          "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane,rotation=180\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n"
+        }
       ]
-     ],
-     "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane,rotation=180\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n"
-    }
-   ]
-  },
-  "refuses when the probe itself could not run": {
-   "row": "D96",
-   "why": "the probe is not asked for a catalog overlay, so its failure does not matter",
-   "passes": [
-    {
-     "state": {
-      "at": 1785326400000,
-      "cameras": [
-       {
-        "streamKey": "cam0",
-        "desiredDeg": 180,
-        "inForceDeg": 0,
-        "bootDeg": 180,
-        "verdict": "pending-reboot"
-       }
-      ],
-      "rebootRequired": true,
-      "wrote": true
-     },
-     "logs": [
-      {
-       "level": "info",
-       "msg": "cam0: imx290/cam0 rotation set to 180° in <dir>/config.txt — REBOOT required before the image changes (the agent never reboots itself)"
-      }
-     ],
-     "applies": [
-      [
-       "imx290",
-       "cam0",
-       180
-      ]
-     ],
-     "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane,rotation=180\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n"
-    }
-   ]
-  },
-  "reports a failed privileged write instead of pretending it landed": {
-   "row": "D95",
-   "why": "the hint names the helper the Rust agent needs and its own CLI",
-   "passes": [
-    {
-     "state": {
-      "at": 1785326400000,
-      "cameras": [
-       {
-        "streamKey": "cam0",
-        "desiredDeg": 180,
-        "inForceDeg": 0,
-        "bootDeg": 0,
-        "verdict": "write-failed",
-        "detail": "could not edit <dir>/config.txt: sudo: a password is required (the agent needs the xorgate-camcfg helper — run `sudo xorgate-rs update`)"
-       }
-      ],
-      "rebootRequired": false,
-      "wrote": false
-     }
-    }
-   ]
-  },
-  "rewrites duplicate lines in different sections to agree": {
-   "row": "D99, D100",
-   "why": "the fixture device has no /proc/device-tree/model, so neither the [cm4] nor the [cm5] line is known to apply: two possible lines for cam0, none edited (with a model file only the board's own line is the port's, and it alone is edited)",
-   "passes": [
-    {
-     "state": {
-      "at": 1785326400000,
-      "cameras": [
-       {
-        "streamKey": "cam0",
-        "desiredDeg": 180,
-        "inForceDeg": 0,
-        "bootDeg": 0,
-        "verdict": "unsupported",
-        "detail": "config.txt has 2 camera lines for cam0; the agent changes a rotation only when exactly one line configures the port: remove the stale ones, then reboot"
-       }
-      ],
-      "rebootRequired": false,
-      "wrote": false
-     },
-     "logs": [],
-     "applies": [],
-     "file": "[cm4]\ndtoverlay=imx290,cam0\n[cm5]\ndtoverlay=imx290,cam0,4lane\n"
-    }
-   ]
-  },
-  "[extra] 180 back to 0 removes the token, pending until reboot": {
-   "row": "D98",
-   "why": "same state and log; the line reads rotation=0 instead of losing its token",
-   "passes": [
-    {
-     "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane,rotation=0\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n"
     },
-    {
-     "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane,rotation=0\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n"
+    "refuses when the probe itself could not run": {
+      "row": "D96",
+      "why": "the probe is not asked for a catalog overlay, so its failure does not matter",
+      "passes": [
+        {
+          "state": {
+            "at": 1785326400000,
+            "cameras": [
+              {
+                "streamKey": "cam0",
+                "desiredDeg": 180,
+                "inForceDeg": 0,
+                "bootDeg": 180,
+                "verdict": "pending-reboot"
+              }
+            ],
+            "rebootRequired": true,
+            "wrote": true
+          },
+          "logs": [
+            {
+              "level": "info",
+              "msg": "cam0: imx290/cam0 rotation set to 180° in <dir>/config.txt — REBOOT required before the image changes (the agent never reboots itself)"
+            }
+          ],
+          "applies": [
+            [
+              "imx290",
+              "cam0",
+              180
+            ]
+          ],
+          "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane,rotation=180\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n"
+        }
+      ]
+    },
+    "reports a failed privileged write instead of pretending it landed": {
+      "row": "D95",
+      "why": "the hint names the helper the Rust agent needs and its own CLI",
+      "passes": [
+        {
+          "state": {
+            "at": 1785326400000,
+            "cameras": [
+              {
+                "streamKey": "cam0",
+                "desiredDeg": 180,
+                "inForceDeg": 0,
+                "bootDeg": 0,
+                "verdict": "write-failed",
+                "detail": "could not edit <dir>/config.txt: sudo: a password is required (the agent needs the xorgate-camcfg helper — run `sudo xorgate-rs update`)"
+              }
+            ],
+            "rebootRequired": false,
+            "wrote": false
+          }
+        }
+      ]
+    },
+    "rewrites duplicate lines in different sections to agree": {
+      "row": "D99, D100",
+      "why": "the fixture device has no /proc/device-tree/model, so neither the [cm4] nor the [cm5] line is known to apply: two possible lines for cam0, none edited (with a model file only the board's own line is the port's, and it alone is edited)",
+      "passes": [
+        {
+          "state": {
+            "at": 1785326400000,
+            "cameras": [
+              {
+                "streamKey": "cam0",
+                "desiredDeg": 180,
+                "inForceDeg": 0,
+                "bootDeg": 0,
+                "verdict": "unsupported",
+                "detail": "config.txt has 2 camera lines for cam0; the agent changes a rotation only when exactly one line configures the port: remove the stale ones, then reboot"
+              }
+            ],
+            "rebootRequired": false,
+            "wrote": false
+          },
+          "logs": [
+            {
+              "level": "warn",
+              "msg": "cam0: rotation not applied — config.txt has 2 camera lines for cam0; the agent changes a rotation only when exactly one line configures the port: remove the stale ones, then reboot"
+            }
+          ],
+          "applies": [],
+          "file": "[cm4]\ndtoverlay=imx290,cam0\n[cm5]\ndtoverlay=imx290,cam0,4lane\n"
+        }
+      ]
+    },
+    "[extra] 180 back to 0 removes the token, pending until reboot": {
+      "row": "D98",
+      "why": "same state and log; the line reads rotation=0 instead of losing its token",
+      "passes": [
+        {
+          "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane,rotation=0\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n"
+        },
+        {
+          "file": "# Raspberry Pi config\ncamera_auto_detect=0\ndtoverlay=vc4-kms-v3d\n[cm4]\notg_mode=1\n[cm5]\ndtoverlay=dwc2,dr_mode=host\n[all]\ndtoverlay=imx290,cam0,4lane,rotation=0\ndtoverlay=imx290,cam1\n#dtoverlay=googlevoicehat-soundcard\n"
+        }
+      ]
+    },
+    "[extra] the helper refuses an uppercase overlay name (usage)": {
+      "row": "D95",
+      "why": "IMX290 is outside the catalog, so it IS probed; the agent then refuses the line itself (a name the helper would not write back) instead of running the helper to hear its usage line",
+      "passes": [
+        {
+          "state": {
+            "at": 1785326400000,
+            "cameras": [
+              {
+                "streamKey": "cam0",
+                "desiredDeg": 180,
+                "inForceDeg": 0,
+                "bootDeg": 0,
+                "verdict": "unsupported",
+                "detail": "the camera line for cam0 in <dir>/config.txt cannot be rewritten: \"IMX290\" holds characters the camera line owner does not write"
+              }
+            ],
+            "rebootRequired": false,
+            "wrote": false
+          },
+          "logs": [
+            {
+              "level": "warn",
+              "msg": "cam0: rotation not applied — the camera line for cam0 in <dir>/config.txt cannot be rewritten: \"IMX290\" holds characters the camera line owner does not write"
+            }
+          ],
+          "probes": [
+            "IMX290"
+          ],
+          "applies": []
+        }
+      ]
+    },
+    "[extra] the helper refuses a two-digit camera token (usage)": {
+      "row": "D95",
+      "why": "only cam0 and cam1 are camera ports: a stream on any other port has no camera line (the TS found the `cam10` token and let the helper refuse it)",
+      "passes": [
+        {
+          "state": {
+            "at": 1785326400000,
+            "cameras": [
+              {
+                "streamKey": "cam10",
+                "desiredDeg": 180,
+                "inForceDeg": null,
+                "bootDeg": null,
+                "verdict": "no-overlay",
+                "detail": "no dtoverlay line for cam10 in <dir>/config.txt — the camera overlay is missing"
+              }
+            ],
+            "rebootRequired": false,
+            "wrote": false
+          },
+          "logs": [
+            {
+              "level": "warn",
+              "msg": "cam10: rotation not applied — no dtoverlay line for cam10 in <dir>/config.txt — the camera overlay is missing"
+            }
+          ],
+          "applies": []
+        }
+      ]
+    },
+    "re-edits after a re-image dropped the token, and asks for one more reboot": {
+      "row": "D115",
+      "why": "a rejection is logged once per change (F6), and a write back to the rotation the device already runs says that no reboot is needed (F7); the TS logs neither",
+      "passes": [
+        {
+          "logs": [
+            {
+              "level": "info",
+              "msg": "cam0: imx290/cam0 rotation set to 180° in <dir>/config.txt — no reboot needed: the device already runs this rotation"
+            }
+          ]
+        }
+      ]
+    },
+    "says so when there is no overlay line, or no camera by that name": {
+      "row": "D115",
+      "why": "a rejection is logged once per change (F6), and a write back to the rotation the device already runs says that no reboot is needed (F7); the TS logs neither",
+      "passes": [
+        {
+          "logs": [
+            {
+              "level": "warn",
+              "msg": "cam0: rotation not applied — no dtoverlay line for cam0 in <dir>/config.txt — the camera overlay is missing"
+            },
+            {
+              "level": "warn",
+              "msg": "cam7: rotation not applied — this device has no camera \"cam7\""
+            }
+          ]
+        }
+      ]
+    },
+    "[extra] no config.txt on this device": {
+      "row": "D115",
+      "why": "a rejection is logged once per change (F6), and a write back to the rotation the device already runs says that no reboot is needed (F7); the TS logs neither",
+      "passes": [
+        {
+          "logs": [
+            {
+              "level": "warn",
+              "msg": "cam0: rotation not applied — no config.txt on this device (looked in /boot/firmware and /boot)"
+            }
+          ]
+        }
+      ]
+    },
+    "[extra] a stream key the hardware block does not declare, v1 fallback refuses a non-camN key": {
+      "row": "D115",
+      "why": "a rejection is logged once per change (F6), and a write back to the rotation the device already runs says that no reboot is needed (F7); the TS logs neither",
+      "passes": [
+        {
+          "logs": [
+            {
+              "level": "warn",
+              "msg": "front: rotation not applied — this device has no camera \"front\""
+            }
+          ]
+        }
+      ]
     }
-   ]
-  },
-  "[extra] the helper refuses an uppercase overlay name (usage)": {
-   "row": "D95",
-   "why": "IMX290 is outside the catalog, so it IS probed; the agent then refuses the line itself (a name the helper would not write back) instead of running the helper to hear its usage line",
-   "passes": [
-    {
-     "state": {
-      "at": 1785326400000,
-      "cameras": [
-       {
-        "streamKey": "cam0",
-        "desiredDeg": 180,
-        "inForceDeg": 0,
-        "bootDeg": 0,
-        "verdict": "unsupported",
-        "detail": "the camera line for cam0 in <dir>/config.txt cannot be rewritten: \"IMX290\" holds characters the camera line owner does not write"
-       }
-      ],
-      "rebootRequired": false,
-      "wrote": false
-     },
-     "logs": [],
-     "probes": [
-      "IMX290"
-     ],
-     "applies": []
-    }
-   ]
-  },
-  "[extra] the helper refuses a two-digit camera token (usage)": {
-   "row": "D95",
-   "why": "only cam0 and cam1 are camera ports: a stream on any other port has no camera line (the TS found the `cam10` token and let the helper refuse it)",
-   "passes": [
-    {
-     "state": {
-      "at": 1785326400000,
-      "cameras": [
-       {
-        "streamKey": "cam10",
-        "desiredDeg": 180,
-        "inForceDeg": null,
-        "bootDeg": null,
-        "verdict": "no-overlay",
-        "detail": "no dtoverlay line for cam10 in <dir>/config.txt — the camera overlay is missing"
-       }
-      ],
-      "rebootRequired": false,
-      "wrote": false
-     },
-     "logs": [],
-     "applies": []
-    }
-   ]
   }
- }
 }

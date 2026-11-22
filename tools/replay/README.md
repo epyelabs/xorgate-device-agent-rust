@@ -706,7 +706,7 @@ The helper itself, and the reconciler over the REAL helper, are covered off the 
 ## The sensor setting (support-other-camera-models, Phase 2): EVERY JS-vs-Rust lane now differs in `report`, and what the rig needs
 
 Since branch `camera/phase2-agent` the Rust agent advertises the capability `camera.sensors`, knows
-the namespace `cameraSensors`, and changed four texts (accepted divergences **D107–D114**).
+the namespace `cameraSensors`, and changed a few journal texts (accepted divergences **D107–D115**).
 
 **No tolerance matcher was built, no tolerance row was widened, and nothing under `tools/replay/` or
 in `xorgate-replay` was changed** (a harness change lapses every tape's eligibility and needs the
@@ -719,6 +719,7 @@ orchestrator's go). What differs by design, and the harness change that would ab
 | 3 | `events` | a tape whose `config.txt` has no camera line for a camera port of the model | `…: no camera enumerated on csiN (expected …) — stream held down until one appears (check the ribbon + overlays, reboot after install)` | `…: no camera is configured on csiN (config.txt has no camera line for it; the device model expects …) — stream held down` | D112 | run such a tape Rust-vs-Rust, as the camera tapes already are |
 | 4 | CLI matrix, `status` with the daemon stopped | `tools/replay/cli/cases.txt` | `  start it with: xorgate start` | `  start it with: sudo systemctl start xorgate-agent-rs` | D113 | the matrix maps that one line, as `cli_status.rs` does |
 | 5 | `sudo` | a tape that sends `cameraSensors` (none exists) | — | `sudo -n /usr/local/bin/xorgate-camcfg set …` / `remove …` | D109 | Rust-only scenario; the sudo shim executes `xorgate-camcfg` (the change already described in the Phase 1 section above) |
+| 6 | `events` | a tape where `cameraMount` is rejected (a sensor that cannot rotate, a port that is not confirmed, a section the agent cannot evaluate, no line, an unknown camera), or where a write returns the line to the rotation in force | no line for a rejection; `… — REBOOT required before the image changes …` for every write | `camera mount: <key>: rotation not applied — <the status sentence>`, once per change; `… — no reboot needed: the device already runs this rotation` | D115 | run such a tape Rust-vs-Rust |
 
 Row 1 is the one that matters today: until the normaliser is extended, a `jsrs` lane fails on its
 first report. `rsrs` and `ab` lanes are not affected.

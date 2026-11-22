@@ -374,7 +374,7 @@ fn build_block(
         // the re-listing has confirmed it, and so does the summary; a stall
         // reads differently from a start failure.
         summary.push(format!(
-            "{}|{}|{}|{}|{}|{}",
+            "{}|{}|{}|{}|{}|{}|{}",
             summarise_port(&video.key, &port),
             u8::from(relisted && driver_bound && listed.is_none()),
             u8::from(
@@ -387,6 +387,8 @@ fn build_block(
             // sensor cannot run.
             statics.missing.get(&video.key).map_or("", String::as_str),
             u8::from(port.detail.contains(" The video preset ")),
+            // ... and a line under a section the agent cannot evaluate.
+            u8::from(port.detail.contains("a section the agent cannot evaluate")),
         ));
         ports.insert(
             video.key.as_str(),

@@ -2003,6 +2003,85 @@ mod tests {
         );
     }
 
+    /// A namespace removed in the cloud (`PATCH {ns: null}`) is published as
+    /// `{}`, the revert marker, and stays in the retained message. Every
+    /// namespace answers it the same way (`config-sync.ts:777`, rule 0; the
+    /// JS goldens "applied for a revert marker on every object namespace"):
+    /// `applied` once the local key is gone, with no `effective` block.
+    /// `cameraMount` and `cameraSensors` are no exception: the status entry
+    /// that stays behind IS the acknowledgement of the revert, for as long
+    /// as the marker is published (a bench reading of 2026-11-22 took it for
+    /// a leftover).
+    #[test]
+    fn a_reverted_namespace_is_acknowledged_the_same_way_by_every_namespace() {
+        let build = BuildInfo {
+            version: "abc1234".into(),
+            channel: "dev".into(),
+            built_at: None,
+            package_version: "0.2.0".into(),
+        };
+        let settings = AgentSettings::default();
+        let eff = build_effective(
+            &settings,
+            &ModemBiasSample::default(),
+            Some("real"),
+            None,
+            None,
+            None,
+            None,
+            None,
+            &build,
+        );
+        let d = desired(
+            r#"{"v":1,"rev":11,"imuMount":{},"recording":{},"lteRecovery":{},"timeSync":{},"cellular":{},"cameraMount":{},"simulation":{},"obd":{},"cameraSensors":{}}"#,
+        );
+        let status = build_status(
+            Some(&d),
+            &eff,
+            &ModemBiasSample::default(),
+            9,
+            &ReportHints::default(),
+            None,
+            Some(&settings),
+            None,
+        );
+        assert_eq!(
+            status.keys().map(String::as_str).collect::<Vec<_>>(),
+            [
+                "imuMount",
+                "recording",
+                "lteRecovery",
+                "timeSync",
+                "cellular",
+                "cameraMount",
+                "simulation",
+                "obd",
+                "cameraSensors"
+            ]
+        );
+        for (key, st) in &status {
+            assert_eq!(
+                serde_json::to_string(st).unwrap(),
+                r#"{"state":"applied","at":9}"#,
+                "{key}"
+            );
+            assert!(!eff.contains_key(key), "{key}");
+        }
+        // Not published at all: no entry.
+        let quiet = desired(r#"{"v":1,"rev":12}"#);
+        assert!(build_status(
+            Some(&quiet),
+            &eff,
+            &ModemBiasSample::default(),
+            9,
+            &ReportHints::default(),
+            None,
+            Some(&settings),
+            None
+        )
+        .is_empty());
+    }
+
     /// A local edit folds back as the WHOLE namespace, or `null` when it
     /// was removed (`changed.cameraSensors`).
     #[test]

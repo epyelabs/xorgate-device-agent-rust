@@ -386,7 +386,7 @@ async fn the_ts_golden_pass_by_pass_with_the_named_divergences() {
             "rust-divergences.json names a case the TS golden does not have: {name}"
         );
     }
-    assert_eq!(named.len(), 7);
+    assert_eq!(named.len(), 11);
     let (mut passes_total, mut fields_differing) = (0, 0);
     for (ci, c) in cases.iter().enumerate() {
         let name = c["name"].as_str().unwrap();
@@ -513,8 +513,10 @@ async fn the_ts_golden_pass_by_pass_with_the_named_divergences() {
         }
     }
     assert_eq!(passes_total, 26);
-    // state ×6, logs ×5, applies ×5, file ×5 across the 7 named cases.
-    assert_eq!(fields_differing, 21);
+    // state ×6, logs ×9, applies ×5, file ×5 across the 11 named cases
+    // (4 of them differ in their log only: D115, a rejection is logged once
+    // per change, and a write back to the rotation in force needs no reboot).
+    assert_eq!(fields_differing, 25);
 }
 
 // ---------------------------------------------------------------------------
@@ -1050,7 +1052,11 @@ async fn b7_a_port_that_is_not_confirmed_is_not_edited() {
             }
             assert_eq!(rig.runner.calls().len(), 0, "{want}");
             assert_eq!(rig.d.read(), config, "{want}");
-            assert_eq!(rig.logs(), Vec::<String>::new());
+            // The refusal is in the journal once, not once per pass (D115).
+            assert_eq!(
+                rig.logs(),
+                [format!("warn cam0: rotation not applied — the camera line for cam0 is left as it is, because the camera on this port is not confirmed: {want}")]
+            );
             // The same device once the port is confirmed: written.
             rig.evidence = confirmed_evidence();
             let s = rig.pass(&[("cam0", 180)]).await;
@@ -2654,4 +2660,128 @@ async fn namespace_presence_and_the_boot_snapshot_file() {
         "dtoverlay=imx708,cam0,rotation=180"
     );
     assert_eq!(rig.runner.calls().len(), 1);
+}
+
+/// Bench finding (Phase 1b run): a rejection was in the status only. Each
+/// one now reaches the journal ONCE PER CHANGE: when it appears and when
+/// its sentence changes, never once per pass.
+#[tokio::test]
+async fn a_rejection_is_logged_once_per_change() {
+    // `cameraMount`, unmanaged ports: a sensor that cannot flip (cam0) and
+    // a line under a section the agent cannot evaluate (cam1).
+    let config = "camera_auto_detect=0\ndtoverlay=imx335,cam0\n[x-unknown]\ndtoverlay=imx219,cam1,rotation=180\n[all]\n";
+    let d = Device::bench("rejlog", config, MODEL_CM5);
+    d.overlays(&ALL_OVERLAYS);
+    d.camera("cam0", &cm5_path("cam0", "imx335@1a"), Some(180));
+    d.camera("cam1", &cm5_path("cam1", "imx219@10"), Some(180));
+    let rig = Rig::new(d);
+    let cannot = "warn cam0: rotation not applied — the imx335 sensor cannot be rotated: mount the camera the right way up";
+    let section = "warn cam1: rotation not applied — the camera line for cam1 in <dir>/config.txt sits under [x-unknown], a section the agent cannot evaluate for this board: it is left as it is; edit it by hand";
+    for _ in 0..3 {
+        let s = rig.pass(&[("cam0", 180), ("cam1", 180)]).await;
+        assert_eq!(cam(&s, "cam0").0, Unsupported);
+        assert_eq!(cam(&s, "cam1").0, Unsupported);
+    }
+    assert_eq!(
+        rig.logs(),
+        [cannot, section],
+        "once each, not once per pass"
+    );
+    // cam0 goes back to a mount it can take: nothing is said; asked again,
+    // the rejection is a new one and is said again.
+    rig.pass(&[("cam0", 0), ("cam1", 180)]).await;
+    assert_eq!(rig.logs().len(), 2);
+    rig.pass(&[("cam0", 180), ("cam1", 180)]).await;
+    rig.pass(&[("cam0", 180), ("cam1", 180)]).await;
+    assert_eq!(rig.logs(), [cannot, section, cannot]);
+    assert_eq!(rig.runner.calls().len(), 0);
+    assert_eq!(rig.d.read(), config);
+
+    // `cameraSensors`: a refused entry, then another sentence for the same
+    // port, then a usable one.
+    let d = Device::bench(
+        "rejlog2",
+        &bench_config("config-bench1-imx290.txt"),
+        MODEL_CM5,
+    );
+    d.overlays(&ALL_OVERLAYS);
+    let rig = Rig::new(d);
+    for _ in 0..2 {
+        rig.pass_both(
+            Some(&[("cam0", 180)]),
+            Some(json!({"cam0": {"sensor": "imx999"}})),
+        )
+        .await;
+    }
+    rig.pass_both(Some(&[("cam0", 180)]), Some(json!({"cam0": 7})))
+        .await;
+    rig.pass_both(None, Some(json!({"cam0": {"sensor": "imx290"}})))
+        .await;
+    assert_eq!(
+        rig.logs(),
+        [
+            // One line per refusal; the `cameraMount` consequence on the
+            // same port is not a second line.
+            "warn cam0: camera sensor setting not applied — this agent build does not know the camera sensor \"imx999\" (it knows: imx290, imx219, imx708, imx335); update the agent or choose another sensor. config.txt is left as it is",
+            "warn cam0: camera sensor setting not applied — the camera sensor setting of this port is not an object; config.txt is left as it is",
+        ]
+    );
+    assert_eq!(rig.runner.calls().len(), 0);
+}
+
+/// Bench finding: the journal said "REBOOT required" for a write that
+/// returned the line to what the device already runs. It now says that no
+/// reboot is needed, as the status (`applied`) does.
+#[tokio::test]
+async fn a_write_back_to_what_runs_says_no_reboot_is_needed() {
+    // Unmanaged: 0 -> 180 -> 0 without a reboot.
+    let d = Device::bench(
+        "noreboot",
+        &bench_config("config-bench1-imx290.txt"),
+        MODEL_CM5,
+    );
+    d.overlays(&ALL_OVERLAYS);
+    d.camera("cam0", &cm5_path("cam0", "imx290@1a"), Some(0));
+    let mut rig = Rig::new(d);
+    rig.evidence = PortEvidence {
+        cameras: Some(vec![listed("cam0", "imx290", "imx290@1a")]),
+        relisted: false,
+        nodes: Some(vec![node("cam0", "imx290@1a", Some("imx290"))]),
+    };
+    let s = rig.pass(&[("cam0", 180)]).await;
+    assert_eq!(cam(&s, "cam0").0, PendingReboot);
+    let s = rig.pass(&[("cam0", 0)]).await;
+    assert_eq!(cam(&s, "cam0").0, Applied);
+    assert_eq!(
+        rig.logs(),
+        [
+            "info cam0: imx290/cam0 rotation set to 180° in <dir>/config.txt — REBOOT required before the image changes (the agent never reboots itself)",
+            "info cam0: imx290/cam0 rotation set to 0° in <dir>/config.txt — no reboot needed: the device already runs this rotation",
+        ]
+    );
+
+    // Managed: the sensor changed and changed back before a reboot.
+    let d = Device::bench(
+        "noreboot2",
+        &bench_config("config-bench1-imx290.txt"),
+        MODEL_CM5,
+    );
+    d.overlays(&ALL_OVERLAYS);
+    d.camera("cam0", &cm5_path("cam0", "imx290@1a"), Some(0));
+    let rig = Rig::new(d);
+    let s = rig
+        .pass_both(None, Some(json!({"cam0": {"sensor": "imx708"}})))
+        .await;
+    assert_eq!(sens(&s, "cam0").0, SV::PendingReboot);
+    let s = rig
+        .pass_both(None, Some(json!({"cam0": {"sensor": "imx290"}})))
+        .await;
+    assert_eq!(sens(&s, "cam0").0, SV::Applied);
+    assert_eq!(
+        rig.logs(),
+        [
+            "info cam0: camera line for cam0 in <dir>/config.txt is now the imx708 line (imx708,rotation=180) — REBOOT required before the camera changes (the agent never reboots itself)",
+            "info cam0: camera line for cam0 in <dir>/config.txt is now the imx290 line (imx290,rotation=0) — no reboot needed: this is the line the device booted with",
+        ]
+    );
 }

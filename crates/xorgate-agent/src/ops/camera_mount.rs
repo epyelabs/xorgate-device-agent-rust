@@ -265,6 +265,9 @@ pub struct WriteMemo {
     /// Warnings already logged (`<key>|<reason>`): logged once, not on
     /// every 60 s pass.
     warned: HashSet<String>,
+    /// The rejection last logged per `<key>|<namespace>`: a rejection is
+    /// logged when it appears or changes, not on every pass.
+    rejected: HashMap<String, String>,
     /// `dtoverlay -h` answers of this agent run, per overlay name (a
     /// failed probe included).
     probes: HashMap<String, OverlayProbeResult>,
@@ -743,11 +746,17 @@ pub async fn reconcile_cameras(o: ReconcileCameraMountOptions) -> CameraStates {
                         facts.default_rotation
                     )
                 };
+                // A write that returns the line to the rotation the device
+                // already runs (a flip there and back without a reboot)
+                // needs none: the status reads `applied`, and so does this.
+                let then = if in_force_deg == Some(desired_deg) {
+                    "no reboot needed: the device already runs this rotation"
+                } else {
+                    "REBOOT required before the image changes (the agent never reboots itself)"
+                };
                 (o.log)(
                     EventLevel::Info,
-                    &format!(
-                        "{stream_key}: {overlay}/{cam_token} {what} in {path} — REBOOT required before the image changes (the agent never reboots itself)"
-                    ),
+                    &format!("{stream_key}: {overlay}/{cam_token} {what} in {path} — {then}"),
                 );
             }
         }
@@ -801,6 +810,7 @@ pub async fn reconcile_cameras(o: ReconcileCameraMountOptions) -> CameraStates {
     }
 
     out.sort_by(|a, b| a.stream_key.cmp(&b.stream_key));
+    log_rejections(&o, &out, &ports);
     let reboot_required = out
         .iter()
         .any(|c| c.verdict == CameraMountVerdict::PendingReboot);
@@ -819,6 +829,96 @@ pub async fn reconcile_cameras(o: ReconcileCameraMountOptions) -> CameraStates {
             cameras: ports,
             wrote: sensors_wrote,
         }),
+    }
+}
+
+/// Every rejection reaches the journal ONCE PER CHANGE: when it appears and
+/// when its sentence changes, not on every pass (the status carries it all
+/// along). A write that failed is not said here: the write says it itself.
+/// A port whose sensor entry is refused logs that, not the `cameraMount`
+/// consequence beside it.
+fn log_rejections(
+    o: &ReconcileCameraMountOptions,
+    mounts: &[CameraMountCameraState],
+    sensors: &[CameraSensorsPortState],
+) {
+    fn note(
+        memo: &mut WriteMemo,
+        lines: &mut Vec<String>,
+        key: String,
+        rejected: Option<&String>,
+        line: impl Fn(&str) -> String,
+    ) {
+        match rejected {
+            Some(detail) => {
+                if memo.rejected.get(&key) != Some(detail) {
+                    memo.rejected.insert(key, detail.clone());
+                    lines.push(line(detail));
+                }
+            }
+            None => {
+                memo.rejected.remove(&key);
+            }
+        }
+    }
+    let mut lines: Vec<String> = Vec::new();
+    {
+        let mut memo = lock(&o.memo);
+        for p in sensors {
+            // A failed write keeps what was said before it.
+            if p.verdict == CameraSensorsVerdict::WriteFailed {
+                continue;
+            }
+            let rejected = (p.verdict == CameraSensorsVerdict::Rejected)
+                .then_some(p.detail.as_ref())
+                .flatten();
+            note(
+                &mut memo,
+                &mut lines,
+                format!("{}|sensors", p.stream_key),
+                rejected,
+                |d| format!("{}: camera sensor setting not applied — {d}", p.stream_key),
+            );
+        }
+        let sensor_refused = |key: &str| {
+            sensors.iter().any(|p| {
+                p.stream_key == key
+                    && matches!(
+                        p.verdict,
+                        CameraSensorsVerdict::Rejected | CameraSensorsVerdict::WriteFailed
+                    )
+            })
+        };
+        for c in mounts {
+            if c.verdict == CameraMountVerdict::WriteFailed || sensor_refused(&c.stream_key) {
+                continue;
+            }
+            let rejected = matches!(
+                c.verdict,
+                CameraMountVerdict::Unsupported
+                    | CameraMountVerdict::NoOverlay
+                    | CameraMountVerdict::UnknownCamera
+            )
+            .then_some(c.detail.as_ref())
+            .flatten();
+            note(
+                &mut memo,
+                &mut lines,
+                format!("{}|mount", c.stream_key),
+                rejected,
+                |d| format!("{}: rotation not applied — {d}", c.stream_key),
+            );
+        }
+        // A port that left its namespace is forgotten.
+        let kept: HashSet<String> = sensors
+            .iter()
+            .map(|p| format!("{}|sensors", p.stream_key))
+            .chain(mounts.iter().map(|c| format!("{}|mount", c.stream_key)))
+            .collect();
+        memo.rejected.retain(|k, _| kept.contains(k));
+    }
+    for line in lines {
+        (o.log)(EventLevel::Warn, &line);
     }
 }
 
@@ -937,6 +1037,7 @@ async fn managed_port(
     let mount_deg = mount.map(|d| d.degrees() as u16);
     let mut text_now = text;
     let mut changed = false;
+    let mut written: Option<String> = None;
     if let Some(op) = line_op(&text_now, board, port, &want, mount_deg, o.catalog) {
         let failed = |detail: String| {
             (
@@ -1008,7 +1109,9 @@ async fn managed_port(
         }
         if res.changed {
             changed = true;
-            let what = match &op {
+            // Logged below, once it is known whether the line now waits for
+            // a reboot or is the one the device booted with.
+            written = Some(match &op {
                 CamCfgOp::Remove { .. } => format!(
                     "camera line for {cam_token} removed from {path} (the port is declared empty)"
                 ),
@@ -1017,13 +1120,7 @@ async fn managed_port(
                     want.id(),
                     op.args()[2..].join(",")
                 ),
-            };
-            (o.log)(
-                EventLevel::Info,
-                &format!(
-                    "{stream_key}: {what} — REBOOT required before the camera changes (the agent never reboots itself)"
-                ),
-            );
+            });
         }
         // What the file holds now (the helper wrote it, or it already did).
         if let Ok(t) = read_boot_config(path) {
@@ -1051,6 +1148,14 @@ async fn managed_port(
         (None, _) => false,
     };
     let pending = change.is_some() || running_other;
+    if let Some(what) = written {
+        let then = if pending {
+            "REBOOT required before the camera changes (the agent never reboots itself)"
+        } else {
+            "no reboot needed: this is the line the device booted with"
+        };
+        (o.log)(EventLevel::Info, &format!("{stream_key}: {what} — {then}"));
+    }
     let port_state = sens(
         if pending {
             CameraSensorsVerdict::PendingReboot
