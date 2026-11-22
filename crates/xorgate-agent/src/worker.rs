@@ -375,6 +375,7 @@ fn camera_mount_reconciler(
                 }
             }),
             log: cm::camera_mount_event_sink(ctx.state.clone(), ctx.clock.clone()),
+            log_sensors: cm::camera_sensors_event_sink(ctx.state.clone(), ctx.clock.clone()),
             clock: ctx.clock.clone(),
         },
         Box::new(move || on_change()),

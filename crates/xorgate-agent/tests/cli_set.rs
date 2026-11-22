@@ -247,10 +247,17 @@ fn run_fixture(file: &str, min_cases: usize) {
             );
             let last = got.last().cloned();
             if code != 1
-                || last != Some(ExpLine { stream: "err".into(), text: refusal })
+                || last
+                    != Some(ExpLine {
+                        stream: "err".into(),
+                        text: refusal,
+                    })
                 || after != c.input.settings
             {
-                failures.push(format!("{}: D118 refusal: exit {code}, {got:?}, {after:?}", c.name));
+                failures.push(format!(
+                    "{}: D118 refusal: exit {code}, {got:?}, {after:?}",
+                    c.name
+                ));
             }
             let _ = std::fs::remove_dir_all(&home);
             continue;
@@ -340,7 +347,10 @@ fn set_refuses_a_settings_file_it_cannot_read_or_parse() {
     let home = scratch("d118-unreadable");
     std::fs::create_dir(settings_path(&home)).unwrap();
     let io = FakeIo::new(&home, vec![None]);
-    let code = run(&["timeSync.maxStepsPerBoot".to_string(), "3".to_string()], &io);
+    let code = run(
+        &["timeSync.maxStepsPerBoot".to_string(), "3".to_string()],
+        &io,
+    );
     assert_eq!(code, 1);
     assert_eq!(
         io.lines.borrow().last().unwrap().text,
@@ -354,7 +364,10 @@ fn set_refuses_a_settings_file_it_cannot_read_or_parse() {
     // ABSENT: a fresh start, written as before.
     let home = scratch("d118-absent");
     let io = FakeIo::new(&home, vec![None]);
-    let code = run(&["timeSync.maxStepsPerBoot".to_string(), "3".to_string()], &io);
+    let code = run(
+        &["timeSync.maxStepsPerBoot".to_string(), "3".to_string()],
+        &io,
+    );
     assert_eq!(code, 0);
     assert_eq!(
         std::fs::read_to_string(settings_path(&home)).unwrap(),
@@ -372,7 +385,10 @@ fn set_refuses_a_settings_file_it_cannot_read_or_parse() {
             settings_path(&home).display()
         ))
     );
-    assert_eq!(std::fs::read_to_string(settings_path(&home)).unwrap(), "{not json");
+    assert_eq!(
+        std::fs::read_to_string(settings_path(&home)).unwrap(),
+        "{not json"
+    );
     std::fs::remove_file(settings_path(&home)).unwrap();
     std::fs::create_dir(settings_path(&home)).unwrap();
     assert!(save_mode_in(&home, "real")

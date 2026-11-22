@@ -922,6 +922,11 @@ pub fn derive_port(f: &PortFacts<'_>) -> CameraPort {
     }
 }
 
+/// How the preset note of a port's sentence begins: `xorgate-rs status`
+/// prints the note under a camera that is otherwise `ok` (it prints no
+/// sentence for a healthy camera).
+pub const PRESET_NOTE_MARK: &str = "The video preset ";
+
 /// " The video preset … cannot run on this sensor. <the catalog's reason>"
 /// for a camera that is there (`ok` / `no-frames`) and whose sensor the
 /// catalog knows; else nothing.
@@ -938,7 +943,9 @@ fn preset_note(f: &PortFacts<'_>, declared: Option<&Declared>, verdict: CameraVe
     match (f.setting.preset, sensor) {
         (Some(preset), Some(s)) => s
             .preset_unsupported(preset)
-            .map(|reason| format!(" The video preset {preset} cannot run on this sensor. {reason}"))
+            .map(|reason| {
+                format!(" {PRESET_NOTE_MARK}{preset} cannot run on this sensor. {reason}")
+            })
             .unwrap_or_default(),
         _ => String::new(),
     }
@@ -2846,6 +2853,7 @@ mod tests {
             booted: Some("dtoverlay=imx290,cam0".into()),
             now: Some("dtoverlay=imx335,cam0,rotation=180".into()),
             overlay: true,
+            rotation_only: false,
         };
         let p = derive_port(&PortFacts {
             setting: PortSetting {
@@ -2905,6 +2913,7 @@ mod tests {
                     booted: Some("dtoverlay=imx290,cam0".into()),
                     now: Some("dtoverlay=imx290,cam0,rotation=180".into()),
                     overlay: false,
+                    rotation_only: false,
                 },
                 "The camera line of csi0 in config.txt was changed since this device booted (it booted with `dtoverlay=imx290,cam0`, the file now says `dtoverlay=imx290,cam0,rotation=180`). Reboot to apply.",
             ),
@@ -2913,6 +2922,7 @@ mod tests {
                     booted: None,
                     now: Some("dtoverlay=imx290,cam0,rotation=180".into()),
                     overlay: true,
+                    rotation_only: false,
                 },
                 "config.txt has a camera line for csi0 that was added since this device booted (`dtoverlay=imx290,cam0,rotation=180`). Reboot to apply.",
             ),
@@ -2921,6 +2931,7 @@ mod tests {
                     booted: Some("dtoverlay=imx290,cam0".into()),
                     now: None,
                     overlay: true,
+                    rotation_only: false,
                 },
                 "The camera line of csi0 was removed from config.txt since this device booted (it booted with `dtoverlay=imx290,cam0`); the running kernel still has that camera configured. Reboot to apply.",
             ),
@@ -2956,6 +2967,7 @@ mod tests {
             booted: Some("dtoverlay=imx290,cam0".into()),
             now: Some("dtoverlay=imx290,cam0,rotation=180".into()),
             overlay: false,
+            rotation_only: false,
         };
         let nodes = [node("csi0", "imx290@1a", Some("imx290"))];
         let running = PortFacts {
@@ -2996,6 +3008,7 @@ mod tests {
             booted: Some("dtoverlay=imx708,cam0,rotation=180".into()),
             now: Some("dtoverlay=imx708,cam0,link-frequency=447000000,rotation=180".into()),
             overlay: false,
+            rotation_only: false,
         };
         let unbound = [node("csi0", "imx708@1a", None)];
         let p = derive_port(&PortFacts {
@@ -3021,6 +3034,7 @@ mod tests {
             booted: Some("dtoverlay=imx290,cam0".into()),
             now: Some("dtoverlay=imx708,cam0,rotation=180".into()),
             overlay: true,
+            rotation_only: false,
         };
         let p = derive_port(&PortFacts {
             boot_text: Some("dtoverlay=imx708,cam0,rotation=180\n"),
@@ -3039,6 +3053,7 @@ mod tests {
             booted: None,
             now: Some("dtoverlay=imx219,cam0,rotation=180".into()),
             overlay: true,
+            rotation_only: false,
         };
         let p = derive_port(&PortFacts {
             boot_text: Some("dtoverlay=imx219,cam0,rotation=180\n"),

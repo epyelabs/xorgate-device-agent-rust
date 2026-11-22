@@ -114,9 +114,15 @@ Value rules:
   exact key path.
 - **A status `detail` or `reason` is at most 500 characters** (JavaScript string length). That is
   the backend's schema bound, and a longer one makes it drop the whole report. `build_status` ends
-  by fitting every entry (`fit_status_text`: cut at a sentence boundary, closed with `…`); the
-  camera namespaces, whose reason joins one sentence per port, keep the first port's sentence
-  whole and shorten or only name the others (`join_status_parts`). The report as a whole must stay
+  by fitting every entry (`fit_status_text`). What gives way first is the long quoted part, not
+  the sentence: a word over 40 (then 28) characters (a path, a section name, a token) is clipped
+  with `…` inside. Only when that is not enough is a text cut, at a sentence end, else at a clause
+  (`: `, `, `, ` — `), never inside a word, and closed with ` …`. The camera namespaces, whose
+  reason joins one sentence per port, share the room fairly (`join_status_parts`): the first
+  port's sentence stays whole when that still leaves the others what they need or 150 characters,
+  otherwise every port gets an equal share, so the last port's advice is not what pays. With so
+  many ports that a share would be under 60 characters, the rest are named (`; and cam5, cam6`).
+  The report as a whole must stay
   under 32 768 bytes; `cameraSensors` holds at most 16 ports and no entry over 512 bytes.
 - Some report blocks are reported-only (the cloud never sets them): `agent` (mode, build,
   capabilities, runtime), `telemetryScope`, `sim`, `uplink`, `apn`, the camera-mount state and the
@@ -189,6 +195,29 @@ Value rules:
     config — REBOOT REQUIRED to apply: cam0 imx708") or `rejected` ("cam0: <why>; …", naming every
     port that could not be applied). A local `xorgate-rs set cameraSensors.…` folds back as
     `changed.cameraSensors`: the whole namespace, or `null` when it was removed.
+  - **Each namespace says only what is its own.** One pass reports both `cameraSensors` (the
+    sensor's line) and `cameraMount` (the rotation), and the wording keeps them apart:
+    - "written to the boot config" is said only for a line THE AGENT wrote in this boot. A line
+      that differs from the booted one and that something else changed (a hand edit, an
+      installer) reads "the camera line was changed outside the agent since this boot (not
+      written by this setting) — REBOOT REQUIRED to apply: cam0 imx335".
+    - A change of the rotation alone is `cameraMount`'s pending reboot. `cameraSensors` stays
+      `applied`: the sensor setting did not change.
+    - `cameraMount` on a managed port reports the rotation of the camera that RUNS there,
+      whichever sensor it is. A sensor swap that waits for its reboot does not make the mount
+      "REBOOT REQUIRED" when the running camera already shows the mount asked and the new line
+      gives it too. When the new line waits for a reboot and nothing runs on the port, the
+      pending entry reads "cam0 0° (no camera runs on the port until then)".
+    - When no camera answers on a managed port and nothing waits for a reboot (a wrong
+      declaration after its reboot), `cameraMount` is `adjusted` with "no camera answers on cam0,
+      so the rotation in force cannot be read — look at the camera sensor setting (cameraSensors)
+      and the camera report of the port; nothing here waits for a reboot". It claims no write and
+      asks for no reboot.
+    - A refused sensor entry does not turn `cameraMount` `rejected` with the sensor's sentence.
+      The mount is judged by what is there: `applied` with its values when the running camera
+      shows the mount asked; "the camera sensor setting of this port is not applied (see
+      cameraSensors), so its camera line is left as it is" only when a mount change is actually
+      pending on that line.
   - **The capability** is in `effective.agent.capabilities`, last. The backend refuses the namespace
     for an agent that does not advertise it and **withdraws a stored value on the first report whose
     list lacks it**. So the list is one compile-time constant (`AGENT_CAPABILITIES`), emitted whole in

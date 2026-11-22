@@ -1056,8 +1056,8 @@ fn utf16_len(s: &str) -> usize {
 
 /// `text` within `max` UTF-16 units: unchanged when it fits. Otherwise cut
 /// at a sentence boundary (after the last `. ` that fits, else after the
-/// last `; `), else at a word boundary, never inside a word, and closed
-/// with an ellipsis.
+/// last `; `), else at a clause boundary (`: `, `, `, ` — `, ` (`), else at
+/// a word boundary, never inside a word, and closed with an ellipsis.
 pub fn fit_text(text: &str, max: usize) -> String {
     if utf16_len(text) <= max {
         return text.to_string();
@@ -1079,71 +1079,189 @@ pub fn fit_text(text: &str, max: usize) -> String {
     // A cut that keeps less than a third of the room is not worth its
     // boundary: fall through to the next kind.
     let worth = |cut: usize| cut >= end / 3;
+    // A clause boundary must keep at least half: it leaves a sentence
+    // open, which reads better than a cut two words further on only when
+    // not much is lost for it.
+    let clause = [(": ", 1), (", ", 0), (" — ", 0), (" (", 0)]
+        .iter()
+        .filter_map(|(mark, keep)| head.rfind(mark).map(|i| i + keep))
+        .max()
+        .filter(|c| *c >= end / 2);
     let cut = head
         .rfind(". ")
         .map(|i| i + 1)
         .filter(|c| worth(*c))
         .or_else(|| head.rfind("; ").filter(|c| worth(*c)))
+        .or(clause)
         .or_else(|| head.rfind(' '))
         .unwrap_or(end);
     format!("{} …", head[..cut].trim_end())
 }
 
-/// [`fit_text`] at the backend's bound.
+/// The widths long quoted parts are clipped to, tried in order, before any
+/// sentence is cut ([`clip_long_words`]).
+const LONG_WORD_WIDTHS: [usize; 2] = [40, 28];
+
+/// `text` with every word longer than `max` characters clipped to `max`
+/// (an ellipsis inside, the closing quote, bracket and punctuation kept):
+/// a path, a section name or a token someone made very long is what costs
+/// the room, and three quarters of it say nothing the first quarter did
+/// not. Words within `max` are untouched.
+pub fn clip_long_words(text: &str, max: usize) -> String {
+    text.split(' ')
+        .map(|w| {
+            if w.chars().count() <= max {
+                return w.to_string();
+            }
+            let closing: Vec<char> = w
+                .chars()
+                .rev()
+                .take_while(|c| matches!(c, '"' | '\'' | '`' | ']' | ')' | ',' | '.' | ';' | ':'))
+                .collect();
+            let keep = max.saturating_sub(1 + closing.len()).max(8);
+            let head: String = w.chars().take(keep).collect();
+            let tail: String = closing.into_iter().rev().collect();
+            format!("{head}…{tail}")
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// [`fit_text`] at the backend's bound; long quoted parts are shortened
+/// first ([`clip_long_words`]), a sentence is cut only when that is not
+/// enough.
 pub fn fit_status_text(text: &str) -> String {
-    fit_text(text, MAX_STATUS_TEXT)
+    if utf16_len(text) <= MAX_STATUS_TEXT {
+        return text.to_string();
+    }
+    let mut clipped = text.to_string();
+    for width in LONG_WORD_WIDTHS {
+        clipped = clip_long_words(text, width);
+        if utf16_len(&clipped) <= MAX_STATUS_TEXT {
+            return clipped;
+        }
+    }
+    fit_text(&clipped, MAX_STATUS_TEXT)
+}
+
+/// Room for `lens` within `room`: everyone who fits in an equal share gets
+/// what it needs, what they leave is shared among the others.
+fn fair_shares(lens: &[usize], room: usize) -> Vec<usize> {
+    let mut allot = vec![0; lens.len()];
+    let mut open: Vec<usize> = (0..lens.len()).collect();
+    let mut left = room;
+    while !open.is_empty() {
+        let share = left / open.len();
+        let (fit, over): (Vec<usize>, Vec<usize>) = open.iter().partition(|i| lens[**i] <= share);
+        if fit.is_empty() {
+            for i in over {
+                allot[i] = share;
+            }
+            break;
+        }
+        for i in fit {
+            allot[i] = lens[i];
+            left -= lens[i];
+        }
+        open = over;
+    }
+    allot
 }
 
 /// Several ports' sentences as ONE status text within the backend's bound:
-/// `a; b; c` exactly as before when it fits. When it does not:
-/// - the FIRST part is kept whole whenever it fits by itself (with room
-///   left to name the others);
-/// - a later part that does not fit whole is cut at a sentence boundary
-///   ([`fit_text`]);
-/// - parts for which no room is left are named in a closing
-///   `; and <key>, <key>` (`keys` gives each part's port).
+/// `a; b; c` exactly as before when it fits. When it does not, in order:
+/// 1. long quoted parts (a path, a section name, a token) are clipped
+///    ([`clip_long_words`]): nothing else changes, every sentence is whole;
+/// 2. the FIRST part is kept whole when that leaves every other part what
+///    it needs or 150 characters; otherwise the room is shared fairly
+///    ([`fair_shares`]), so the LAST port's sentence is not the one that
+///    pays for the others. A part that does not fit its share is cut at a
+///    sentence boundary, else at a clause ([`fit_text`]);
+/// 3. with so many ports that a share would be under 60 characters, the
+///    ports for which no room is left are named in a closing
+///    `; and <key>, <key>`.
 ///
 /// `tail` (a closing clause such as "written … waiting for a reboot: …")
 /// is kept when it fits and shortened or dropped when it does not.
 pub fn join_status_parts(parts: &[(String, String)], tail: Option<&str>) -> String {
-    let whole: String = parts
-        .iter()
-        .map(|(key, text)| format!("{key}: {text}"))
-        .chain(tail.map(str::to_string))
-        .collect::<Vec<_>>()
-        .join("; ");
+    let join = |parts: &[(String, String)], tail: Option<&str>| -> String {
+        parts
+            .iter()
+            .map(|(key, text)| format!("{key}: {text}"))
+            .chain(tail.map(str::to_string))
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+    let whole = join(parts, tail);
     if utf16_len(&whole) <= MAX_STATUS_TEXT {
         return whole;
     }
-    // Room kept free, while parts remain, to at least name them.
-    const RESERVE: usize = 48;
-    let mut out = String::new();
-    let mut unnamed: Vec<&str> = Vec::new();
-    for (i, (key, text)) in parts.iter().enumerate() {
-        let piece = format!("{key}: {text}");
-        let sep = if out.is_empty() { "" } else { "; " };
-        let more = i + 1 < parts.len() || tail.is_some();
-        let room = MAX_STATUS_TEXT
-            .saturating_sub(utf16_len(&out) + sep.len())
-            .saturating_sub(if more { RESERVE } else { 0 });
-        if utf16_len(&piece) <= room {
-            out.push_str(sep);
-            out.push_str(&piece);
-        } else if room >= utf16_len(key) + 40 {
-            out.push_str(sep);
-            out.push_str(&fit_text(&piece, room));
-        } else {
-            unnamed.push(key);
+    // 1. The long quoted parts.
+    let mut compact: Vec<(String, String)> = parts.to_vec();
+    for width in LONG_WORD_WIDTHS {
+        compact = parts
+            .iter()
+            .map(|(k, t)| (k.clone(), clip_long_words(t, width)))
+            .collect();
+        let text = join(&compact, tail);
+        if utf16_len(&text) <= MAX_STATUS_TEXT {
+            return text;
         }
     }
+    // 2. A share each.
+    const MIN_SHARE: usize = 60;
+    const FIRST_WHOLE_LEAVES: usize = 150;
+    const TAIL_ROOM: usize = 100;
+    let tail_len = tail.map_or(0, |t| (utf16_len(t) + 2).min(TAIL_ROOM));
+    let budget = MAX_STATUS_TEXT.saturating_sub(tail_len);
+    // 3. Too many ports for a readable share each: the first ones speak.
+    let spoken = if compact.len() * (MIN_SHARE + 2) <= budget {
+        compact.len()
+    } else {
+        (budget.saturating_sub(48) / (MIN_SHARE + 2)).max(1)
+    };
+    let (speak, named) = compact.split_at(spoken.min(compact.len()));
+    let closing = (!named.is_empty()).then(|| {
+        format!(
+            "; and {}",
+            named
+                .iter()
+                .map(|(k, _)| k.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    });
+    let closing_len = closing.as_deref().map_or(0, utf16_len).min(budget / 4);
+    let pieces: Vec<String> = speak.iter().map(|(k, t)| format!("{k}: {t}")).collect();
+    let lens: Vec<usize> = pieces.iter().map(|p| utf16_len(p)).collect();
+    let room = budget
+        .saturating_sub(closing_len)
+        .saturating_sub(2 * pieces.len().saturating_sub(1));
+    let mut allot = fair_shares(&lens, room);
+    if lens.len() > 1 && lens[0] <= room {
+        let rest = fair_shares(&lens[1..], room - lens[0]);
+        if rest
+            .iter()
+            .zip(&lens[1..])
+            .all(|(a, l)| *a >= (*l).min(FIRST_WHOLE_LEAVES))
+        {
+            allot = std::iter::once(lens[0]).chain(rest).collect();
+        }
+    }
+    let mut out = pieces
+        .iter()
+        .zip(&allot)
+        .map(|(p, a)| fit_text(p, *a))
+        .collect::<Vec<_>>()
+        .join("; ");
     // A closing clause, when it still fits.
     fn close(out: &mut String, clause: String) {
         if utf16_len(out) + utf16_len(&clause) <= MAX_STATUS_TEXT {
             out.push_str(&clause);
         }
     }
-    if !unnamed.is_empty() {
-        close(&mut out, format!("; and {}", unnamed.join(", ")));
+    if let Some(closing) = closing {
+        close(&mut out, closing);
     }
     if let Some(tail) = tail {
         let room = MAX_STATUS_TEXT.saturating_sub(utf16_len(&out) + 2);
@@ -1157,8 +1275,12 @@ pub fn join_status_parts(parts: &[(String, String)], tail: Option<&str>) -> Stri
 /// The `cameraSensors` verdict off the camera reconciler's last pass,
 /// worst first (like [`camera_mount_status`]): a port that could not be
 /// applied makes the namespace `rejected`, with every such port named (and
-/// the ports that wait for a reboot named after them); a port whose line is
-/// written and not booted makes it `adjusted`: "saved, not in force yet".
+/// the ports that wait for a reboot named after them); a port whose line
+/// differs from the booted one makes it `adjusted`: "saved, not in force
+/// yet". Who changed the line is said: "written to the boot config" only
+/// for a line the agent wrote in this boot (`PendingReboot`); a line
+/// something else changed (`ChangedOutside`: a hand edit, an installer) is
+/// not claimed.
 pub fn camera_sensors_status(
     state: Option<&CameraSensorsState>,
     held: Option<&CameraSensorsSettings>,
@@ -1171,15 +1293,19 @@ pub fn camera_sensors_status(
             "saved; the device has not reconciled its boot config yet".into(),
         );
     };
-    let pending: Vec<String> = state
-        .cameras
-        .iter()
-        .filter(|c| c.verdict == CameraSensorsVerdict::PendingReboot)
-        .map(|c| match c.sensor.as_deref() {
-            Some(s) => format!("{} {s}", c.stream_key),
-            None => c.stream_key.clone(),
-        })
-        .collect();
+    let named = |verdict: CameraSensorsVerdict| -> Vec<String> {
+        state
+            .cameras
+            .iter()
+            .filter(|c| c.verdict == verdict)
+            .map(|c| match c.sensor.as_deref() {
+                Some(s) => format!("{} {s}", c.stream_key),
+                None => c.stream_key.clone(),
+            })
+            .collect()
+    };
+    let pending = named(CameraSensorsVerdict::PendingReboot);
+    let outside = named(CameraSensorsVerdict::ChangedOutside);
     let blocked: Vec<(String, String)> = state
         .cameras
         .iter()
@@ -1199,22 +1325,37 @@ pub fn camera_sensors_status(
         })
         .collect();
     if !blocked.is_empty() {
-        let waiting = (!pending.is_empty()).then(|| {
-            format!(
+        let mut waiting: Vec<String> = Vec::new();
+        if !pending.is_empty() {
+            waiting.push(format!(
                 "written to the boot config and waiting for a reboot: {}",
                 pending.join(", ")
-            )
-        });
+            ));
+        }
+        if !outside.is_empty() {
+            waiting.push(format!(
+                "changed outside the agent since this boot and waiting for a reboot: {}",
+                outside.join(", ")
+            ));
+        }
+        let waiting = (!waiting.is_empty()).then(|| waiting.join("; "));
         return NamespaceStatus::rejected(at, join_status_parts(&blocked, waiting.as_deref()));
     }
+    let mut waiting: Vec<String> = Vec::new();
     if !pending.is_empty() {
-        return NamespaceStatus::adjusted(
-            at,
-            fit_status_text(&format!(
-                "written to the boot config — REBOOT REQUIRED to apply: {}",
-                pending.join(", ")
-            )),
-        );
+        waiting.push(format!(
+            "written to the boot config — REBOOT REQUIRED to apply: {}",
+            pending.join(", ")
+        ));
+    }
+    if !outside.is_empty() {
+        waiting.push(format!(
+            "the camera line was changed outside the agent since this boot (not written by this setting) — REBOOT REQUIRED to apply: {}",
+            outside.join(", ")
+        ));
+    }
+    if !waiting.is_empty() {
+        return NamespaceStatus::adjusted(at, fit_status_text(&waiting.join("; ")));
     }
     NamespaceStatus::applied(at)
 }
@@ -1295,7 +1436,12 @@ pub fn effective_camera_mount(
         if let Some(in_force) = cam.in_force_deg {
             cameras.insert(cam.stream_key.clone(), rot(in_force));
         }
-        if cam.in_force_deg != Some(desired) && cam.boot_deg == Some(desired) {
+        // RUST-ONLY: a port where no camera answers (`NoCamera`) has
+        // nothing waiting for a reboot.
+        if cam.in_force_deg != Some(desired)
+            && cam.boot_deg == Some(desired)
+            && cam.verdict != CameraMountVerdict::NoCamera
+        {
             pending.insert(cam.stream_key.clone(), rot(desired));
         }
     }
@@ -1647,28 +1793,50 @@ pub fn camera_mount_status(state: Option<&CameraMountState>, at: i64) -> Namespa
         // drops the whole report).
         return NamespaceStatus::rejected(at, join_status_parts(&blocked, None));
     }
+    // RUST-ONLY (a managed port): no camera answers on the port, so there
+    // is no rotation in force to read. Said for what it is: not a write,
+    // and not cured by a reboot.
+    let no_camera: Vec<&str> = state
+        .cameras
+        .iter()
+        .filter(|c| c.verdict == CameraMountVerdict::NoCamera)
+        .map(|c| c.stream_key.as_str())
+        .collect();
+    let no_camera = (!no_camera.is_empty()).then(|| {
+        format!(
+            "no camera answers on {}, so the rotation in force cannot be read — look at the camera sensor setting (cameraSensors) and the camera report of the port; nothing here waits for a reboot",
+            no_camera.join(", ")
+        )
+    });
+    let with_no_camera = |text: String| match &no_camera {
+        Some(n) => format!("{text}; {n}"),
+        None => text,
+    };
     let pending: Vec<String> = state
         .cameras
         .iter()
         .filter(|c| c.verdict == CameraMountVerdict::PendingReboot)
-        .map(|c| {
-            format!(
+        .map(|c| match (c.in_force_deg, c.detail.as_deref()) {
+            // RUST-ONLY (a managed port whose camera line was changed and
+            // not booted, with no camera running there): the reconciler's
+            // own words instead of "running ?°". The TS never gives a
+            // pending camera a detail.
+            (None, Some(why)) => format!("{} {}° ({why})", c.stream_key, c.desired_deg.degrees()),
+            (running, _) => format!(
                 "{} {}° (running {}°)",
                 c.stream_key,
                 c.desired_deg.degrees(),
-                c.in_force_deg
-                    .map(number_to_string)
-                    .unwrap_or_else(|| "?".into())
-            )
+                running.map(number_to_string).unwrap_or_else(|| "?".into())
+            ),
         })
         .collect();
     if !pending.is_empty() {
         return NamespaceStatus::adjusted(
             at,
-            format!(
+            with_no_camera(format!(
                 "written to the boot config — REBOOT REQUIRED to apply: {}",
                 pending.join(", ")
-            ),
+            )),
         );
     }
     let unconfirmed: Vec<&str> = state
@@ -1680,11 +1848,14 @@ pub fn camera_mount_status(state: Option<&CameraMountState>, at: i64) -> Namespa
     if !unconfirmed.is_empty() {
         return NamespaceStatus::adjusted(
             at,
-            format!(
+            with_no_camera(format!(
                 "written to the boot config, but the device could not read back the rotation currently in force ({}) — reboot to apply",
                 unconfirmed.join(", ")
-            ),
+            )),
         );
+    }
+    if let Some(text) = no_camera {
+        return NamespaceStatus::adjusted(at, text);
     }
     NamespaceStatus::applied(at)
 }
@@ -2327,23 +2498,63 @@ mod tests {
         let st = camera_sensors_status(Some(&sensors), None, 9);
         let reason = st.reason.unwrap();
         assert!(len(&reason) <= MAX_STATUS_TEXT, "{}", len(&reason));
-        assert!(
-            reason.starts_with(&format!(
-                "cam0: {helper}; cam1: the camera line for cam0 is left as it is"
-            )),
-            "{reason}"
+        // Three long sentences do not fit whole: each port keeps its main
+        // clause (a fair share each: the LAST port does not pay for the
+        // first), cut at a clause boundary, and the waiting port is named.
+        assert_eq!(
+            reason,
+            "cam0: could not edit /boot/firmware/config.txt: a dtparam= line follows the camera line of cam1 and would then apply to another overlay …; cam1: the camera line for cam0 is left as it is, because the camera on this port is not confirmed: csi0 is declared as imx708 by config.txt …; cam2: could not edit /boot/firmware/config.txt: a dtparam= line follows the camera line of cam1 and would then apply to another overlay …; written to the boot config and waiting for a reboot: cam3 none"
         );
-        // Every port is at least named, and the text does not end mid-word.
-        assert!(reason.contains("; and cam2"), "{reason}");
         assert!(!reason.contains("  "), "{reason}");
+
+        // The bench case (2026-11-22): a long section name and a long
+        // unlisted token pushed the last port's advice off the end ("…it
+        // is left as it …"). The long quoted parts are clipped FIRST, so
+        // both sentences stay whole, advice included.
+        let token = "xgtest-unlisted-parameter-0123456789";
+        let unlisted = format!("the camera line for cam0 holds \"{token}\", which the sensor catalog does not list for imx335: rewriting the line would drop it, so the line is left as it is. Edit the line by hand, or remove \"{token}\" from it");
+        let section = "a camera line for cam1 in /boot/firmware/config.txt sits under [x-unknown-0123456789-0123456789-0123456789-0123456789-0123456789-0123456789-01234], a section the agent cannot evaluate for this board: it is left as it is; edit it by hand";
+        let bench = join_status_parts(
+            &[
+                ("cam0".into(), unlisted.clone()),
+                ("cam1".into(), section.into()),
+            ],
+            None,
+        );
+        assert!(len(&format!("cam0: {unlisted}; cam1: {section}")) > MAX_STATUS_TEXT);
+        assert_eq!(
+            bench,
+            format!("cam0: {unlisted}; cam1: a camera line for cam1 in /boot/firmware/config.txt sits under [x-unknown-0123456789-0123456789-0123…], a section the agent cannot evaluate for this board: it is left as it is; edit it by hand")
+        );
+        assert_eq!(
+            clip_long_words("under [abcdefghijklmnopqrstuvwxyz], ok \"0123456789012345678901234567890123456789\".", 20),
+            "under [abcdefghijklmnop…], ok \"0123456789012345…\"."
+        );
+        // So many ports that a share would not hold a sentence: the first
+        // ones speak, the others are named.
+        let many: Vec<(String, String)> = (0..16)
+            .map(|i| (format!("cam{i}"), helper.to_string()))
+            .collect();
+        let crowded = join_status_parts(&many, None);
+        assert!(len(&crowded) <= MAX_STATUS_TEXT, "{}", len(&crowded));
+        assert!(crowded.starts_with("cam0: could not edit"), "{crowded}");
+        assert!(crowded.ends_with("cam14, cam15"), "{crowded}");
+        assert!(crowded.contains("; and cam"), "{crowded}");
 
         // One sentence over the bound by itself: cut at a sentence end.
         let long = format!("{} {}", "First sentence here.", "word ".repeat(200));
         let cut = fit_status_text(&long);
         assert!(len(&cut) <= MAX_STATUS_TEXT);
         assert!(cut.ends_with("word …"), "{cut}");
-        let two = format!("{}. {}", "a".repeat(300), "b".repeat(300));
-        assert_eq!(fit_status_text(&two), format!("{}. …", "a".repeat(300)));
+        let (a, b) = ("aaaa ".repeat(60), "bbbb ".repeat(60));
+        let two = format!("{}. {}", a.trim_end(), b.trim_end());
+        assert_eq!(fit_status_text(&two), format!("{}. …", a.trim_end()));
+        // A cut inside a sentence falls on a clause boundary when one is
+        // near, not two words further on.
+        assert_eq!(
+            fit_text("one two three four: five six seven eight nine ten", 34),
+            "one two three four: …"
+        );
         // Astral characters count as two (JavaScript string length).
         let emoji = "😀".repeat(300);
         assert!(len(&fit_status_text(&emoji)) <= MAX_STATUS_TEXT);

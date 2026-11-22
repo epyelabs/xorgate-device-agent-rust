@@ -56,7 +56,9 @@ use crate::boot_config::{
 };
 use crate::camera_catalog::{reserved_param_name, Catalog, OptionError, Sensor};
 use crate::js;
-use crate::settings::{camera_sensor_choice, clip, CameraSensorChoice, CAMERA_SENSOR_NONE};
+use crate::settings::{
+    camera_sensor_choice, clip, CameraSensorChoice, CameraSensorsSettings, CAMERA_SENSOR_NONE,
+};
 
 // ---------------------------------------------------------------------------
 // what an entry asks for
@@ -123,6 +125,22 @@ pub fn declared_id(entry: &Value) -> Option<String> {
         .and_then(Value::as_str)
         .map(clip)
         .filter(|s| !s.is_empty())
+}
+
+/// The stream keys the sensor setting declares EMPTY (`none`): a port left
+/// without a camera on purpose.
+pub fn declared_empty_keys(settings: Option<&CameraSensorsSettings>) -> Vec<String> {
+    settings
+        .and_then(|s| s.cameras.as_ref())
+        .map(|cams| {
+            cams.iter()
+                .filter(|(_, entry)| {
+                    matches!(camera_sensor_choice(entry), Ok(CameraSensorChoice::Empty))
+                })
+                .map(|(k, _)| k.clone())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Read one `cameraSensors.cameras.<key>` entry against the catalog.
@@ -446,6 +464,29 @@ pub struct BootLine {
 pub struct BootLines {
     pub boot_id: String,
     pub ports: BTreeMap<String, Option<BootLine>>,
+    /// Per port, the form of the line THE AGENT last wrote in this boot
+    /// (`None` = it removed the line). A port whose line differs from the
+    /// booted one and is not what the agent wrote was changed by something
+    /// else (a hand edit, an installer): the status says so instead of
+    /// claiming the write.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub written: BTreeMap<String, Option<LineForm>>,
+}
+
+impl BootLines {
+    /// Is `port`'s line, as config.txt holds it now, the one the agent
+    /// wrote in this boot?
+    pub fn written_by_agent(
+        &self,
+        text: &str,
+        board: Board,
+        port: CamPort,
+        catalog: &Catalog,
+    ) -> bool {
+        let scoped = parse_scoped_lines(text, board);
+        let now = port_boot_line(&scoped, port, catalog).map(|l| l.form);
+        self.written.get(port.token()) == Some(&now)
+    }
 }
 
 /// The port's line in force (the last that may apply), as a [`BootLine`].
@@ -456,20 +497,23 @@ pub fn port_boot_line(scoped: &[ScopedLine], port: CamPort, catalog: &Catalog) -
     })
 }
 
-/// Take the snapshot of a config.txt.
+/// Take the snapshot of a config.txt, for `ports` (the camera ports of the
+/// device model; a one-port model has no word on the other).
 pub fn snapshot_boot_lines(
     boot_id: &str,
     text: &str,
     board: Board,
     catalog: &Catalog,
+    ports: &[CamPort],
 ) -> BootLines {
     let scoped = parse_scoped_lines(text, board);
     BootLines {
         boot_id: boot_id.to_string(),
-        ports: [CamPort::Cam0, CamPort::Cam1]
-            .into_iter()
-            .map(|p| (p.token().to_string(), port_boot_line(&scoped, p, catalog)))
+        ports: ports
+            .iter()
+            .map(|p| (p.token().to_string(), port_boot_line(&scoped, *p, catalog)))
             .collect(),
+        written: BTreeMap::new(),
     }
 }
 
@@ -482,6 +526,10 @@ pub struct LineChange {
     pub now: Option<String>,
     /// The overlay itself changed (or the line appeared or went).
     pub overlay: bool,
+    /// Only the rotation the line gives changed: the overlay and every
+    /// other parameter are as booted. Such a change is `cameraMount`'s
+    /// business, not the sensor setting's.
+    pub rotation_only: bool,
 }
 
 /// Has `port`'s line changed since the snapshot was taken? `None` = no, or
@@ -499,7 +547,12 @@ pub fn changed_since_boot(
     if was.as_ref().map(|l| &l.form) == now.as_ref().map(|l| &l.form) {
         return None;
     }
+    let rotation_only = match (was.as_ref(), now.as_ref()) {
+        (Some(a), Some(b)) => a.form.overlay == b.form.overlay && a.form.params == b.form.params,
+        _ => false,
+    };
     Some(LineChange {
+        rotation_only,
         overlay: was.as_ref().map(|l| &l.form.overlay) != now.as_ref().map(|l| &l.form.overlay),
         booted: was.as_ref().map(|l| l.text.clone()),
         now: now.map(|l| l.text),
@@ -1173,7 +1226,8 @@ mod tests {
     #[test]
     fn a_line_changed_since_boot() {
         let c = catalog();
-        let boot = snapshot_boot_lines("b1", BENCH1, Board::Cm5, c);
+        let boot =
+            snapshot_boot_lines("b1", BENCH1, Board::Cm5, c, &[CamPort::Cam0, CamPort::Cam1]);
         assert_eq!(boot.ports.len(), 2);
         assert_eq!(
             boot.ports["cam0"].as_ref().unwrap().text,
@@ -1192,27 +1246,61 @@ mod tests {
         // The rotation, an option, the overlay, the line itself.
         let ch = same("dtoverlay=imx290,cam0,rotation=180\n", CamPort::Cam0).unwrap();
         assert!(!ch.overlay);
+        assert!(ch.rotation_only, "only the rotation moved");
         assert_eq!(ch.booted.as_deref(), Some("dtoverlay=imx290,cam0"));
         assert_eq!(
             ch.now.as_deref(),
             Some("dtoverlay=imx290,cam0,rotation=180")
         );
-        assert!(
-            !same(
-                "dtoverlay=imx290,cam0,clock-frequency=74250000\n",
-                CamPort::Cam0
-            )
-            .unwrap()
-            .overlay
-        );
+        let opt = same(
+            "dtoverlay=imx290,cam0,clock-frequency=74250000\n",
+            CamPort::Cam0,
+        )
+        .unwrap();
+        assert!(!opt.overlay && !opt.rotation_only);
+        let both = same(
+            "dtoverlay=imx290,cam0,rotation=180,clock-frequency=74250000\n",
+            CamPort::Cam0,
+        )
+        .unwrap();
+        assert!(!both.rotation_only, "an option moved too");
         assert!(
             same("dtoverlay=imx708,cam0\n", CamPort::Cam0)
                 .unwrap()
                 .overlay
         );
         let gone = same("dtoverlay=imx290,cam0\n", CamPort::Cam1).unwrap();
-        assert!(gone.overlay);
+        assert!(gone.overlay && !gone.rotation_only);
         assert_eq!(gone.now, None);
+        // A one-port model: the snapshot has no word on the other port, and
+        // nothing is concluded for it.
+        let one = snapshot_boot_lines("b1", BENCH1, Board::Cm4, c, &[CamPort::Cam0]);
+        assert_eq!(one.ports.keys().collect::<Vec<_>>(), ["cam0"]);
+        assert_eq!(
+            changed_since_boot(&one, "", Board::Cm4, CamPort::Cam1, c),
+            None
+        );
+        // What the agent wrote in this boot is told from an edit by
+        // something else.
+        let mut mine = boot.clone();
+        let wrote = "dtoverlay=imx708,cam0,rotation=180\ndtoverlay=imx290,cam1\n";
+        let scoped = parse_scoped_lines(wrote, Board::Cm5);
+        mine.written.insert(
+            "cam0".into(),
+            port_boot_line(&scoped, CamPort::Cam0, c).map(|l| l.form),
+        );
+        assert!(mine.written_by_agent(wrote, Board::Cm5, CamPort::Cam0, c));
+        assert!(!mine.written_by_agent(
+            "dtoverlay=imx708,cam0,rotation=180,link-frequency=447000000\n",
+            Board::Cm5,
+            CamPort::Cam0,
+            c
+        ));
+        assert!(!boot.written_by_agent(wrote, Board::Cm5, CamPort::Cam0, c));
+        mine.written.insert("cam1".into(), None);
+        assert!(mine.written_by_agent("dtoverlay=imx708,cam0\n", Board::Cm5, CamPort::Cam1, c));
+        let kept = serde_json::to_string(&mine).unwrap();
+        assert_eq!(serde_json::from_str::<BootLines>(&kept).unwrap(), mine);
         // The snapshot round-trips as the file the agent keeps.
         let text = serde_json::to_string(&boot).unwrap();
         assert!(text.starts_with(r#"{"bootId":"b1","ports":{"cam0":{"form":{"overlay":"imx290","params":[],"rotation":"0"},"text":"dtoverlay=imx290,cam0"}"#), "{text}");

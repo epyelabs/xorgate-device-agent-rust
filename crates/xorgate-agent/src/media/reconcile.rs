@@ -102,6 +102,10 @@ pub struct ReconcileOpts {
     /// The board (`/proc/device-tree/model`), for the `[section]` filters
     /// of that text.
     pub board: xorgate_core::boot_config::Board,
+    /// The stream keys the `cameraSensors` setting declares empty (`none`).
+    /// Rust-only: such a port without a camera line is empty ON PURPOSE,
+    /// and its hold line says that instead of naming the model's sensor.
+    pub declared_empty: Vec<String>,
 }
 
 /// `ReconcileResult` (`hardware-reconcile.ts:52-59`).
@@ -221,6 +225,18 @@ pub async fn reconcile_hardware(
             // `empty`), so "check the ribbon" would send the reader to a
             // cable that may not exist.
             if boot.as_ref().is_some_and(|b| b.lines == 0) {
+                // Declared empty by the sensor setting: on purpose, not a
+                // finding. Said plainly, at info level.
+                if opts.declared_empty.contains(&video.key) {
+                    log(
+                        ReconcileLevel::Info,
+                        &format!(
+                            "{}: {} is declared empty by the camera sensor setting — stream held down",
+                            video.key, video.connector
+                        ),
+                    );
+                    continue;
+                }
                 log(
                     ReconcileLevel::Warn,
                     &format!(

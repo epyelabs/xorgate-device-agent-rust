@@ -460,7 +460,8 @@ pub fn render(st: &DaemonStatus, now: f64, ctx: &RenderCtx) -> Vec<String> {
 /// `mismatch`, `empty` in yellow; `unchecked` in gray, it is not a fault)
 /// followed by one line with the report's sentence. The sentence is also
 /// printed under an `ok` camera whose port has several camera lines in
-/// config.txt. A camera with no capture process (nothing detected) is
+/// config.txt, and the preset note alone ("The video preset … cannot run
+/// on this sensor. …") under an `ok` camera whose sentence carries one. A camera with no capture process (nothing detected) is
 /// listed too, which the TS line never did. A verdict this build does not
 /// know (a newer agent wrote the file) prints as it is.
 fn video_lines(state: &Value, p: &Paint) -> Vec<String> {
@@ -508,10 +509,19 @@ fn video_lines(state: &Value, p: &Paint) -> Vec<String> {
             .and_then(|b| b.get("lines"))
             .and_then(Value::as_u64)
             .unwrap_or(0);
+        let detail = cam.get("detail").and_then(Value::as_str);
         if verdict != "ok" || lines > 1 {
-            if let Some(d) = cam.get("detail").and_then(Value::as_str) {
+            if let Some(d) = detail {
                 details.push(format!("             {key}: {d}"));
             }
+        } else if let Some(note) = detail.and_then(|d| {
+            // A healthy camera whose sentence carries the preset note (the
+            // chosen video preset cannot run on this sensor): the note
+            // alone, or nobody at the device ever sees it.
+            d.find(xorgate_core::camera_truth::PRESET_NOTE_MARK)
+                .map(|i| &d[i..])
+        }) {
+            details.push(format!("             {key}: {note}"));
         }
     }
     let reported = |s: &Value| {
@@ -790,6 +800,19 @@ mod tests {
                 "  video      cam0 \x1b[32mstreaming\x1b[0m   cam1 \x1b[90munchecked\x1b[0m",
                 "             cam0: imx708 on csi0 is detected and streaming. config.txt has 2 camera lines for csi0; only one can work unless they sit under different [section] filters: remove the stale one.",
                 "             cam1: cam1 on csi1 cannot be checked: …",
+            ]
+        );
+        // An `ok` camera whose sentence carries the preset note: the note
+        // alone is printed (bench finding: nobody at the device saw it).
+        let cameras = serde_json::json!({
+            "cam0": cam("ok", "streaming", "imx335 on csi0 is detected and streaming. The video preset 1080p30-4mbps cannot run on this sensor. It stalls at 30 fps."),
+            "cam1": cam("ok", "streaming", "imx219 on csi1 is detected and streaming.")
+        });
+        assert_eq!(
+            video_lines(&state_with(serde_json::json!([]), Some(cameras)), &p),
+            [
+                "  video      cam0 streaming   cam1 streaming",
+                "             cam0: The video preset 1080p30-4mbps cannot run on this sensor. It stalls at 30 fps.",
             ]
         );
         // Colours: a verdict that is not ok is yellow, streaming is green.

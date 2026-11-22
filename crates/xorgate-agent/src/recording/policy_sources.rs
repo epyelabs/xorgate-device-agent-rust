@@ -89,6 +89,7 @@ pub fn cameras_fn(
 ) -> Arc<dyn Fn() -> Vec<CaptureCamera> + Send + Sync> {
     let pipelines = ctx.paths.pipelines.display().to_string();
     let manifest = ctx.paths.kvs_manifest.clone();
+    let settings = ctx.paths.settings.clone();
     // The keys held on the last pass, so the hold is logged once, not on
     // every apply pass.
     let held_before: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
@@ -113,8 +114,21 @@ pub fn cameras_fn(
         let Some(hw) = &stream_hw else { return cams };
         let (cams, held) = hold_cameras_without_a_sensor(cams, |key| hw.capture_allowed(key));
         let mut before = held_before.lock().unwrap_or_else(|p| p.into_inner());
-        for key in held.iter().filter(|k| !before.contains(k)) {
-            warn!("{}", capture_held_warning(key));
+        let new: Vec<&String> = held.iter().filter(|k| !before.contains(k)).collect();
+        if !new.is_empty() {
+            // Read only when a hold is about to be said.
+            let empty = xorgate_core::camera_sensors::declared_empty_keys(
+                xorgate_hal::settings_io::load_settings(&settings)
+                    .camera_sensors
+                    .as_ref(),
+            );
+            for key in new {
+                if empty.contains(key) {
+                    tracing::info!("{}", capture_declared_empty_line(key));
+                } else {
+                    warn!("{}", capture_held_warning(key));
+                }
+            }
         }
         *before = held;
         cams
@@ -136,6 +150,14 @@ pub fn hold_cameras_without_a_sensor(
 pub fn capture_held_warning(stream_key: &str) -> String {
     format!(
         "[video-capture] {stream_key}: no camera enumerated on its port — capture not started (the camera name left in {stream_key}.camera / {stream_key}.gst.direct is stale)"
+    )
+}
+
+/// The hold of a stream whose port the `cameraSensors` setting declares
+/// empty: on purpose, so no stale-name warning.
+pub fn capture_declared_empty_line(stream_key: &str) -> String {
+    format!(
+        "[video-capture] {stream_key}: its port is declared empty by the camera sensor setting — capture not started"
     )
 }
 

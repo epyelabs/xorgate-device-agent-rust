@@ -249,6 +249,11 @@ pub enum CameraMountVerdict {
     Unsupported,
     /// The privileged write did not happen (helper/sudoers missing, or it failed).
     WriteFailed,
+    /// RUST-ONLY (a managed port, `cameraSensors`): the line holds the
+    /// rotation and nothing waits for a reboot, but NO CAMERA ANSWERS on
+    /// the port, so there is no rotation in force to read. Not a write and
+    /// not cured by a reboot: the sensor setting is the thing to look at.
+    NoCamera,
 }
 
 /// `CameraMountCameraState` (`boot-config.ts:233`).
@@ -276,9 +281,13 @@ pub enum CameraSensorsVerdict {
     /// config.txt's line for the port is the declared sensor's line (or the
     /// port has no line, for `none`), and the device booted with it.
     Applied,
-    /// The line is as declared, but it was changed since this boot: it
+    /// The line is as declared and the AGENT wrote it in this boot: it
     /// takes effect at the next reboot.
     PendingReboot,
+    /// The line is as declared but differs from the one the device booted
+    /// with, and the agent did not write it (a hand edit, an installer):
+    /// it takes effect at the next reboot.
+    ChangedOutside,
     /// The declaration cannot be applied and config.txt is left alone: the
     /// device has no such port, this build's catalog lacks the sensor or an
     /// option, the entry is malformed, or the helper refused the edit.
@@ -293,6 +302,7 @@ impl CameraSensorsVerdict {
         match self {
             CameraSensorsVerdict::Applied => "applied",
             CameraSensorsVerdict::PendingReboot => "pending-reboot",
+            CameraSensorsVerdict::ChangedOutside => "changed-outside",
             CameraSensorsVerdict::Rejected => "rejected",
             CameraSensorsVerdict::WriteFailed => "write-failed",
         }
@@ -318,7 +328,8 @@ pub struct CameraSensorsPortState {
 pub struct CameraSensorsState {
     pub at: i64,
     pub cameras: Vec<CameraSensorsPortState>,
-    /// Some port's line is written and waits for a reboot.
+    /// Some port's line (its sensor or an option, not the rotation alone)
+    /// differs from the booted one and waits for a reboot.
     pub reboot_required: bool,
     /// The boot config changed on THIS pass.
     pub wrote: bool,
@@ -1048,6 +1059,11 @@ mod tests {
 
     #[test]
     fn camera_mount_verdict_wire_strings() {
+        // The Rust-only one (a managed port with no camera answering).
+        assert_eq!(
+            serde_json::to_string(&CameraMountVerdict::NoCamera).unwrap(),
+            "\"no-camera\""
+        );
         // Exactly the TS union (boot-config.ts:216-231): config-sync.ts
         // `cameraMountStatus` keys its wording off these strings.
         const ALL: [(CameraMountVerdict, &str); 7] = [
