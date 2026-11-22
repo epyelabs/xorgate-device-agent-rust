@@ -163,8 +163,8 @@ rm -f "$E/claim-mode"
 echo "== step 8c, the extra OS packages of a camera sensor: run by the installed binary on the claim, quiet when nothing is needed, never fatal"
 reset_device; run_boot
 expect_rc 0 "a claim whose sensors need no extra packages"
-grep -q "rs camera requirements --install --no-restart --quiet --from-claim .*/claim.json" "$E/agent.log" \
-  && ok "step 8c ran \`camera requirements --install --no-restart --quiet --from-claim\` on the claim response" || bad "8c call: $(grep 'camera' "$E/agent.log" | tail -3)"
+grep -q "rs camera requirements --install --no-restart --quiet --time-limit 1320 --from-claim .*/claim.json" "$E/agent.log" \
+  && ok "step 8c ran \`camera requirements --install --no-restart --quiet --time-limit 1320 --from-claim\` on the claim response" || bad "8c call: $(grep 'camera' "$E/agent.log" | tail -3)"
 ! grep -q 'camera packages' "$OUT" && ok "…and it says nothing when no sensor needs a set" || bad "8c noise: $(grep 'camera packages' "$OUT")"
 reset_device; echo installed > "$E/campkg-mode"; run_boot
 expect_rc 0 "the packages of a sensor were installed"

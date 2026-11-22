@@ -471,6 +471,25 @@ pub struct BootLines {
     /// claiming the write.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub written: BTreeMap<String, Option<LineForm>>,
+    /// This snapshot was TAKEN by a build that records its writes (every
+    /// snapshot this build takes). A file without it comes from a build
+    /// that did not: the agent of that build may have written a line
+    /// earlier in this boot and left no trace, so for the rest of the boot
+    /// nobody can say who changed a line that `written` does not name
+    /// ([`Writer::Unknown`]).
+    #[serde(default)]
+    pub tracks_writes: bool,
+}
+
+/// Who put a port's line where it is now, as far as the snapshot can tell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Writer {
+    /// The agent wrote it in this boot.
+    Agent,
+    /// Something else did (a hand edit, an installer).
+    Other,
+    /// The snapshot comes from a build that kept no record of its writes.
+    Unknown,
 }
 
 impl BootLines {
@@ -483,9 +502,20 @@ impl BootLines {
         port: CamPort,
         catalog: &Catalog,
     ) -> bool {
+        self.writer(text, board, port, catalog) == Writer::Agent
+    }
+
+    /// Who wrote `port`'s line as config.txt holds it now.
+    pub fn writer(&self, text: &str, board: Board, port: CamPort, catalog: &Catalog) -> Writer {
         let scoped = parse_scoped_lines(text, board);
         let now = port_boot_line(&scoped, port, catalog).map(|l| l.form);
-        self.written.get(port.token()) == Some(&now)
+        if self.written.get(port.token()) == Some(&now) {
+            Writer::Agent
+        } else if self.tracks_writes {
+            Writer::Other
+        } else {
+            Writer::Unknown
+        }
     }
 }
 
@@ -514,6 +544,7 @@ pub fn snapshot_boot_lines(
             .map(|p| (p.token().to_string(), port_boot_line(&scoped, *p, catalog)))
             .collect(),
         written: BTreeMap::new(),
+        tracks_writes: true,
     }
 }
 
@@ -570,9 +601,15 @@ pub struct HostFacts {
     pub os: Option<String>,
     /// `dpkg --print-architecture` (`arm64`).
     pub arch: Option<String>,
-    /// The installed version of each package asked about (`dpkg-query`,
-    /// status `ii` only). `None` = `dpkg-query` could not be run.
+    /// The installed version of each package asked about (`dpkg-query`;
+    /// installed = status `i`, wanted or on hold). `None` = `dpkg-query`
+    /// could not be run.
     pub packages: Option<BTreeMap<String, String>>,
+    /// dpkg was interrupted on this device, and how it shows
+    /// (`camera_packages::interrupted`): a package asked about is left
+    /// half-installed, or dpkg's journal of an unfinished run is not empty.
+    /// Nothing can be installed until `sudo dpkg --configure -a` has run.
+    pub interrupted: Option<String>,
 }
 
 /// `dpkg-query -W -f='${Package}\t${Version}\t${db:Status-Abbrev}\n'`
@@ -666,11 +703,18 @@ pub fn missing_requirements(
             None => Some(format!("{} {} (not installed)", p.name, p.version)),
         })
         .collect();
-    (!missing.is_empty()).then(|| {
-        format!(
+    (!missing.is_empty()).then(|| match &host.interrupted {
+        // An interrupted dpkg comes first: nothing installs until it is
+        // put right, and libcamera itself may be half-installed.
+        Some(how) => format!(
+            "needs extra packages that are not installed in the required versions: {}. dpkg was interrupted on this device ({how}): run `{}` there first, then {INSTALL_ADVICE}. The camera will not appear until then",
+            missing.join(", "),
+            crate::camera_packages::DPKG_REMEDY
+        ),
+        None => format!(
             "needs extra packages that are not installed in the required versions: {}. The camera will not appear until they are installed: {INSTALL_ADVICE}",
             missing.join(", ")
-        )
+        ),
     })
 }
 
@@ -1317,6 +1361,41 @@ mod tests {
         assert!(mine.written_by_agent("dtoverlay=imx708,cam0\n", Board::Cm5, CamPort::Cam1, c));
         let kept = serde_json::to_string(&mine).unwrap();
         assert_eq!(serde_json::from_str::<BootLines>(&kept).unwrap(), mine);
+        // Who wrote a line: the agent, something else, or (a file from a
+        // build that kept no record of its writes) nobody can say.
+        let edited = "dtoverlay=imx708,cam0,rotation=180,link-frequency=447000000\n";
+        assert_eq!(
+            mine.writer(wrote, Board::Cm5, CamPort::Cam0, c),
+            Writer::Agent
+        );
+        assert_eq!(
+            mine.writer(edited, Board::Cm5, CamPort::Cam0, c),
+            Writer::Other
+        );
+        assert!(kept.contains(r#""tracksWrites":true"#), "{kept}");
+        let old_build: BootLines = serde_json::from_str(
+            r#"{"bootId":"b1","ports":{"cam0":{"form":{"overlay":"imx290","params":[],"rotation":"0"},"text":"dtoverlay=imx290,cam0"},"cam1":null}}"#,
+        )
+        .unwrap();
+        assert!(!old_build.tracks_writes && old_build.written.is_empty());
+        assert_eq!(
+            old_build.writer(wrote, Board::Cm5, CamPort::Cam0, c),
+            Writer::Unknown
+        );
+        // A write this build makes on top of such a file IS known.
+        let mut upgraded = old_build.clone();
+        upgraded.written.insert(
+            "cam0".into(),
+            port_boot_line(&scoped, CamPort::Cam0, c).map(|l| l.form),
+        );
+        assert_eq!(
+            upgraded.writer(wrote, Board::Cm5, CamPort::Cam0, c),
+            Writer::Agent
+        );
+        assert_eq!(
+            upgraded.writer(edited, Board::Cm5, CamPort::Cam0, c),
+            Writer::Unknown
+        );
         // The snapshot round-trips as the file the agent keeps.
         let text = serde_json::to_string(&boot).unwrap();
         assert!(text.starts_with(r#"{"bootId":"b1","ports":{"cam0":{"form":{"overlay":"imx290","params":[],"rotation":"0"},"text":"dtoverlay=imx290,cam0"}"#), "{text}");
@@ -1341,6 +1420,7 @@ mod tests {
                     .map(|(n, v)| (n.to_string(), v.to_string()))
                     .collect(),
             ),
+            interrupted: None,
         };
         let ok = host(&[
             ("libcamera0.5", "0.5.2+rpt20250909-1"),
@@ -1351,6 +1431,32 @@ mod tests {
         assert_eq!(
             missing_requirements(imx335, c, &host(&[("libcamera0.5", "0.5.0+rpt20250429-1")])).as_deref(),
             Some("needs extra packages that are not installed in the required versions: libcamera0.5 0.5.2+rpt20250909-1 (installed: 0.5.0+rpt20250429-1), libcamera-ipa 0.5.2+rpt20250909-1 (not installed). The camera will not appear until they are installed: run `sudo xorgate-rs update` on the device (the console's Update button does the same), or `sudo xorgate-rs camera requirements --install`")
+        );
+        // dpkg was interrupted (a power cut during an install): the sentence
+        // names that and its remedy BEFORE the install advice.
+        assert_eq!(
+            missing_requirements(
+                imx335,
+                c,
+                &HostFacts {
+                    interrupted: Some("libcamera0.5 is unpacked, not configured".into()),
+                    ..host(&[("libcamera-ipa", "0.5.2+rpt20250909-1")])
+                }
+            )
+            .as_deref(),
+            Some("needs extra packages that are not installed in the required versions: libcamera0.5 0.5.2+rpt20250909-1 (not installed). dpkg was interrupted on this device (libcamera0.5 is unpacked, not configured): run `sudo dpkg --configure -a` there first, then run `sudo xorgate-rs update` on the device (the console's Update button does the same), or `sudo xorgate-rs camera requirements --install`. The camera will not appear until then")
+        );
+        // ... and is no finding when nothing is missing.
+        assert_eq!(
+            missing_requirements(
+                imx335,
+                c,
+                &HostFacts {
+                    interrupted: Some("its journal of an unfinished run is not empty".into()),
+                    ..ok.clone()
+                }
+            ),
+            None
         );
         // What could not be found out is not a missing requirement.
         assert_eq!(missing_requirements(imx335, c, &HostFacts::default()), None);

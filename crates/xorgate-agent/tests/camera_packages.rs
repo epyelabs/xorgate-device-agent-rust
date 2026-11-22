@@ -25,7 +25,7 @@ use std::time::Duration;
 
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use xorgate_agent::cli::camera_packages::{parse, run, Args, PkgEnv, RECORD_FILE};
+use xorgate_agent::cli::camera_packages::{parse, run, Args, PkgEnv, LOCK_FILE, RECORD_FILE};
 use xorgate_cloud::fetch::FetchLimits;
 use xorgate_core::camera_catalog::{catalog, Catalog, Package, PackageTarget};
 use xorgate_core::camera_packages as pk;
@@ -138,9 +138,12 @@ struct Dev {
     stub: HttpStub,
     mode: Mode,
     env: PkgEnv<'static>,
+    /// Makes the stop request (SIGTERM, Ctrl-C in production).
+    stop: tokio::sync::watch::Sender<bool>,
 }
 
 const FAKE_DPKG_QUERY: &str = r#"echo "$*" >> "$D/dpkg-query.log"
+[ -f "$D/dpkg.fail" ] && exit 2
 cat "$D/installed.tsv" 2>/dev/null
 exit 0"#;
 
@@ -153,6 +156,8 @@ sim=0; files=""
 for a in "$@"; do case "$a" in -s) sim=1 ;; *.deb) files="$files $a" ;; esac; done
 if [ "$sim" = 1 ]; then
   [ "$mode" = sim-fail ] && { echo "E: Unable to correct problems, you have held broken packages." >&2; exit 100; }
+  # A simulation that hangs, with a process of its own that must go with it.
+  [ "$mode" = sim-hang ] && { sleep 60 & echo $! > "$D/bg.pid"; wait; }
   echo "NOTE: This is only a simulation!"
   for f in $files; do
     b=$(basename "$f" .deb); n=${b%%_*}; v=${b#*_}; v=${v%_*}
@@ -165,7 +170,14 @@ fi
 env > "$D/apt.env"
 [ "$mode" = install-fail ] && { echo "E: Sub-process /usr/bin/dpkg returned an error code (1)" >&2; exit 100; }
 [ "$mode" = install-noop ] && exit 0
+[ "$mode" = install-slow ] && sleep 2
+# Another package changes with the transaction.
+[ "$mode" = install-extra ] && sed -i 's/^bash\t5.2/bash\t5.3/' "$D/installed.tsv"
+count=0
 for f in $files; do
+  # The first package goes in, then dpkg fails.
+  [ "$mode" = install-partial ] && [ "$count" = 1 ] && { echo "E: Sub-process /usr/bin/dpkg returned an error code (1)" >&2; exit 100; }
+  count=$((count + 1))
   [ -r "$f" ] || { echo "E: cannot read $f" >&2; exit 100; }
   b=$(basename "$f" .deb); n=${b%%_*}; v=${b#*_}; v=${v%_*}
   awk -F'\t' -v n="$n" '$1 != n' "$D/installed.tsv" > "$D/installed.new" 2>/dev/null
@@ -173,6 +185,8 @@ for f in $files; do
   mv "$D/installed.new" "$D/installed.tsv"
   cp "$f" "$D/seen-$(basename "$f")"
 done
+# The database cannot be read back afterwards.
+[ "$mode" = confirm-fails ] && : > "$D/dpkg.fail"
 exit 0"#;
 
 const FAKE_APT_MARK: &str = r#"echo "$*" >> "$D/mark.log"
@@ -214,6 +228,7 @@ impl Dev {
             ],
         );
         let to = stub.url("/");
+        let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
         let env = PkgEnv {
             catalog,
             is_root: true,
@@ -227,7 +242,10 @@ impl Dev {
             ],
             os_release: dir.join("os-release"),
             arch: Some("arm64".to_string()),
+            dpkg_updates: dir.join("dpkg-updates"),
             state_dir: dir.join("packages"),
+            // The tests run as whoever runs them (root in the gate).
+            state_owner: nix::unistd::geteuid().as_raw(),
             settings: dir.join("settings.json"),
             service: "xorgate-agent-rs".to_string(),
             limits: FetchLimits {
@@ -239,6 +257,7 @@ impl Dev {
             redirect_ok: Box::new(pk::redirect_allowed),
             url_map: Some(Box::new(move |url: &str| url.replacen(BASE, &to, 1))),
             now_ms: 1_795_000_000_000,
+            stop: stop_rx,
         };
         let dev = Self {
             dir,
@@ -246,6 +265,7 @@ impl Dev {
             stub,
             mode,
             env,
+            stop: stop_tx,
         };
         dev.settings(json!({"cameraSensors": {"cameras": {"cam0": {"sensor": "imx335"}, "cam1": {"sensor": "imx219"}}}}));
         dev.installed(&[("libcamera0.5", STOCK), ("libcamera-ipa", STOCK)]);
@@ -286,11 +306,12 @@ impl Dev {
     }
 
     /// The names under the packages directory (the record, and any
-    /// download directory left behind).
+    /// download directory left behind); the run's lock file aside.
     fn kept(&self) -> Vec<String> {
         let mut names: Vec<String> = std::fs::read_dir(&self.env.state_dir)
             .map(|d| {
                 d.map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+                    .filter(|n| n != LOCK_FILE)
                     .collect()
             })
             .unwrap_or_default();
@@ -328,9 +349,18 @@ fn the_command_line() {
             install: true,
             from_claim: Some("/c.json".into()),
             no_restart: true,
-            quiet: true
+            quiet: true,
+            time_limit: None,
         })
     );
+    assert_eq!(
+        p(&["--install", "--time-limit", "1320"]).and_then(|a| a.time_limit),
+        Some(1320)
+    );
+    for bad in ["", "-5", "12s", "1e3", "+7", " 9"] {
+        assert_eq!(p(&["--install", "--time-limit", bad]), None, "{bad:?}");
+    }
+    assert_eq!(p(&["--time-limit"]), None);
     for bad in [
         &["--from-claim"][..],
         &["--remove"],
@@ -415,6 +445,7 @@ async fn install_downloads_verifies_installs_holds_and_restarts() {
             format!("camera packages: arducam-libcamera: verified libcamera0.5_0.5.2+rpt20250909-1_arm64.deb (37 bytes, sha256 {}…)", &sha(A)[..12]),
             "camera packages: arducam-libcamera: downloading libcamera-ipa 0.5.2+rpt20250909-1 (56 bytes)".to_string(),
             format!("camera packages: arducam-libcamera: verified libcamera-ipa_0.5.2+rpt20250909-1_arm64.deb (56 bytes, sha256 {}…)", &sha(B)[..12]),
+            "camera packages: arducam-libcamera: installing libcamera0.5, libcamera-ipa with apt-get (never interrupted once begun)".to_string(),
             "camera packages: arducam-libcamera: installed libcamera0.5 0.5.2+rpt20250909-1 (was 0.5.2+rpt20250903-1), libcamera-ipa 0.5.2+rpt20250909-1 (was 0.5.2+rpt20250903-1)".to_string(),
             "camera packages: arducam-libcamera: apt hold set on libcamera0.5, libcamera-ipa".to_string(),
             "camera packages: the agent was restarted so the camera is listed again; no reboot is needed".to_string(),
@@ -426,7 +457,7 @@ async fn install_downloads_verifies_installs_holds_and_restarts() {
     let calls: Vec<&str> = apt.lines().collect();
     assert_eq!(calls.len(), 2, "{apt}");
     let dir = dev.dir.display().to_string();
-    let common = "-o DPkg::Lock::Timeout=120 install -y --no-install-recommends --allow-downgrades --allow-change-held-packages";
+    let common = "-o DPkg::Lock::Timeout=120 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold install -y --no-install-recommends --no-remove --allow-downgrades --allow-change-held-packages";
     let files: Vec<&str> = calls[1][common.len() + 1..].split(' ').collect();
     assert_eq!(files.len(), 2);
     for (f, name) in files.iter().zip([file_a(), file_b()]) {
@@ -471,11 +502,17 @@ async fn install_downloads_verifies_installs_holds_and_restarts() {
     assert_eq!(dev.kept(), [RECORD_FILE]);
     assert_eq!(
         dev.record(),
-        json!({"v": 1, "sets": {"arducam-libcamera": {"at": 1_795_000_000_000i64, "hold": true, "packages": [
-            {"name": "libcamera0.5", "installed": V, "replaced": STOCK, "wasHeld": false},
-            {"name": "libcamera-ipa", "installed": V, "replaced": STOCK, "wasHeld": false}
-        ]}}})
+        json!({"v": 1, "sets": {"arducam-libcamera": {"at": 1_795_000_000_000i64, "packages": [
+            {"name": "libcamera0.5", "installed": V, "replaced": STOCK},
+            {"name": "libcamera-ipa", "installed": V, "replaced": STOCK}
+        ], "held": ["libcamera0.5", "libcamera-ipa"]}}})
     );
+    // The state directory is root's alone to write and everyone's to read
+    // (the unprivileged listing prints the way back from the record).
+    use std::os::unix::fs::PermissionsExt;
+    let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o7777;
+    assert_eq!(mode(&dev.env.state_dir), 0o755);
+    assert_eq!(mode(&dev.env.state_dir.join(RECORD_FILE)), 0o644);
 
     // IDEMPOTENT: a second run downloads nothing, runs no apt-get, restarts
     // nothing, and with --quiet says nothing.
@@ -524,6 +561,7 @@ async fn only_what_is_missing_is_done() {
     assert_eq!(
         lines[2..],
         [
+            "camera packages: arducam-libcamera: installing libcamera-ipa with apt-get (never interrupted once begun)",
             "camera packages: arducam-libcamera: installed libcamera-ipa 0.5.2+rpt20250909-1 (was 0.5.2+rpt20250903-1)",
             "camera packages: arducam-libcamera: apt hold set on libcamera0.5, libcamera-ipa",
             "camera packages: the camera appears when the agent starts next (or at its next camera re-listing, within 5 minutes); no reboot is needed",
@@ -531,11 +569,18 @@ async fn only_what_is_missing_is_done() {
     );
     // --no-restart: systemctl was not run.
     assert_eq!(dev.read("systemctl.log"), "");
-    // What was "replaced" for the one that was already there is itself.
-    assert_eq!(dev.record()["sets"][SET]["packages"][0]["replaced"], V);
+    // The package that was already at the pinned version is not recorded
+    // as replaced by anything: only what this run installed is.
+    assert_eq!(
+        dev.record()["sets"][SET],
+        json!({"at": 1_795_000_000_000i64, "packages": [
+            {"name": "libcamera-ipa", "installed": V, "replaced": STOCK}
+        ], "held": ["libcamera0.5", "libcamera-ipa"]})
+    );
 
     // Both installed by hand, no hold: only the hold is set. No download,
-    // no apt-get, no restart, no record.
+    // no apt-get, no restart. The record says which hold is this
+    // command's, and nothing about packages it did not install.
     let dev = Dev::new("hold-only").await;
     dev.installed(&[("libcamera0.5", V), ("libcamera-ipa", V)]);
     dev.set("held", "libcamera0.5\n");
@@ -549,7 +594,18 @@ async fn only_what_is_missing_is_done() {
     assert_eq!(dev.read("mark.log"), "showhold\nhold libcamera-ipa\n");
     assert_eq!((dev.stub.hits(), dev.read("apt.log")), (0, String::new()));
     assert_eq!(dev.read("systemctl.log"), "");
-    assert!(dev.kept().is_empty());
+    assert_eq!(
+        dev.record()["sets"][SET],
+        json!({"at": 1_795_000_000_000i64, "packages": [], "held": ["libcamera-ipa"]})
+    );
+    let (_, lines) = dev.run(&[]).await;
+    assert_eq!(
+        lines[3..],
+        [
+            "  apt hold: set on every package",
+            "  to go back: sudo apt-mark unhold libcamera-ipa"
+        ]
+    );
 
     // The agent could not be restarted: said, and not a failure.
     let dev = Dev::new("restart-fails").await;
@@ -655,7 +711,7 @@ async fn apt_is_checked_before_and_after() {
     let (code, lines) = dev.run(&["--install", "--no-restart"]).await;
     assert_eq!(code, 1);
     assert_eq!(
-        lines[5..],
+        lines[6..],
         [
             "camera packages: WARN arducam-libcamera: the packages are installed, but `apt-mark hold libcamera0.5 libcamera-ipa` failed (E: could not open lock file): an apt upgrade may replace them. Run `sudo xorgate-rs camera requirements --install` again to set the hold",
             "camera packages: the camera appears when the agent starts next (or at its next camera re-listing, within 5 minutes); no reboot is needed",
@@ -785,6 +841,426 @@ async fn the_sensors_of_a_claim_response() {
         lines[0].starts_with("camera packages: cannot read the claim response <dir>/claim.json: "),
         "{lines:?}"
     );
+}
+
+/// Review N1 + N6: the state directory is root's own real directory or it
+/// is not used; a second run is kept out; what a killed run left behind is
+/// swept at the start of the next.
+#[tokio::test]
+async fn the_state_directory_is_checked_locked_and_swept() {
+    use std::os::unix::fs::PermissionsExt;
+    // What a run that was killed (or cut by a power loss) left behind.
+    let dev = Dev::new("sweep").await;
+    let stale = dev.env.state_dir.join("download-Ab12Cd");
+    std::fs::create_dir_all(&stale).unwrap();
+    std::fs::write(stale.join(file_a()), b"half a file").unwrap();
+    std::fs::set_permissions(&dev.env.state_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // Not a directory of that name: left alone (a link is never followed).
+    let elsewhere = dev.dir.join("elsewhere");
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::write(elsewhere.join("keep"), b"x").unwrap();
+    std::os::unix::fs::symlink(&elsewhere, dev.env.state_dir.join("download-link")).unwrap();
+    let (code, lines) = dev.run(&["--install", "--quiet", "--no-restart"]).await;
+    assert_eq!(code, 0, "{lines:?}");
+    assert_eq!(
+        lines[0],
+        "camera packages: removed 1 download directory an earlier run left in <dir>/packages"
+    );
+    assert!(!stale.exists());
+    assert!(elsewhere.join("keep").exists(), "the link was not followed");
+    assert_eq!(dev.kept(), [RECORD_FILE, "download-link"]);
+    // Also swept by a run that has nothing to install.
+    std::fs::create_dir_all(&stale).unwrap();
+    let (code, lines) = dev.run(&["--install", "--quiet"]).await;
+    assert_eq!(
+        (code, lines),
+        (
+            0,
+            vec!["camera packages: removed 1 download directory an earlier run left in <dir>/packages".to_string()]
+        )
+    );
+    // The listing does not sweep (it is not root's run) and says nothing.
+    std::fs::create_dir_all(&stale).unwrap();
+    let (code, _) = dev.run(&[]).await;
+    assert_eq!(code, 0);
+    assert!(stale.exists());
+
+    // A second run while one holds the lock: kept out, nothing done.
+    let dev = Dev::new("locked").await;
+    std::fs::create_dir_all(&dev.env.state_dir).unwrap();
+    std::fs::set_permissions(&dev.env.state_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let other = std::fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(dev.env.state_dir.join(LOCK_FILE))
+        .unwrap();
+    other.lock().unwrap();
+    assert_eq!(
+        dev.run(&["--install"]).await,
+        (
+            1,
+            vec!["camera packages: WARN nothing was installed: another `xorgate-rs camera requirements --install` is running on this device; nothing was changed".to_string()]
+        )
+    );
+    assert_eq!((dev.stub.hits(), dev.read("apt.log")), (0, String::new()));
+    drop(other);
+    assert_eq!(
+        dev.run(&["--install", "--quiet", "--no-restart"]).await.0,
+        0
+    );
+
+    // The directory must be a REAL directory, owned by root, that nobody
+    // else can write. Otherwise it is not used and nothing is installed.
+    type Spoil = fn(&Dev);
+    let cases: [(&str, Spoil, &str); 3] = [
+        (
+            "link",
+            |d| {
+                let real = d.dir.join("real-dir");
+                std::fs::create_dir_all(&real).unwrap();
+                std::os::unix::fs::symlink(&real, &d.env.state_dir).unwrap();
+            },
+            "it is a symbolic link",
+        ),
+        (
+            "file",
+            |d| std::fs::write(&d.env.state_dir, b"x").unwrap(),
+            "it is not a directory",
+        ),
+        (
+            "writable",
+            |d| {
+                std::fs::create_dir_all(&d.env.state_dir).unwrap();
+                std::fs::set_permissions(&d.env.state_dir, std::fs::Permissions::from_mode(0o777))
+                    .unwrap();
+            },
+            "its mode is 777",
+        ),
+    ];
+    for (name, spoil, what) in cases {
+        let dev = Dev::new(&format!("dir-{name}")).await;
+        spoil(&dev);
+        let (code, lines) = dev.run(&["--install"]).await;
+        assert_eq!(code, 1, "{name}");
+        assert_eq!(
+            lines,
+            [format!("camera packages: WARN nothing was installed: <dir>/packages is not a directory owned by root that only root can write ({what}); it is not used; nothing was changed")],
+            "{name}"
+        );
+        assert_eq!(
+            (dev.stub.hits(), dev.read("apt.log")),
+            (0, String::new()),
+            "{name}"
+        );
+    }
+    // Another owner than the one required.
+    let mut dev = Dev::new("dir-owner").await;
+    std::fs::create_dir_all(&dev.env.state_dir).unwrap();
+    std::fs::set_permissions(&dev.env.state_dir, std::fs::Permissions::from_mode(0o755)).unwrap();
+    dev.env.state_owner += 1;
+    let (code, lines) = dev.run(&["--install"]).await;
+    assert_eq!(code, 1);
+    assert!(lines[0].contains("(its owner is uid "), "{lines:?}");
+}
+
+/// Review N2: an interrupted dpkg is seen BEFORE anything is downloaded,
+/// and said with its remedy.
+#[tokio::test]
+async fn an_interrupted_dpkg_is_said_before_anything_is_downloaded() {
+    // A package left half-installed (a power cut during an install).
+    let dev = Dev::new("dpkg-half").await;
+    dev.set(
+        "installed.tsv",
+        &format!("libcamera0.5\t{V}\tiU \nlibcamera-ipa\t{STOCK}\tii \nbash\t5.2\tii \n"),
+    );
+    let (code, lines) = dev.run(&["--install"]).await;
+    assert_eq!(code, 1);
+    assert_eq!(
+        lines,
+        ["camera packages: WARN arducam-libcamera NOT installed: dpkg was interrupted on this device (libcamera0.5 is unpacked, not configured). Run `sudo dpkg --configure -a` there, then `sudo xorgate-rs camera requirements --install` again; nothing was downloaded or changed"]
+    );
+    assert_eq!((dev.stub.hits(), dev.read("apt.log")), (0, String::new()));
+    assert_eq!(dev.read("mark.log"), "showhold\n");
+    // The listing says it too.
+    let (code, lines) = dev.run(&[]).await;
+    assert_eq!(code, 1);
+    assert_eq!(
+        lines.last().unwrap(),
+        "dpkg was interrupted on this device (libcamera0.5 is unpacked, not configured): nothing can be installed until `sudo dpkg --configure -a` has run"
+    );
+    // ANY package left half-way counts (apt would refuse all the same),
+    // and so does dpkg's journal of an unfinished run.
+    let dev = Dev::new("dpkg-other").await;
+    dev.set(
+        "installed.tsv",
+        &format!("libcamera0.5\t{STOCK}\tii \nlibcamera-ipa\t{STOCK}\tii \nfoo\t1\tiF \n"),
+    );
+    let (code, lines) = dev.run(&["--install", "--quiet"]).await;
+    assert_eq!(code, 1);
+    assert!(lines[0].contains("(foo is half-configured)"), "{lines:?}");
+    let dev = Dev::new("dpkg-journal").await;
+    std::fs::create_dir_all(&dev.env.dpkg_updates).unwrap();
+    std::fs::write(dev.env.dpkg_updates.join("0001"), b"x").unwrap();
+    let (code, lines) = dev.run(&["--install", "--quiet"]).await;
+    assert_eq!(code, 1);
+    assert!(
+        lines[0].contains("(its journal of an unfinished run is not empty)"),
+        "{lines:?}"
+    );
+    assert_eq!(dev.stub.hits(), 0);
+    // Put right: the same command installs.
+    std::fs::remove_file(dev.env.dpkg_updates.join("0001")).unwrap();
+    assert_eq!(
+        dev.run(&["--install", "--quiet", "--no-restart"]).await.0,
+        0
+    );
+    assert_eq!(dev.read("held"), "libcamera0.5\nlibcamera-ipa\n");
+}
+
+/// Review N3: the record stays truthful across a partial install. Run 1:
+/// apt upgrades the first package and fails on the second. Run 2 installs
+/// the second. The way back names the versions that were there BEFORE,
+/// for both.
+#[tokio::test]
+async fn the_record_is_truthful_across_a_partial_install() {
+    let dev = Dev::new("two-runs").await;
+    dev.set("apt.mode", "install-partial");
+    let (code, lines) = dev.run(&["--install", "--no-restart"]).await;
+    assert_eq!(code, 1);
+    assert_eq!(
+        lines.last().unwrap(),
+        "camera packages: WARN arducam-libcamera NOT installed: apt-get install failed (E: Sub-process /usr/bin/dpkg returned an error code (1)); the packages are now: libcamera0.5 0.5.2+rpt20250909-1, libcamera-ipa 0.5.2+rpt20250903-1 (check with `dpkg --audit`; if dpkg was interrupted, `sudo dpkg --configure -a`). imx335 (cam0) will not appear until this succeeds: run `sudo xorgate-rs camera requirements --install` again"
+    );
+    // What WAS replaced is on record at once, although the run failed.
+    assert_eq!(
+        dev.record()["sets"][SET],
+        json!({"at": 1_795_000_000_000i64, "packages": [
+            {"name": "libcamera0.5", "installed": V, "replaced": STOCK}
+        ], "held": []})
+    );
+    assert_eq!(dev.read("held"), "", "no hold on a half-done set");
+    // Run 2: only the second package is fetched and installed.
+    dev.set("apt.mode", "ok");
+    let hits = dev.stub.hits();
+    let (code, lines) = dev.run(&["--install", "--no-restart"]).await;
+    assert_eq!(code, 0, "{lines:?}");
+    assert_eq!(dev.stub.hits(), hits + 1);
+    assert_eq!(
+        dev.record()["sets"][SET]["packages"],
+        json!([
+            {"name": "libcamera0.5", "installed": V, "replaced": STOCK},
+            {"name": "libcamera-ipa", "installed": V, "replaced": STOCK}
+        ])
+    );
+    let (_, lines) = dev.run(&[]).await;
+    assert_eq!(
+        lines[4..],
+        [
+            "  installed by xorgate-rs; it replaced: libcamera0.5 0.5.2+rpt20250903-1, libcamera-ipa 0.5.2+rpt20250903-1",
+            "  to go back: sudo apt-mark unhold libcamera0.5 libcamera-ipa",
+            "  to go back: sudo apt-get install --allow-downgrades libcamera0.5=0.5.2+rpt20250903-1 libcamera-ipa=0.5.2+rpt20250903-1",
+        ]
+    );
+}
+
+/// Review N4 + N7: after the transaction the whole dpkg database is read
+/// back. A package outside the pinned set that changed is said loudly; a
+/// database that cannot be read is "could not confirm", never "not
+/// installed".
+#[tokio::test]
+async fn the_database_is_read_back_after_the_transaction() {
+    let dev = Dev::new("outside").await;
+    dev.set(
+        "installed.tsv",
+        &format!("libcamera0.5\t{STOCK}\tii \nlibcamera-ipa\t{STOCK}\tii \nbash\t5.2\tii \n"),
+    );
+    dev.set("apt.mode", "install-extra");
+    let (code, lines) = dev.run(&["--install", "--no-restart"]).await;
+    assert_eq!(code, 1, "{lines:?}");
+    assert_eq!(
+        lines[5..],
+        [
+            "camera packages: arducam-libcamera: installed libcamera0.5 0.5.2+rpt20250909-1 (was 0.5.2+rpt20250903-1), libcamera-ipa 0.5.2+rpt20250909-1 (was 0.5.2+rpt20250903-1)",
+            "camera packages: arducam-libcamera: apt hold set on libcamera0.5, libcamera-ipa",
+            "camera packages: WARN arducam-libcamera: the packages are installed, but packages outside the pinned set changed during the install: bash 5.2 (ii) -> 5.3 (ii)",
+            "camera packages: the camera appears when the agent starts next (or at its next camera re-listing, within 5 minutes); no reboot is needed",
+        ]
+    );
+    // The packages ARE installed, held and recorded.
+    assert_eq!(dev.read("held"), "libcamera0.5\nlibcamera-ipa\n");
+    assert_eq!(
+        dev.record()["sets"][SET]["packages"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+
+    // dpkg-query cannot answer after the install: apt's word is taken, the
+    // hold and the record are written, and the line says what it is.
+    let dev = Dev::new("confirm").await;
+    dev.set("apt.mode", "confirm-fails");
+    let (code, lines) = dev.run(&["--install", "--no-restart"]).await;
+    assert_eq!(code, 0, "{lines:?}");
+    assert_eq!(
+        lines[5..7],
+        [
+            "camera packages: arducam-libcamera: installed libcamera0.5 0.5.2+rpt20250909-1 (was 0.5.2+rpt20250903-1), libcamera-ipa 0.5.2+rpt20250909-1 (was 0.5.2+rpt20250903-1) (apt-get reported success; dpkg-query could not confirm it within 30 s)",
+            "camera packages: arducam-libcamera: apt hold set on libcamera0.5, libcamera-ipa",
+        ]
+    );
+    assert_eq!(dev.read("held"), "libcamera0.5\nlibcamera-ipa\n");
+    assert_eq!(
+        dev.record()["sets"][SET],
+        json!({"at": 1_795_000_000_000i64, "packages": [
+            {"name": "libcamera0.5", "installed": V, "replaced": STOCK},
+            {"name": "libcamera-ipa", "installed": V, "replaced": STOCK}
+        ], "held": ["libcamera0.5", "libcamera-ipa"]})
+    );
+}
+
+/// Review S1: with a time limit, nothing is started that could not finish,
+/// and the transaction is started only when it fits. A killable step that
+/// overruns is ended WITH what it started.
+#[tokio::test]
+async fn the_time_limit_never_cuts_a_transaction() {
+    // Less than the transaction and what follows it (600 + 150 s): nothing
+    // is even downloaded.
+    for limit in ["0", "100", "751"] {
+        let dev = Dev::new(&format!("limit-{limit}")).await;
+        let (code, lines) = dev
+            .run(&["--install", "--quiet", "--time-limit", limit])
+            .await;
+        assert_eq!(code, 1, "{limit}");
+        let want = if limit == "0" {
+            "camera packages: WARN nothing was looked at: not enough time left in this run; run `sudo xorgate-rs camera requirements --install`"
+        } else {
+            "camera packages: WARN arducam-libcamera NOT installed: not enough time left in this run; run `sudo xorgate-rs camera requirements --install` (the install is only started when it can finish; nothing was changed)"
+        };
+        assert_eq!(lines, [want], "{limit}");
+        assert_eq!(
+            (dev.stub.hits(), dev.read("apt.log")),
+            (0, String::new()),
+            "{limit}"
+        );
+        assert!(dev.kept().is_empty(), "{limit}");
+    }
+    // The command's own worst case fits: it installs.
+    let dev = Dev::new("limit-ok").await;
+    let (code, _) = dev
+        .run(&[
+            "--install",
+            "--quiet",
+            "--no-restart",
+            "--time-limit",
+            "1320",
+        ])
+        .await;
+    assert_eq!(code, 0);
+    assert_eq!(dev.read("held"), "libcamera0.5\nlibcamera-ipa\n");
+    // A hold alone needs no transaction: a short limit is enough.
+    let dev = Dev::new("limit-hold").await;
+    dev.installed(&[("libcamera0.5", V), ("libcamera-ipa", V)]);
+    let (code, lines) = dev
+        .run(&["--install", "--quiet", "--time-limit", "100"])
+        .await;
+    assert_eq!(code, 0, "{lines:?}");
+    assert_eq!(dev.read("held"), "libcamera0.5\nlibcamera-ipa\n");
+    // Nothing to do at all: quiet, whatever the limit.
+    assert_eq!(
+        dev.run(&["--install", "--quiet", "--time-limit", "100"])
+            .await,
+        (0, vec![])
+    );
+
+    // A simulation that hangs is ended at its bound (here 6 s are left
+    // before the transaction would have to start), together with the
+    // process it started; nothing was changed.
+    let dev = Dev::new("limit-hang").await;
+    dev.set("apt.mode", "sim-hang");
+    let t0 = std::time::Instant::now();
+    let (code, lines) = dev
+        .run(&["--install", "--quiet", "--time-limit", "756"])
+        .await;
+    assert_eq!(code, 1);
+    let last = lines.last().unwrap();
+    assert!(
+        last.starts_with("camera packages: WARN arducam-libcamera NOT installed: apt-get could not plan the install (it did not finish within ")
+            && last.contains(" s and was stopped); nothing was changed."),
+        "{last}"
+    );
+    assert!(t0.elapsed() < Duration::from_secs(20), "{:?}", t0.elapsed());
+    let bg: i32 = dev.read("bg.pid").trim().parse().unwrap();
+    assert!(
+        !Path::new(&format!("/proc/{bg}")).exists()
+            || std::fs::read_to_string(format!("/proc/{bg}/stat"))
+                .is_ok_and(|s| s.contains(") Z ")),
+        "the simulation's own process {bg} is still running"
+    );
+    assert_eq!(
+        dev.read("apt.log").lines().count(),
+        1,
+        "the real install never ran"
+    );
+    assert!(dev.kept().is_empty());
+}
+
+/// Review S1: a stop request (SIGTERM, Ctrl-C) ends a killable step at
+/// once and leaves nothing; during the transaction it is noted and the
+/// command WAITS: a running apt-get install is never interrupted.
+#[tokio::test]
+async fn a_stop_request_ends_a_download_and_waits_for_a_transaction() {
+    // During a download (the server never answers).
+    let dev = Dev::new("stop-download").await;
+    *dev.mode.lock().unwrap() = "hang";
+    let stop = dev.stop.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_millis(400)).await;
+        let _ = stop.send(true);
+    });
+    let t0 = std::time::Instant::now();
+    let (code, lines) = dev.run(&["--install", "--quiet"]).await;
+    assert_eq!(code, 1);
+    assert_eq!(
+        lines.last().unwrap(),
+        "camera packages: WARN arducam-libcamera NOT installed: stopped on request before the install began; nothing was changed"
+    );
+    assert!(t0.elapsed() < Duration::from_secs(4), "{:?}", t0.elapsed());
+    assert_eq!(dev.read("apt.log"), "");
+    assert!(dev.kept().is_empty(), "{:?}", dev.kept());
+
+    // During the transaction (apt-get takes 2 s here).
+    let dev = Dev::new("stop-install").await;
+    dev.set("apt.mode", "install-slow");
+    let (stop, state) = (dev.stop.clone(), dev.state.clone());
+    tokio::spawn(async move {
+        // Once the real install has begun (its environment file exists).
+        for _ in 0..200 {
+            if state.join("apt.env").exists() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        let _ = stop.send(true);
+    });
+    let (code, lines) = dev.run(&["--install", "--no-restart"]).await;
+    assert_eq!(code, 0, "{lines:?}");
+    assert_eq!(
+        lines[4..],
+        [
+            "camera packages: arducam-libcamera: installing libcamera0.5, libcamera-ipa with apt-get (never interrupted once begun)",
+            "camera packages: a stop was requested: waiting for apt-get to finish its transaction, which is never interrupted",
+            "camera packages: arducam-libcamera: installed libcamera0.5 0.5.2+rpt20250909-1 (was 0.5.2+rpt20250903-1), libcamera-ipa 0.5.2+rpt20250909-1 (was 0.5.2+rpt20250903-1)",
+            "camera packages: arducam-libcamera: apt hold set on libcamera0.5, libcamera-ipa",
+            "camera packages: the camera appears when the agent starts next (or at its next camera re-listing, within 5 minutes); no reboot is needed",
+        ]
+    );
+    assert_eq!(
+        dev.read("installed.tsv"),
+        format!("libcamera0.5\t{V}\tii \nlibcamera-ipa\t{V}\tii \n")
+    );
+    assert_eq!(dev.read("held"), "libcamera0.5\nlibcamera-ipa\n");
 }
 
 /// THE REAL TOOLS: two tiny `.deb` files built here with `dpkg-deb`, served
@@ -942,6 +1418,7 @@ async fn real_apt_installs_two_tiny_packages_and_holds_them() {
     assert_eq!(
         lines[4..],
         [
+            format!("camera packages: arducam-libcamera: installing {name_a}, {name_b} with apt-get (never interrupted once begun)"),
             format!("camera packages: arducam-libcamera: installed {name_a} 1.0-1 (was 0.9), {name_b} 1.0-1 (was not installed)"),
             format!("camera packages: arducam-libcamera: apt hold set on {name_a}, {name_b}"),
             "camera packages: the agent was restarted so the camera is listed again; no reboot is needed".to_string(),
@@ -987,14 +1464,15 @@ async fn real_apt_installs_two_tiny_packages_and_holds_them() {
     assert_eq!(
         rec["sets"][SET]["packages"],
         json!([
-            {"name": name_a, "installed": "1.0-1", "replaced": "0.9", "wasHeld": false},
-            {"name": name_b, "installed": "1.0-1", "replaced": null, "wasHeld": false}
+            {"name": name_a, "installed": "1.0-1", "replaced": "0.9"},
+            {"name": name_b, "installed": "1.0-1", "replaced": null}
         ])
     );
     // No download directory is left; the record is the only file.
     let kept: Vec<String> = std::fs::read_dir(dir.join("packages"))
         .unwrap()
         .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .filter(|n| n != LOCK_FILE)
         .collect();
     assert_eq!(kept, [RECORD_FILE]);
     // Idempotent against the real tools: nothing to do, nothing fetched.

@@ -1324,6 +1324,7 @@ mod tests {
                                 .map(|(n, v)| (n.to_string(), v.to_string()))
                                 .collect(),
                         ),
+                        interrupted: None,
                     }
                 }),
                 preset: Box::new(move || Some(pr.lock().unwrap().clone())),

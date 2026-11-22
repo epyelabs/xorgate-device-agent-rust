@@ -4,7 +4,8 @@ Documentation=https://github.com/epyelabs/xorgate-device-agent-rust
 
 # The Rust port of xorgate-updater.service (device/xorgate-device-agent
 # systemd/xorgate-updater.service @ 89b5c64), line for line except the unit
-# names: it runs `xorgate-rs update`, never the JS updater (O3, README §6).
+# names and TimeoutStartSec (below): it runs `xorgate-rs update`, never the JS
+# updater (O3, README §6).
 #
 # Deliberately NO [Install] section: this unit is never enabled and never runs
 # on boot. It is started on demand — by hand, or by the agent acting on a
@@ -30,7 +31,19 @@ ExecStart=/usr/local/bin/xorgate-rs update
 # for `npm ci`; the Rust rail has no npm step but keeps the budget for the
 # tarball fetch). `xorgate-rs update` rolls back on failure, but a kill mid-swap
 # is a class of failure worth not having.
-TimeoutStartSec=20min
+#
+# 45 min, not the JS unit's 20 (a deliberate difference): after the update is
+# complete, `xorgate-rs update` installs the extra OS packages a declared
+# camera sensor needs (`xorgate-rs camera requirements --install`), which at
+# its worst takes 22 min (two downloads, an apt simulation, and an `apt-get
+# install` that is given 10 min and is NEVER cut short). When this timeout
+# fires, systemd SIGTERMs every process of the unit, apt and dpkg included, so
+# it must not be able to fall into that install: the update gives the step only
+# what is left of these 45 min less a margin
+# (xorgate_core::update_plan::{UPDATER_UNIT_BUDGET_SECS, camera_packages_limit};
+# a test ties the number to this line), and the step starts the install only
+# when it can finish inside that.
+TimeoutStartSec=45min
 # `xorgate-rs update` reads /etc/xorgate/agent.env itself (for the dist bucket
 # URL and version), so no EnvironmentFile is needed here. A runtime drop-in
 # (`Environment=DEVICE_DIST_BUCKET_URL=…`) overrides it without editing the JS

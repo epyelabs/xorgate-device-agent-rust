@@ -1060,7 +1060,14 @@ provision_main() {
   #     is as it was, and `sudo xorgate-rs update` (or the console's Update)
   #     tries again. --no-restart: the agent is started below.
   local pkg_out pkg_rc=0 pkg_line
-  pkg_out=$(timeout 1500 "$RS_PREFIX/bin/xorgate-rs" camera requirements --install --no-restart --quiet --from-claim "$RESP" 2>/dev/null) || pkg_rc=$?
+  #     Time: the command keeps to --time-limit by itself (22 min, its own
+  #     worst case): it cuts a slow download or a hung simulation, and it
+  #     starts the real `apt-get install` only when that can finish inside
+  #     the limit, then NEVER cuts it. The `timeout` around it is the
+  #     backstop (25 min): its SIGTERM ends a killable step at once and is
+  #     waited out by a running install, whose apt-get sits in its own
+  #     process group.
+  pkg_out=$(timeout 1500 "$RS_PREFIX/bin/xorgate-rs" camera requirements --install --no-restart --quiet --time-limit 1320 --from-claim "$RESP" 2>/dev/null) || pkg_rc=$?
   printf '%s\n' "$pkg_out" | while IFS= read -r pkg_line; do
     case $pkg_line in
       'camera packages: WARN '*) log "WARN: camera packages: ${pkg_line#camera packages: WARN }" ;;

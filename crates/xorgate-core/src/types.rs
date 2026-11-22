@@ -288,6 +288,11 @@ pub enum CameraSensorsVerdict {
     /// with, and the agent did not write it (a hand edit, an installer):
     /// it takes effect at the next reboot.
     ChangedOutside,
+    /// The line is as declared but differs from the one the device booted
+    /// with, and NOBODY CAN SAY who wrote it: the boot's record of the
+    /// lines comes from a build that did not note its own writes (the
+    /// boot in which the agent was updated). Said neutrally.
+    ChangedSinceBoot,
     /// The declaration cannot be applied and config.txt is left alone: the
     /// device has no such port, this build's catalog lacks the sensor or an
     /// option, the entry is malformed, or the helper refused the edit.
@@ -303,6 +308,7 @@ impl CameraSensorsVerdict {
             CameraSensorsVerdict::Applied => "applied",
             CameraSensorsVerdict::PendingReboot => "pending-reboot",
             CameraSensorsVerdict::ChangedOutside => "changed-outside",
+            CameraSensorsVerdict::ChangedSinceBoot => "changed-since-boot",
             CameraSensorsVerdict::Rejected => "rejected",
             CameraSensorsVerdict::WriteFailed => "write-failed",
         }

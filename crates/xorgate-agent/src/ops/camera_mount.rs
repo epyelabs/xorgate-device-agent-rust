@@ -88,6 +88,7 @@ use xorgate_core::boot_config::{
 use xorgate_core::camera_catalog::Catalog;
 use xorgate_core::camera_sensors::{
     changed_since_boot, declared_id, line_op, snapshot_boot_lines, wanted, BootLines, Wanted,
+    Writer,
 };
 use xorgate_core::camera_truth::{
     node_sensor, rotation_write_block, CaptureOff, CaptureTruth, PortFacts, PortNode,
@@ -901,7 +902,9 @@ pub async fn reconcile_cameras(o: ReconcileCameraMountOptions) -> CameraStates {
             reboot_required: ports.iter().any(|c| {
                 matches!(
                     c.verdict,
-                    CameraSensorsVerdict::PendingReboot | CameraSensorsVerdict::ChangedOutside
+                    CameraSensorsVerdict::PendingReboot
+                        | CameraSensorsVerdict::ChangedOutside
+                        | CameraSensorsVerdict::ChangedSinceBoot
                 )
             }),
             cameras: ports,
@@ -1306,16 +1309,21 @@ async fn managed_port(
     let port_state = sens(
         if !sensor_pending {
             CameraSensorsVerdict::Applied
-        } else if o
-            .boot_lines
-            .booted(&text_now, board, o.catalog, &ports)
-            .written_by_agent(&text_now, board, port, o.catalog)
-        {
-            CameraSensorsVerdict::PendingReboot
         } else {
-            // The agent did not write this line in this boot: a hand edit,
-            // an installer. Not claimed as its write.
-            CameraSensorsVerdict::ChangedOutside
+            match o
+                .boot_lines
+                .booted(&text_now, board, o.catalog, &ports)
+                .writer(&text_now, board, port, o.catalog)
+            {
+                Writer::Agent => CameraSensorsVerdict::PendingReboot,
+                // The agent did not write this line in this boot: a hand
+                // edit, an installer. Not claimed as its write.
+                Writer::Other => CameraSensorsVerdict::ChangedOutside,
+                // The boot's record comes from a build that did not note
+                // its writes (the agent was updated in this boot): the old
+                // agent may well have written the line. Said neutrally.
+                Writer::Unknown => CameraSensorsVerdict::ChangedSinceBoot,
+            }
         },
         None,
     );

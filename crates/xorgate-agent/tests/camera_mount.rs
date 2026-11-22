@@ -3266,6 +3266,74 @@ async fn each_namespace_says_only_what_is_its_own() {
     );
 }
 
+/// Review N9: the agent is UPDATED in the boot in which the sensor was
+/// changed (console: change the sensor, press Update). The old build's
+/// boot-lines file has no record of its writes, so the new build cannot
+/// say who wrote the line: it must not read "changed outside the agent".
+/// Neutral wording, for the rest of that boot; a write the new build makes
+/// itself is its own again.
+#[tokio::test]
+async fn a_boot_lines_file_of_the_previous_build_blames_nobody() {
+    // The device booted with imx290; the OLD agent then wrote the imx708
+    // line and kept the snapshot as it did then (no `written`, no marker).
+    let config = "camera_auto_detect=0\ndtoverlay=imx708,cam0,rotation=180\n";
+    let d = Device::bench("oldfile", config, MODEL_CM4);
+    d.overlays(&ALL_OVERLAYS);
+    d.camera("cam0", &cm5_path("cam0", "imx290@1a"), Some(0));
+    let mut rig = Rig::new(d);
+    rig.live(&[("cam0", "imx290", "imx290@1a")]);
+    let file = rig.d.dir.join("camera-boot-lines.json");
+    std::fs::write(
+        &file,
+        r#"{"bootId":"boot-1","ports":{"cam0":{"form":{"overlay":"imx290","params":[],"rotation":"0"},"text":"dtoverlay=imx290,cam0"},"cam1":null}}"#,
+    )
+    .unwrap();
+    let id = rig.boot_id.clone();
+    rig.boot_lines = Arc::new(BootLineStore::new(
+        Some(file.clone()),
+        Box::new(move || id.lock().unwrap().clone()),
+    ));
+    let setting = json!({"cam0": {"sensor": "imx708"}});
+    let s = rig.pass_both(None, Some(setting.clone())).await;
+    assert_eq!(
+        rig.runner.calls().len(),
+        0,
+        "the line is already the declared one"
+    );
+    assert_eq!(sens(&s, "cam0"), (SV::ChangedSinceBoot, String::new()));
+    assert!(s.sensors.as_ref().unwrap().reboot_required);
+    assert_eq!(
+        statuses(&s).0,
+        "the camera line was changed since this boot — REBOOT REQUIRED to apply: cam0 imx708"
+    );
+    // A write of THIS build in the same boot is known to be its own.
+    let s = rig
+        .pass_both(None, Some(json!({"cam0": {"sensor": "imx219"}})))
+        .await;
+    assert_eq!(rig.runner.asked(), ["set cam0 imx219 rotation=180"]);
+    assert_eq!(sens(&s, "cam0"), (SV::PendingReboot, String::new()));
+    assert_eq!(
+        statuses(&s).0,
+        "written to the boot config — REBOOT REQUIRED to apply: cam0 imx219"
+    );
+    // After the reboot the snapshot is this build's: a hand edit is then
+    // told from the agent's write again.
+    rig.reboot();
+    rig.live(&[("cam0", "imx219", "imx219@10")]);
+    rig.d
+        .camera("cam0", &cm5_path("cam0", "imx219@10"), Some(180));
+    let setting = json!({"cam0": {"sensor": "imx219"}});
+    let s = rig.pass_both(None, Some(setting.clone())).await;
+    assert_eq!(sens(&s, "cam0"), (SV::Applied, String::new()));
+    std::fs::write(
+        &rig.d.boot_config,
+        "camera_auto_detect=0\ndtoverlay=imx219,cam0,rotation=180,hand-token\n",
+    )
+    .unwrap();
+    let s = rig.pass_both(None, Some(setting)).await;
+    assert_eq!(sens(&s, "cam0"), (SV::ChangedOutside, String::new()));
+}
+
 /// Bench finding: the boot-lines file of a ONE-PORT model listed `cam1:
 /// null`. Only the model's ports are kept; a port the model gains later is
 /// added from the file as it is then.

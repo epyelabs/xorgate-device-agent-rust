@@ -295,17 +295,33 @@ pub fn plan(declared: &[(String, String)], catalog: &Catalog, host: &HostFacts) 
 // ---------------------------------------------------------------------------
 
 /// `apt-get` arguments that install exactly `files` (absolute paths of the
-/// verified `.deb` files) in ONE transaction. `--allow-downgrades`: the
-/// stock package may by then be newer than the pinned build.
-/// `--allow-change-held-packages`: a re-install over packages this command
-/// held earlier. `simulate`: `-s`, nothing is changed.
+/// verified `.deb` files) in ONE transaction. The simulation (`simulate`:
+/// `-s`, nothing is changed) and the real run get the SAME arguments
+/// otherwise.
+/// - `--no-remove`: apt aborts rather than remove a package, also when its
+///   view changed between the simulation and the real run;
+/// - `--allow-downgrades`: the stock package may by then be newer than the
+///   pinned build;
+/// - `--allow-change-held-packages`: a re-install over packages this
+///   command held earlier;
+/// - `Dpkg::Options::=--force-confdef` / `--force-confold`: a changed
+///   configuration file keeps the local version without asking (there is
+///   nobody to ask: stdin is closed), so a prompt can neither hang nor fail
+///   the transaction;
+/// - `DPkg::Lock::Timeout`: wait for another apt/dpkg to finish.
 pub fn apt_install_args(files: &[String], simulate: bool) -> Vec<String> {
+    let lock = format!("DPkg::Lock::Timeout={T_LOCK}");
     let mut args: Vec<String> = [
         "-o",
-        "DPkg::Lock::Timeout=120",
+        lock.as_str(),
+        "-o",
+        "Dpkg::Options::=--force-confdef",
+        "-o",
+        "Dpkg::Options::=--force-confold",
         "install",
         "-y",
         "--no-install-recommends",
+        "--no-remove",
         "--allow-downgrades",
         "--allow-change-held-packages",
     ]
@@ -336,11 +352,15 @@ pub fn parse_showhold(stdout: &str) -> Vec<String> {
         .collect()
 }
 
-/// What an `apt-get -s install` would do, checked against the pin: every
-/// `Inst` line must name a pinned package in its pinned version, every
-/// pinned package that is not yet at its version must be there, and there
-/// must be no `Remv` line. `Err` = a sentence saying what apt wanted
-/// instead; nothing has been changed at that point.
+/// What an `apt-get -s install` would do, checked against the pin.
+/// `pinned` = the packages handed to apt (those not yet at their pinned
+/// version). The plan must be EXACTLY them:
+/// - every `Inst` line names one of them, in its pinned version;
+/// - every one of them has its `Inst` line;
+/// - there is no `Remv` / `Purg` line.
+///
+/// `Err` = a sentence saying what apt wanted instead; nothing has been
+/// changed at that point.
 pub fn check_simulation(stdout: &str, pinned: &[Package]) -> Result<(), String> {
     let mut seen: Vec<&str> = Vec::new();
     for line in stdout.lines() {
@@ -380,13 +400,209 @@ pub fn check_simulation(stdout: &str, pinned: &[Package]) -> Result<(), String> 
             _ => {}
         }
     }
-    // Not every pinned package must change (one may already be at its
-    // version); but a simulation that installs NONE of them did not
-    // understand the request.
-    if seen.is_empty() {
-        return Err("apt's simulation installs none of the pinned packages".to_string());
+    let absent: Vec<&str> = pinned
+        .iter()
+        .map(|p| p.name.as_str())
+        .filter(|n| !seen.contains(n))
+        .collect();
+    if !absent.is_empty() {
+        return Err(format!(
+            "apt's simulation does not install {}",
+            absent.join(", ")
+        ));
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// time
+// ---------------------------------------------------------------------------
+
+// Every bound of the command, in seconds. Two kinds:
+// - a KILLABLE phase (a download, the simulation, a query, a lock wait
+//   before anything is written): its bound may cut it, and an outer limit
+//   may shorten the bound;
+// - the TRANSACTION (the real `apt-get install`): nothing but its own
+//   bound ends it, and it is started only when that bound, plus what comes
+//   after it, fits in the time the caller allows ([`killable_secs`]).
+
+/// `apt-mark showhold`.
+pub const T_HELD: u64 = 30;
+/// One `dpkg-query` run (the whole database).
+pub const T_DPKG: u64 = 30;
+/// One file, redirects included.
+pub const T_DOWNLOAD: u64 = 180;
+/// `apt-get -s install`.
+pub const T_SIMULATE: u64 = 90;
+/// apt's own wait for the dpkg lock, part of [`T_INSTALL`].
+pub const T_LOCK: u64 = 120;
+/// The real `apt-get install`: the lock wait and the transaction. Two small
+/// packages take seconds; this is the last resort against an apt that
+/// hangs, and the only thing that may end a running transaction.
+pub const T_INSTALL: u64 = 600;
+/// `apt-mark hold`.
+pub const T_HOLD: u64 = 30;
+/// `systemctl try-restart` of the agent.
+pub const T_RESTART: u64 = 90;
+/// After the transaction: read the database back, hold, restart.
+pub const T_AFTER: u64 = T_DPKG + T_HOLD + T_RESTART;
+/// The files of the largest set today (two).
+pub const MAX_FILES: u64 = 2;
+/// The whole command at its worst: every killable phase at its bound, then
+/// the transaction at its bound, then what follows.
+pub const STEP_WORST: u64 =
+    T_HELD + T_DPKG + MAX_FILES * T_DOWNLOAD + T_SIMULATE + T_DPKG + T_INSTALL + T_AFTER;
+/// The time limit a caller gives the command when nothing tighter bounds
+/// it (`--time-limit`): the worst case and half a minute.
+pub const STEP_LIMIT: u64 = STEP_WORST + 30;
+/// How long after the limit a caller may stop a command that did not keep
+/// its word.
+pub const STEP_GRACE: u64 = 60;
+
+// Checked at compile time: apt's lock wait is inside the install's bound,
+// and the worst case is inside the limit a caller gives.
+const _: () = assert!(T_LOCK < T_INSTALL);
+const _: () = assert!(STEP_WORST <= STEP_LIMIT);
+
+/// The bound of a killable phase whose own bound is `own`, when
+/// `left_before_transaction` seconds remain before the transaction would
+/// have to start (`None` = the caller set no limit). `None` = it does not
+/// fit: the phase is not started.
+pub fn killable_secs(own: u64, left_before_transaction: Option<u64>) -> Option<u64> {
+    match left_before_transaction {
+        None => Some(own),
+        Some(left) if left >= 2 => Some(own.min(left)),
+        Some(_) => None,
+    }
+}
+
+// ---------------------------------------------------------------------------
+// the dpkg database
+// ---------------------------------------------------------------------------
+
+/// One package of `dpkg-query -W -f='${binary:Package}\t${Version}\t${db:Status-Abbrev}\n'`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DpkgEntry {
+    pub version: String,
+    /// `<wanted><status><error>`: `ii `, `hi `, `iU `, `rc `, …
+    pub abbrev: String,
+}
+
+impl DpkgEntry {
+    fn status(&self) -> char {
+        self.abbrev.chars().nth(1).unwrap_or(' ')
+    }
+
+    /// Installed (status `i`), wanted or on hold: as
+    /// `camera_sensors::parse_dpkg_query` reads it.
+    pub fn installed(&self) -> bool {
+        matches!(self.abbrev.chars().next(), Some('i' | 'h'))
+            && self.status() == 'i'
+            && !self.version.is_empty()
+    }
+
+    /// dpkg stopped in the middle of this package: unpacked, half-installed
+    /// or half-configured. (`W`/`t`, a trigger still to run, is not that.)
+    pub fn unfinished(&self) -> Option<&'static str> {
+        match self.status() {
+            'U' => Some("unpacked, not configured"),
+            'H' => Some("half-installed"),
+            'F' => Some("half-configured"),
+            _ => None,
+        }
+    }
+}
+
+/// The dpkg database by package name (an `:arch` qualifier dropped).
+pub type DpkgSnapshot = BTreeMap<String, DpkgEntry>;
+
+pub fn parse_dpkg_snapshot(stdout: &str) -> DpkgSnapshot {
+    stdout
+        .lines()
+        .filter_map(|l| {
+            let mut f = l.split('\t');
+            let (name, version, abbrev) = (f.next()?, f.next()?, f.next()?);
+            let name = name.split(':').next().unwrap_or(name);
+            (!name.is_empty()).then(|| {
+                (
+                    name.to_string(),
+                    DpkgEntry {
+                        version: version.to_string(),
+                        abbrev: abbrev.to_string(),
+                    },
+                )
+            })
+        })
+        .collect()
+}
+
+/// The installed versions of a snapshot.
+pub fn installed_versions(snapshot: &DpkgSnapshot) -> BTreeMap<String, String> {
+    snapshot
+        .iter()
+        .filter(|(_, e)| e.installed())
+        .map(|(n, e)| (n.clone(), e.version.clone()))
+        .collect()
+}
+
+/// Was dpkg interrupted? The packages it left unfinished (`name (state)`),
+/// at most eight named. `journal` = dpkg's own journal of an interrupted
+/// run is not empty (`/var/lib/dpkg/updates`, what makes apt say "dpkg was
+/// interrupted"). `None` = no.
+pub fn interrupted(snapshot: &DpkgSnapshot, journal: bool) -> Option<String> {
+    let unfinished: Vec<String> = snapshot
+        .iter()
+        .filter_map(|(n, e)| e.unfinished().map(|st| format!("{n} is {st}")))
+        .collect();
+    if unfinished.is_empty() && !journal {
+        return None;
+    }
+    Some(if unfinished.is_empty() {
+        "its journal of an unfinished run is not empty".to_string()
+    } else {
+        let more = unfinished.len().saturating_sub(8);
+        let mut text = unfinished[..unfinished.len().min(8)].join(", ");
+        if more > 0 {
+            text.push_str(&format!(" and {more} more"));
+        }
+        text
+    })
+}
+
+/// What to do about an interrupted dpkg.
+pub const DPKG_REMEDY: &str = "sudo dpkg --configure -a";
+
+/// What changed between two snapshots OUTSIDE `pinned` (the names of the
+/// packages the transaction was to install): `name 1 -> 2`, `name
+/// installed 2`, `name removed`, at most eight named. Empty = nothing.
+pub fn changed_outside(
+    before: &DpkgSnapshot,
+    after: &DpkgSnapshot,
+    pinned: &[String],
+) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let show = |e: &DpkgEntry| format!("{} ({})", e.version, e.abbrev.trim_end());
+    for (name, was) in before {
+        if pinned.contains(name) {
+            continue;
+        }
+        match after.get(name) {
+            None => out.push(format!("{name} removed")),
+            Some(now) if now != was => out.push(format!("{name} {} -> {}", show(was), show(now))),
+            Some(_) => {}
+        }
+    }
+    for (name, now) in after {
+        if !pinned.contains(name) && !before.contains_key(name) {
+            out.push(format!("{name} installed {}", show(now)));
+        }
+    }
+    let more = out.len().saturating_sub(8);
+    out.truncate(8);
+    if more > 0 {
+        out.push(format!("and {more} more"));
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -402,85 +618,97 @@ pub struct InstallRecord {
     pub sets: BTreeMap<String, SetRecord>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// What this command did to one set, over all its runs.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct SetRecord {
-    /// Epoch ms of the (last) install.
+    /// Epoch ms of the last change.
     pub at: i64,
-    /// The packages were put on hold by the install.
-    pub hold: bool,
+    /// The packages THIS COMMAND installed (a package that was already at
+    /// its pinned version when the command first saw it is not here).
+    #[serde(default)]
     pub packages: Vec<PackageRecord>,
+    /// The packages this command put on hold (one that was already held is
+    /// not here: a rollback leaves that hold alone).
+    #[serde(default)]
+    pub held: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PackageRecord {
     pub name: String,
-    /// The version the install put there.
+    /// The version this command put there.
     pub installed: String,
-    /// The version that was there before the FIRST install of this set
-    /// (the stock one); `None` = the package was not installed.
+    /// The version that was there before this command FIRST installed the
+    /// package (the stock one); `None` = the package was not installed.
+    /// Never the pinned version itself.
     pub replaced: Option<String>,
-    /// It was already on hold before the install (so a rollback leaves the
-    /// hold alone).
-    pub was_held: bool,
 }
 
-/// The record of an install of `packages` over a device that had `before`
-/// installed and `held_before` on hold. A package the earlier record shows
-/// as put there by this command keeps its ORIGINAL `replaced` / `wasHeld`:
-/// a second install must not record the first one's version as "stock".
-pub fn set_record(
+/// One package a run changed: `(name, the version now, the version before)`.
+pub type Replaced = (String, String, Option<String>);
+
+/// The record after a run that changed `replaced` and newly held `held`.
+/// Written as soon as that is known, also when the run failed half-way: a
+/// package apt did upgrade before it failed is recorded then, so the next
+/// run, which finds it at the pinned version, does not take that version
+/// for what was there before.
+/// - A package whose version before IS the version now is not recorded.
+/// - A package the earlier record shows as put there by this command (it
+///   was at the recorded version) keeps its ORIGINAL `replaced`.
+pub fn merge_record(
     earlier: Option<&SetRecord>,
-    packages: &[Package],
-    before: &BTreeMap<String, String>,
-    held_before: &[String],
-    hold: bool,
+    replaced: &[Replaced],
+    held: &[String],
     at: i64,
 ) -> SetRecord {
-    SetRecord {
-        at,
-        hold,
-        packages: packages
+    let mut rec = earlier.cloned().unwrap_or_default();
+    for (name, now, before) in replaced {
+        if before.as_deref() == Some(now.as_str()) {
+            continue;
+        }
+        let ours = rec
+            .packages
             .iter()
-            .map(|p| {
-                let was = before.get(&p.name);
-                let ours = earlier
-                    .and_then(|e| e.packages.iter().find(|r| r.name == p.name))
-                    .filter(|r| was == Some(&r.installed));
-                PackageRecord {
-                    name: p.name.clone(),
-                    installed: p.version.clone(),
-                    replaced: match ours {
-                        Some(r) => r.replaced.clone(),
-                        None => was.cloned(),
-                    },
-                    was_held: match ours {
-                        Some(r) => r.was_held,
-                        None => held_before.contains(&p.name),
-                    },
-                }
-            })
-            .collect(),
+            .position(|r| &r.name == name && Some(&r.installed) == before.as_ref());
+        match ours {
+            Some(i) => rec.packages[i].installed = now.clone(),
+            None => {
+                rec.packages.retain(|r| &r.name != name);
+                rec.packages.push(PackageRecord {
+                    name: name.clone(),
+                    installed: now.clone(),
+                    replaced: before.clone(),
+                });
+            }
+        }
     }
+    for name in held {
+        if !rec.held.contains(name) {
+            rec.held.push(name.clone());
+        }
+    }
+    rec.at = at;
+    rec
 }
 
-/// The commands that undo an install by hand (printed by the listing and
-/// in the guide): release the hold this command set, then put the replaced
-/// versions back from apt.
-pub fn rollback_commands(rec: &SetRecord) -> Vec<String> {
+/// The commands that undo by hand what this command did (printed by the
+/// listing and in the guide): release the holds it set, then put the
+/// replaced versions back from apt. `installed` = the versions installed
+/// now: a package that is no longer at the version this command put there
+/// was changed since, and is left out.
+pub fn rollback_commands(rec: &SetRecord, installed: &BTreeMap<String, String>) -> Vec<String> {
     let mut out = Vec::new();
-    let unhold: Vec<&str> = rec
+    if !rec.held.is_empty() {
+        out.push(format!("sudo apt-mark unhold {}", rec.held.join(" ")));
+    }
+    let ours: Vec<&PackageRecord> = rec
         .packages
         .iter()
-        .filter(|p| rec.hold && !p.was_held)
-        .map(|p| p.name.as_str())
+        .filter(|p| installed.get(&p.name) == Some(&p.installed))
         .collect();
-    if !unhold.is_empty() {
-        out.push(format!("sudo apt-mark unhold {}", unhold.join(" ")));
-    }
-    let back: Vec<String> = rec
-        .packages
+    let back: Vec<String> = ours
         .iter()
         .filter_map(|p| p.replaced.as_ref().map(|v| format!("{}={v}", p.name)))
         .collect();
@@ -490,8 +718,7 @@ pub fn rollback_commands(rec: &SetRecord) -> Vec<String> {
             back.join(" ")
         ));
     }
-    let gone: Vec<&str> = rec
-        .packages
+    let gone: Vec<&str> = ours
         .iter()
         .filter(|p| p.replaced.is_none())
         .map(|p| p.name.as_str())
@@ -558,9 +785,15 @@ pub fn listing(plan: &SetPlan, held: Option<&[String]>, record: Option<&SetRecor
         )),
     }
     if let Some(rec) = record {
+        let installed: BTreeMap<String, String> = plan
+            .status
+            .iter()
+            .filter_map(|s| Some((s.name.clone(), s.installed.clone()?)))
+            .collect();
         let replaced: Vec<String> = rec
             .packages
             .iter()
+            .filter(|p| installed.get(&p.name) == Some(&p.installed))
             .map(|p| {
                 format!(
                     "{} {}",
@@ -569,11 +802,13 @@ pub fn listing(plan: &SetPlan, held: Option<&[String]>, record: Option<&SetRecor
                 )
             })
             .collect();
-        out.push(format!(
-            "  installed by xorgate-rs; it replaced: {}",
-            replaced.join(", ")
-        ));
-        for cmd in rollback_commands(rec) {
+        if !replaced.is_empty() {
+            out.push(format!(
+                "  installed by xorgate-rs; it replaced: {}",
+                replaced.join(", ")
+            ));
+        }
+        for cmd in rollback_commands(rec, &installed) {
             out.push(format!("  to go back: {cmd}"));
         }
     }
@@ -617,6 +852,7 @@ mod tests {
                     .map(|(n, v)| (n.to_string(), v.to_string()))
                     .collect(),
             ),
+            interrupted: None,
         }
     }
 
@@ -833,6 +1069,7 @@ mod tests {
             os: Some("bookworm".into()),
             arch: Some("arm64".into()),
             packages: None,
+            interrupted: None,
         };
         assert!(matches!(plan(&d, c, &blind)[0].state, SetState::Unknown(_)));
         assert!(matches!(
@@ -857,7 +1094,7 @@ mod tests {
         assert_eq!(
             check_simulation(
                 "Inst libcamera0.5:arm64 [1] (0.5.2+rpt20250909-1 local-deb [arm64])\n",
-                &pins
+                &pins[..1]
             ),
             Ok(())
         );
@@ -882,26 +1119,44 @@ mod tests {
                 "apt would install libcamera0.5 0.5.3-1, not the pinned 0.5.2+rpt20250909-1".into()
             )
         );
+        // EVERY package handed to apt must be in its plan, not just one.
         assert_eq!(
             check_simulation("Reading package lists...\n", &pins),
-            Err("apt's simulation installs none of the pinned packages".into())
+            Err("apt's simulation does not install libcamera0.5, libcamera-ipa".into())
+        );
+        let one = "Inst libcamera0.5 [1] (0.5.2+rpt20250909-1 local-deb [arm64])\n";
+        assert_eq!(
+            check_simulation(one, &pins),
+            Err("apt's simulation does not install libcamera-ipa".into())
+        );
+        // The simulation and the real run: the same arguments but `-s`.
+        let files = ["/t/a.deb".to_string(), "/t/b.deb".to_string()];
+        let (sim, real) = (
+            apt_install_args(&files, true),
+            apt_install_args(&files, false),
         );
         assert_eq!(
-            apt_install_args(&["/t/a.deb".into(), "/t/b.deb".into()], true),
+            real,
             [
                 "-o",
                 "DPkg::Lock::Timeout=120",
+                "-o",
+                "Dpkg::Options::=--force-confdef",
+                "-o",
+                "Dpkg::Options::=--force-confold",
                 "install",
                 "-y",
                 "--no-install-recommends",
+                "--no-remove",
                 "--allow-downgrades",
                 "--allow-change-held-packages",
-                "-s",
                 "/t/a.deb",
                 "/t/b.deb"
             ]
         );
-        assert_eq!(apt_install_args(&["/t/a.deb".into()], false).len(), 8);
+        let without_s: Vec<&String> = sim.iter().filter(|a| *a != "-s").collect();
+        assert_eq!(without_s, real.iter().collect::<Vec<_>>());
+        assert_eq!(sim.len(), real.len() + 1);
         assert_eq!(
             apt_mark_args("hold", &["a".into(), "b".into()]),
             ["hold", "a", "b"]
@@ -912,58 +1167,223 @@ mod tests {
         );
     }
 
+    /// The bounds add up: the transaction is only started when it and what
+    /// follows fit, and the worst case is inside the limit a caller gives.
+    #[test]
+    fn the_time_bounds_are_consistent() {
+        assert_eq!(T_AFTER, 150);
+        assert_eq!(STEP_WORST, 30 + 30 + 2 * 180 + 90 + 30 + 600 + 150);
+        assert_eq!(STEP_WORST, 1290);
+        assert_eq!(STEP_LIMIT, 1320);
+        // The catalog's largest set has no more files than the sum assumes.
+        let c = catalog();
+        for set in &c.package_sets {
+            for t in &set.targets {
+                assert!(t.packages.len() as u64 <= MAX_FILES, "{}", set.id);
+            }
+        }
+        // No limit: the phase's own bound. A limit: never past it; with
+        // nothing left the phase is not started.
+        assert_eq!(killable_secs(180, None), Some(180));
+        assert_eq!(killable_secs(180, Some(600)), Some(180));
+        assert_eq!(killable_secs(180, Some(45)), Some(45));
+        assert_eq!(killable_secs(180, Some(1)), None);
+        assert_eq!(killable_secs(180, Some(0)), None);
+    }
+
+    #[test]
+    fn the_dpkg_database_is_read_whole() {
+        let db = "libcamera0.5:arm64\t0.5.2+rpt20250909-1\thi \nlibcamera-ipa:arm64\t0.5.2+rpt20250903-1\tii \nbash\t5.2\tii \nold\t1\trc \nhalf\t2\tiU \nworse\t3\tiHR\nconf\t4\tiF \ntrig\t5\tit \n";
+        let snap = parse_dpkg_snapshot(db);
+        assert_eq!(snap.len(), 8);
+        assert_eq!(
+            installed_versions(&snap).into_iter().collect::<Vec<_>>(),
+            [
+                ("bash".to_string(), "5.2".to_string()),
+                (
+                    "libcamera-ipa".to_string(),
+                    "0.5.2+rpt20250903-1".to_string()
+                ),
+                (
+                    "libcamera0.5".to_string(),
+                    "0.5.2+rpt20250909-1".to_string()
+                ),
+            ]
+        );
+        // dpkg stopped half-way: named, with the state. A pending trigger
+        // is not that.
+        assert_eq!(
+            interrupted(&snap, false).as_deref(),
+            Some("conf is half-configured, half is unpacked, not configured, worse is half-installed")
+        );
+        let clean = parse_dpkg_snapshot("bash\t5.2\tii \ntrig\t5\tit \nold\t1\trc \n");
+        assert_eq!(interrupted(&clean, false), None);
+        assert_eq!(
+            interrupted(&clean, true).as_deref(),
+            Some("its journal of an unfinished run is not empty")
+        );
+        let many: String = (0..11).map(|i| format!("p{i:02}\t1\tiU \n")).collect();
+        let text = interrupted(&parse_dpkg_snapshot(&many), false).unwrap();
+        assert!(
+            text.ends_with("p07 is unpacked, not configured and 3 more"),
+            "{text}"
+        );
+
+        // What a transaction changed outside the pinned packages.
+        let pinned = ["libcamera0.5".to_string(), "libcamera-ipa".to_string()];
+        let before = parse_dpkg_snapshot("libcamera0.5\t1\tii \nlibcamera-ipa\t1\tii \nbash\t5.2\tii \ngone\t1\tii \nheld\t1\thi \n");
+        let after = parse_dpkg_snapshot("libcamera0.5\t2\tii \nlibcamera-ipa\t2\tii \nbash\t5.3\tii \nheld\t1\thi \nnew\t7\tii \n");
+        assert_eq!(
+            changed_outside(&before, &after, &pinned),
+            [
+                "bash 5.2 (ii) -> 5.3 (ii)",
+                "gone removed",
+                "new installed 7 (ii)"
+            ]
+        );
+        let same = parse_dpkg_snapshot("libcamera0.5\t2\thi \nlibcamera-ipa\t2\thi \nbash\t5.2\tii \ngone\t1\tii \nheld\t1\thi \n");
+        assert!(changed_outside(&before, &same, &pinned).is_empty());
+    }
+
     #[test]
     fn the_record_keeps_what_was_there_first() {
-        let pins = [
-            pkg("libcamera0.5", V, "https://github.com/a/libcamera0.5_x.deb"),
-            pkg(
-                "libcamera-ipa",
-                V,
-                "https://github.com/a/libcamera-ipa_x.deb",
-            ),
-        ];
-        let stock: BTreeMap<String, String> = [
-            ("libcamera0.5", "0.5.2+rpt20250903-1"),
-            ("libcamera-ipa", "0.5.2+rpt20250903-1"),
-        ]
-        .iter()
-        .map(|(n, v)| (n.to_string(), v.to_string()))
-        .collect();
-        let first = set_record(None, &pins, &stock, &[], true, 5);
-        assert_eq!(
-            first.packages[0].replaced.as_deref(),
-            Some("0.5.2+rpt20250903-1")
+        const STOCK: &str = "0.5.2+rpt20250903-1";
+        let r = |name: &str, now: &str, before: Option<&str>| -> Replaced {
+            (
+                name.to_string(),
+                now.to_string(),
+                before.map(str::to_string),
+            )
+        };
+        let held = ["libcamera0.5".to_string(), "libcamera-ipa".to_string()];
+        let now = |pairs: &[(&str, &str)]| -> BTreeMap<String, String> {
+            pairs
+                .iter()
+                .map(|(n, v)| (n.to_string(), v.to_string()))
+                .collect()
+        };
+        let both = now(&[("libcamera0.5", V), ("libcamera-ipa", V)]);
+        let first = merge_record(
+            None,
+            &[
+                r("libcamera0.5", V, Some(STOCK)),
+                r("libcamera-ipa", V, Some(STOCK)),
+            ],
+            &held,
+            5,
         );
-        assert!(!first.packages[0].was_held);
+        assert_eq!(first.packages[0].replaced.as_deref(), Some(STOCK));
+        assert_eq!(first.held, held);
         assert_eq!(
-            rollback_commands(&first),
+            rollback_commands(&first, &both),
             [
                 "sudo apt-mark unhold libcamera0.5 libcamera-ipa",
                 "sudo apt-get install --allow-downgrades libcamera0.5=0.5.2+rpt20250903-1 libcamera-ipa=0.5.2+rpt20250903-1",
             ]
         );
-        // A second install over our own (a hold that had to be set again):
-        // the stock version is still the one recorded.
-        let ours: BTreeMap<String, String> = pins
-            .iter()
-            .map(|p| (p.name.clone(), p.version.clone()))
-            .collect();
-        let held = ["libcamera0.5".to_string(), "libcamera-ipa".to_string()];
-        let second = set_record(Some(&first), &pins, &ours, &held, true, 9);
-        assert_eq!(second.packages, first.packages);
-        assert_eq!(second.at, 9);
-        // Someone put another version there in between: that is what this
-        // install replaced.
-        let mut other = ours.clone();
-        other.insert("libcamera0.5".into(), "0.5.3-1".into());
-        let third = set_record(Some(&first), &pins, &other, &held, true, 9);
-        assert_eq!(third.packages[0].replaced.as_deref(), Some("0.5.3-1"));
-        assert!(third.packages[0].was_held);
-        assert_eq!(third.packages[1], first.packages[1]);
-        // A package that was not installed, and one that was already held.
-        let none = set_record(None, &pins, &BTreeMap::new(), &held[..1], true, 1);
+        // A second run with nothing to replace: the record is as it was.
+        let second = merge_record(Some(&first), &[], &[], 9);
         assert_eq!(
-            rollback_commands(&none),
+            (second.packages.clone(), second.held.clone()),
+            (first.packages.clone(), first.held.clone())
+        );
+        assert_eq!(second.at, 9);
+
+        // THE TWO-RUN CASE (review N3). Run 1: apt upgrades libcamera0.5 and
+        // fails on libcamera-ipa. What was replaced is recorded at once.
+        let run1 = merge_record(None, &[r("libcamera0.5", V, Some(STOCK))], &[], 1);
+        assert_eq!(run1.packages.len(), 1);
+        // Run 2 finds libcamera0.5 at the pinned version and installs only
+        // libcamera-ipa. libcamera0.5 keeps the version that was there
+        // FIRST; nothing is recorded as replaced by the pinned version.
+        let run2 = merge_record(Some(&run1), &[r("libcamera-ipa", V, Some(STOCK))], &held, 2);
+        assert_eq!(
+            run2.packages,
+            [
+                PackageRecord {
+                    name: "libcamera0.5".into(),
+                    installed: V.into(),
+                    replaced: Some(STOCK.into())
+                },
+                PackageRecord {
+                    name: "libcamera-ipa".into(),
+                    installed: V.into(),
+                    replaced: Some(STOCK.into())
+                },
+            ]
+        );
+        assert!(run2
+            .packages
+            .iter()
+            .all(|p| p.replaced.as_deref() != Some(V)));
+        assert_eq!(
+            rollback_commands(&run2, &both)[1],
+            "sudo apt-get install --allow-downgrades libcamera0.5=0.5.2+rpt20250903-1 libcamera-ipa=0.5.2+rpt20250903-1"
+        );
+        // Without run 1's record (the old behaviour's input): a package
+        // found AT the pinned version is simply not recorded, rather than
+        // "replaced by" that version.
+        let blind = merge_record(
+            None,
+            &[
+                r("libcamera0.5", V, Some(V)),
+                r("libcamera-ipa", V, Some(STOCK)),
+            ],
+            &held,
+            2,
+        );
+        assert_eq!(blind.packages.len(), 1);
+        assert_eq!(blind.packages[0].name, "libcamera-ipa");
+        assert_eq!(
+            rollback_commands(&blind, &both),
+            [
+                "sudo apt-mark unhold libcamera0.5 libcamera-ipa",
+                "sudo apt-get install --allow-downgrades libcamera-ipa=0.5.2+rpt20250903-1",
+            ]
+        );
+
+        // The pin moves (a newer build of the set): the package this command
+        // installed keeps the stock version as what it replaced.
+        let moved = merge_record(
+            Some(&first),
+            &[r("libcamera0.5", "0.6.0-1", Some(V))],
+            &[],
+            3,
+        );
+        assert_eq!(moved.packages[0].installed, "0.6.0-1");
+        assert_eq!(moved.packages[0].replaced.as_deref(), Some(STOCK));
+        // Someone put another version there in between: THAT is what this
+        // run replaced.
+        let other = merge_record(
+            Some(&first),
+            &[r("libcamera0.5", V, Some("0.5.3-1"))],
+            &[],
+            3,
+        );
+        let entry = other
+            .packages
+            .iter()
+            .find(|p| p.name == "libcamera0.5")
+            .unwrap();
+        assert_eq!(entry.replaced.as_deref(), Some("0.5.3-1"));
+        assert_eq!(other.packages.len(), 2);
+        // A package that is no longer at the version this command put there
+        // is left out of the way back.
+        let changed = now(&[("libcamera0.5", "0.5.3-1"), ("libcamera-ipa", V)]);
+        assert_eq!(
+            rollback_commands(&first, &changed)[1],
+            "sudo apt-get install --allow-downgrades libcamera-ipa=0.5.2+rpt20250903-1"
+        );
+        // A package that was not installed before; a hold this command did
+        // not set is not released.
+        let none = merge_record(
+            None,
+            &[r("libcamera0.5", V, None), r("libcamera-ipa", V, None)],
+            &held[1..],
+            1,
+        );
+        assert_eq!(
+            rollback_commands(&none, &both),
             [
                 "sudo apt-mark unhold libcamera-ipa",
                 "sudo apt-get remove libcamera0.5 libcamera-ipa"
@@ -977,7 +1397,11 @@ mod tests {
                 .collect(),
         };
         let text = serde_json::to_string(&rec).unwrap();
-        assert!(text.starts_with(r#"{"v":1,"sets":{"arducam-libcamera":{"at":5,"hold":true,"packages":[{"name":"libcamera0.5","installed":"0.5.2+rpt20250909-1","replaced":"0.5.2+rpt20250903-1","wasHeld":false}"#), "{text}");
+        assert!(text.starts_with(r#"{"v":1,"sets":{"arducam-libcamera":{"at":5,"packages":[{"name":"libcamera0.5","installed":"0.5.2+rpt20250909-1","replaced":"0.5.2+rpt20250903-1"}"#), "{text}");
+        assert!(
+            text.ends_with(r#""held":["libcamera0.5","libcamera-ipa"]}}}"#),
+            "{text}"
+        );
         assert_eq!(serde_json::from_str::<InstallRecord>(&text).unwrap(), rec);
         let c = catalog();
         let d = vec![("cam0".to_string(), "imx335".to_string())];

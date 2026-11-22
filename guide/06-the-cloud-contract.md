@@ -168,7 +168,10 @@ Value rules:
     packages and says what does: "run `sudo xorgate-rs update` on the device (the console's Update
     button does the same), or `sudo xorgate-rs camera requirements --install`" (see "The extra
     packages of a sensor" in `guide/07`). A package on hold counts as installed (dpkg shows it
-    as `hi`).
+    as `hi`). When dpkg was interrupted on the device (a required package left half-installed,
+    or dpkg's journal of an unfinished run), the sentence says that first: "…dpkg was interrupted
+    on this device (libcamera0.5 is unpacked, not configured): run `sudo dpkg --configure -a`
+    there first, then run `sudo xorgate-rs update` … The camera will not appear until then".
   - `reboot-required` also covers a camera line that differs from the one the device booted with
     (an option, the rotation, a line removed or added), on a managed and on an unmanaged port.
     A real fault outranks it: when the capture is failing or nothing answers and the pending
@@ -204,7 +207,10 @@ Value rules:
     - "written to the boot config" is said only for a line THE AGENT wrote in this boot. A line
       that differs from the booted one and that something else changed (a hand edit, an
       installer) reads "the camera line was changed outside the agent since this boot (not
-      written by this setting) — REBOOT REQUIRED to apply: cam0 imx335".
+      written by this setting) — REBOOT REQUIRED to apply: cam0 imx335". In the one boot in
+      which the agent was updated from a build that kept no record of its writes, nobody can
+      say who wrote such a line (the old agent may have): the wording is then neutral, "the
+      camera line was changed since this boot — REBOOT REQUIRED to apply: cam0 imx708".
     - A change of the rotation alone is `cameraMount`'s pending reboot. `cameraSensors` stays
       `applied`: the sensor setting did not change.
     - `cameraMount` on a managed port reports the rotation of the camera that RUNS there,

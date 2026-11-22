@@ -340,8 +340,9 @@ red. The resolved state is also published as `system.led_state` and `system.heal
   `applied` for a line that is written and not booted. To know, the agent keeps each port's line as
   it first saw it in the current boot (`<home>/camera-boot-lines.json`, keyed by the kernel's boot
   id; only the ports of the device model): a line that differs now waits for a reboot. The same
-  file remembers which lines THE AGENT wrote in this boot (`written`), so a line someone else
-  changed is not reported as the agent's write. The per-port camera report uses the same record
+  file remembers which lines THE AGENT wrote in this boot (`written`, with `tracksWrites` saying
+  the snapshot was taken by a build that keeps that record), so a line someone else changed is
+  not reported as the agent's write, and a file from a build without the record blames nobody. The per-port camera report uses the same record
   for its `reboot-required` verdict. A change of the rotation alone belongs to `cameraMount`; the
   sensor setting stays `applied` (`guide/06` has the sentences).
 

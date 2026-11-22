@@ -26,6 +26,7 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use sha2::{Digest, Sha256};
+use xorgate_core::camera_packages as pk;
 use xorgate_core::update_plan::{self as plan, AssetPolicy, SudoersGrant};
 use xorgate_hal::exec::{run, RunResult};
 
@@ -34,8 +35,6 @@ const TAR_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 const SMOKE_TIMEOUT: Duration = Duration::from_secs(5);
 const VISUDO_TIMEOUT: Duration = Duration::from_secs(10);
 const SYSTEMCTL_TIMEOUT: Duration = Duration::from_secs(90);
-/// The camera-packages step: two downloads and one apt transaction.
-const CAMERA_PACKAGES_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 
 /// The external tools, by `PATH` name in production.
 #[derive(Debug, Clone)]
@@ -389,6 +388,8 @@ pub async fn update(
     p: &UpdatePaths,
     out: &mut dyn UpdateLog,
 ) -> Result<(), String> {
+    // For step 9: how much of the updater unit's budget this run has used.
+    let started = std::time::Instant::now();
     // Step 1: resolution (`update.ts:229-245`).
     let file = plan::parse_env_file(&read_lossy(&p.abs(plan::AGENT_ENV)).unwrap_or_default());
     let src = plan::resolve_source(
@@ -522,16 +523,6 @@ pub async fn update(
         return Err(format!("install step failed, rolled back: {e}"));
     }
 
-    // Step 7b (RUST-ONLY, support-other-camera-models Phase 4): the extra
-    // OS packages the declared camera sensors need, by the NEW build (its
-    // catalog holds the pins). Before the restart below, so the restarted
-    // agent finds them. Never fails the update.
-    let home = env("XORGATE_HOME")
-        .filter(|h| !h.is_empty())
-        .or_else(|| file.get("XORGATE_HOME").cloned().filter(|h| !h.is_empty()))
-        .unwrap_or_else(|| plan::DEFAULT_HOME.to_string());
-    camera_packages_step(p, &home, out).await;
-
     // Step 8: reload + restart (`update.ts:358-364`), Q5.
     run_s(
         &p.tools.systemctl,
@@ -556,6 +547,34 @@ pub async fn update(
     }
     rm_rf(&backup);
     out.log(&plan::updated_log(&src.version));
+
+    // Step 9 (RUST-ONLY, support-other-camera-models Phase 4): the extra OS
+    // packages the declared camera sensors need, by the NEW build (its
+    // catalog holds the pins). AFTER the update is complete: the build is
+    // in place, systemd reloaded, the agent restarted, `updated to …` said.
+    // Whatever this step does or fails to do, the update has happened. It
+    // restarts the agent once more itself, and only when it installed
+    // something (`try-restart`).
+    let home = env("XORGATE_HOME")
+        .filter(|h| !h.is_empty())
+        .or_else(|| file.get("XORGATE_HOME").cloned().filter(|h| !h.is_empty()))
+        .unwrap_or_else(|| plan::DEFAULT_HOME.to_string());
+    // Under the updater unit (systemd sets INVOCATION_ID) the step may use
+    // what is left of the unit's start budget, less a margin; by hand, its
+    // own worst case.
+    let limit = plan::camera_packages_limit(
+        env("INVOCATION_ID").is_some_and(|v| !v.is_empty()),
+        started.elapsed().as_secs(),
+    );
+    camera_packages_step(
+        p,
+        &home,
+        limit,
+        Duration::from_secs(pk::STEP_GRACE),
+        Duration::from_secs(pk::T_INSTALL + pk::T_AFTER + pk::STEP_GRACE),
+        out,
+    )
+    .await;
     Ok(())
 }
 
@@ -600,47 +619,101 @@ async fn verify_checksum(
     Ok(())
 }
 
-/// Step 7b: `<live>/bin/xorgate-rs camera requirements --install
-/// --no-restart --quiet`, the installed build's own command
+/// Step 9: `<live>/bin/xorgate-rs camera requirements --install --quiet
+/// --time-limit <limit>`, the installed build's own command
 /// (`cli::camera_packages`): it installs the extra OS packages a declared
-/// camera sensor needs when they are missing, and prints nothing when
-/// there is nothing to do. Only its lines that begin with
-/// `camera packages: ` are passed on (a `WARN` among them when a download
-/// or a checksum failed: the system is then as it was). Whatever happens
-/// here, the update goes on: a build without the command (an older `--tag`)
-/// prints its usage, which is not passed on.
-async fn camera_packages_step(p: &UpdatePaths, home: &str, out: &mut dyn UpdateLog) {
+/// camera sensor needs when they are missing, restarts the agent when it
+/// did, and prints nothing when there is nothing to do. Only its lines
+/// that begin with `camera packages: ` are passed on, as they come (a
+/// `WARN` among them when a download or a checksum failed: the system is
+/// then as it was). A build without the command (an older `--tag`) prints
+/// its usage, which is not passed on.
+///
+/// TIME. The command keeps to `limit` by itself: it cuts its killable
+/// steps and starts the real `apt-get install` only when that can finish
+/// inside the limit. This function is the backstop for a command that does
+/// not keep its word:
+/// - `limit + grace` after the start it sends the command SIGTERM. The
+///   command then ends its killable step at once (it kills that step's
+///   process group), or, if an apt transaction is running, finishes it
+///   first: the transaction is never interrupted, and this function sends
+///   nothing to it (it runs in its own process group).
+/// - `last_resort` later still, a command that has not ended is killed as
+///   a process group. That group does not hold a transaction's `apt-get`.
+///
+/// The command runs in its own process group, so nothing of it is left
+/// running after this function returns, save an apt transaction that a
+/// doubly broken command left behind, which is left to finish.
+async fn camera_packages_step(
+    p: &UpdatePaths,
+    home: &str,
+    limit: u64,
+    grace: Duration,
+    last_resort: Duration,
+    out: &mut dyn UpdateLog,
+) {
+    use tokio::io::AsyncBufReadExt;
+    let prefix = pk::LINE_PREFIX;
     let bin = p.live().join(plan::BIN_SRC);
     let mut cmd = xorgate_hal::child::command(&bin);
     cmd.args([
         "camera",
         "requirements",
         "--install",
-        "--no-restart",
         "--quiet",
+        "--time-limit",
+        &limit.to_string(),
     ])
     .env("XORGATE_HOME", home)
     .stdin(std::process::Stdio::null())
     .stdout(std::process::Stdio::piped())
     .stderr(std::process::Stdio::null())
-    .kill_on_drop(true);
-    match tokio::time::timeout(CAMERA_PACKAGES_TIMEOUT, cmd.output()).await {
-        Err(_) => out.log(&format!(
-            "{}WARN the step did not finish within {} min and was stopped; the update itself is complete",
-            xorgate_core::camera_packages::LINE_PREFIX,
-            CAMERA_PACKAGES_TIMEOUT.as_secs() / 60
-        )),
-        // It could not be run at all: the smoke-exec ran this very binary
-        // a moment ago, so there is nothing useful to add.
-        Ok(Err(_)) => {}
-        Ok(Ok(o)) => {
-            for line in String::from_utf8_lossy(&o.stdout).lines() {
-                if line.starts_with(xorgate_core::camera_packages::LINE_PREFIX) {
-                    out.log(line);
+    .process_group(0);
+    // It could not be run at all: the smoke-exec ran this very binary a
+    // moment ago, so there is nothing useful to add.
+    let Ok(mut child) = cmd.spawn() else {
+        return;
+    };
+    let pid = child.id().map(|id| nix::unistd::Pid::from_raw(id as i32));
+    let Some(stdout) = child.stdout.take() else {
+        let _ = child.wait().await;
+        return;
+    };
+    let mut lines = tokio::io::BufReader::new(stdout).lines();
+    let cap = tokio::time::sleep(Duration::from_secs(limit) + grace);
+    tokio::pin!(cap);
+    let end = tokio::time::sleep(Duration::from_secs(limit) + grace + last_resort);
+    tokio::pin!(end);
+    let (mut asked, mut killed) = (false, false);
+    loop {
+        tokio::select! {
+            line = lines.next_line() => match line {
+                Ok(Some(l)) if l.starts_with(prefix) => out.log(&l),
+                Ok(Some(_)) => {}
+                // End of its output: the command is gone.
+                _ => break,
+            },
+            _ = &mut cap, if !asked => {
+                asked = true;
+                if let Some(pid) = pid {
+                    let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM);
                 }
+                out.log(&format!(
+                    "{prefix}WARN the step did not keep to its time limit and was asked to stop (an apt transaction that is running is left to finish); the update itself is complete"
+                ));
+            }
+            _ = &mut end, if asked && !killed => {
+                killed = true;
+                if let Some(pid) = pid {
+                    let _ = nix::sys::signal::killpg(pid, nix::sys::signal::Signal::SIGKILL);
+                }
+                out.log(&format!(
+                    "{prefix}WARN the step did not stop and was killed; check with `xorgate-rs camera requirements`"
+                ));
             }
         }
     }
+    let _ = child.wait().await;
 }
 
 /// Q13 (§5 step 4): `<staging>/bin/xorgate-rs -v` must exit 0 within 5 s and
@@ -840,7 +913,12 @@ mod tests {
             .collect();
         assert!(directives.contains(&"Type=oneshot"));
         assert!(directives.contains(&"ExecStart=/usr/local/bin/xorgate-rs update"));
-        assert!(directives.contains(&"TimeoutStartSec=20min"));
+        // The budget the camera-packages step is bounded by is THIS line
+        // (`update_plan::UPDATER_UNIT_BUDGET_SECS`).
+        assert!(directives.contains(
+            &format!("TimeoutStartSec={}min", plan::UPDATER_UNIT_BUDGET_SECS / 60).as_str()
+        ));
+        assert_eq!(plan::UPDATER_UNIT_BUDGET_SECS, 45 * 60);
         assert!(!directives.iter().any(|l| l.starts_with("[Install]")));
         assert!(!unit.contains("ExecStart=/usr/local/bin/xorgate update"));
     }
@@ -1376,13 +1454,14 @@ mod tests {
         rm_rf(&r.dir);
     }
 
-    /// Step 7b: after the install, the NEW build's `camera requirements
-    /// --install --no-restart --quiet` runs with the agent's home, before
-    /// the restart. Only its `camera packages: ` lines reach the log; a
-    /// WARN among them (a failed download) does not fail the update; a
-    /// build without the command says nothing here.
+    /// Step 9: AFTER the update is complete (the reload done, `updated to`
+    /// said), the NEW build's `camera requirements --install --quiet
+    /// --time-limit N` runs with the agent's home. Only its `camera
+    /// packages: ` lines reach the log; a WARN among them (a failed
+    /// download) does not fail the update; a build without the command
+    /// says nothing here.
     #[tokio::test]
-    async fn the_camera_packages_step_runs_the_new_build_and_never_fails_the_update() {
+    async fn the_camera_packages_step_runs_after_the_update_and_never_fails_it() {
         // (the build's answer to `camera …`, the lines expected in the log)
         let cases: [(&str, &str, &[&str]); 3] = [
             (
@@ -1401,9 +1480,12 @@ mod tests {
         for (name, answer, expected) in cases {
             let r = rig(&format!("campkg-{name}"));
             let args = r.dir.join("camera.args");
+            // What systemctl had been asked by the time the command ran.
             let banner = format!(
-                "' >/dev/null; [ \"$1\" = camera ] && {{ echo \"$XORGATE_HOME|$*\" > {}; {answer}; }}; echo 'xorgate-rs 0.0.1 (v1, dev)",
-                args.display()
+                "' >/dev/null; [ \"$1\" = camera ] && {{ echo \"$XORGATE_HOME|$*\" > {}; cp {}/systemctl.log {}/systemctl.then; {answer}; }}; echo 'xorgate-rs 0.0.1 (v1, dev)",
+                args.display(),
+                r.dir.display(),
+                r.dir.display()
             );
             publish(&r, "v1", &banner, true);
             fs::write(
@@ -1415,12 +1497,26 @@ mod tests {
             update(&argv(&["--tag", "v1"]), &|_| None, &r.p, &mut log)
                 .await
                 .unwrap_or_else(|e| panic!("{name}: the update must not fail: {e}"));
-            // The new build was asked, with the home of agent.env.
+            // The new build was asked, with the home of agent.env and (by
+            // hand: no unit budget) the step's own time limit. It restarts
+            // the agent itself when it installed: no --no-restart.
             assert_eq!(
                 fs::read_to_string(&args).unwrap(),
-                "/srv/agent-home|camera requirements --install --no-restart --quiet\n",
+                "/srv/agent-home|camera requirements --install --quiet --time-limit 1320\n",
                 "{name}"
             );
+            // The update was COMPLETE by then: systemd reloaded (and the
+            // agent restarted, had it been running), `updated to` logged
+            // before any line of the step.
+            assert_eq!(
+                fs::read_to_string(r.dir.join("systemctl.then")).unwrap(),
+                "is-active --quiet xorgate-agent-rs\ndaemon-reload\n",
+                "{name}"
+            );
+            let done = log
+                .iter()
+                .position(|l| *l == plan::updated_log("v1"))
+                .unwrap_or_else(|| panic!("{name}: {log:?}"));
             let got: Vec<&String> = log
                 .iter()
                 .filter(|l| {
@@ -1430,21 +1526,33 @@ mod tests {
                 })
                 .collect();
             assert_eq!(got, expected.iter().collect::<Vec<_>>(), "{name}: {log:?}");
-            // ... after the install, before the reload.
+            assert_eq!(
+                log[done + 1..],
+                *expected,
+                "{name}: the step's lines come last"
+            );
+            // The update itself asked systemctl nothing more.
             let sc = fs::read_to_string(r.dir.join("systemctl.log")).unwrap();
             assert_eq!(
                 sc, "is-active --quiet xorgate-agent-rs\ndaemon-reload\n",
                 "{name}"
             );
             assert!(r.p.live().join("bin/xorgate-rs").exists());
+            assert!(!r.p.backup().exists());
             rm_rf(&r.dir);
         }
-        // The environment's XORGATE_HOME wins; with neither, the wrapper's default.
-        for (env_home, want) in [(Some("/env/home"), "/env/home"), (None, "/var/lib/xorgate")] {
+        // The environment's XORGATE_HOME wins; with neither, the wrapper's
+        // default. Under the updater unit (INVOCATION_ID) the limit is what
+        // is left of the unit's budget: here, right after the start, still
+        // the step's own.
+        for (env_home, unit, want) in [
+            (Some("/env/home"), false, "/env/home|1320"),
+            (None, true, "/var/lib/xorgate|1320"),
+        ] {
             let r = rig("campkg-home");
             let args = r.dir.join("camera.args");
             let banner = format!(
-                "' >/dev/null; [ \"$1\" = camera ] && {{ echo \"$XORGATE_HOME\" > {}; exit 0; }}; echo 'xorgate-rs 0.0.1 (v1, dev)",
+                "' >/dev/null; [ \"$1\" = camera ] && {{ echo \"$XORGATE_HOME|$6\" > {}; exit 0; }}; echo 'xorgate-rs 0.0.1 (v1, dev)",
                 args.display()
             );
             publish(&r, "v1", &banner, true);
@@ -1453,10 +1561,10 @@ mod tests {
                 "DEVICE_DIST_BUCKET_URL=https://bucket.example/dist/\n",
             )
             .unwrap();
-            let env = move |k: &str| {
-                (k == "XORGATE_HOME")
-                    .then(|| env_home.map(str::to_string))
-                    .flatten()
+            let env = move |k: &str| match k {
+                "XORGATE_HOME" => env_home.map(str::to_string),
+                "INVOCATION_ID" => unit.then(|| "0123456789abcdef".to_string()),
+                _ => None,
             };
             let mut log: Vec<String> = Vec::new();
             update(&argv(&["--tag", "v1"]), &env, &r.p, &mut log)
@@ -1465,5 +1573,108 @@ mod tests {
             assert_eq!(fs::read_to_string(&args).unwrap(), format!("{want}\n"));
             rm_rf(&r.dir);
         }
+    }
+
+    /// The limit the step is given: its own by hand; under the updater unit
+    /// never more than what is left of the unit's budget less the margin,
+    /// so systemd's timeout cannot fall into an apt transaction.
+    #[test]
+    fn the_camera_packages_step_fits_the_updater_unit() {
+        let (budget, margin) = (
+            plan::UPDATER_UNIT_BUDGET_SECS,
+            plan::UPDATER_UNIT_MARGIN_SECS,
+        );
+        assert_eq!(pk::STEP_LIMIT, 1320);
+        // By hand: nothing else bounds the run.
+        assert_eq!(plan::camera_packages_limit(false, 0), 1320);
+        assert_eq!(plan::camera_packages_limit(false, 100_000), 1320);
+        // Under the unit: the whole limit while it fits…
+        assert_eq!(plan::camera_packages_limit(true, 0), 1320);
+        assert_eq!(
+            plan::camera_packages_limit(true, budget - margin - 1320),
+            1320
+        );
+        // …then what is left, down to nothing.
+        assert_eq!(
+            plan::camera_packages_limit(true, budget - margin - 1000),
+            1000
+        );
+        assert_eq!(plan::camera_packages_limit(true, budget - margin), 0);
+        assert_eq!(plan::camera_packages_limit(true, budget + 500), 0);
+        // The backstop (the limit, the grace, a few seconds to stop) ends
+        // inside the unit's budget for every start time…
+        for elapsed in [0, 60, 600, 1260, 1261, 2000, 2579, 2580, 2700] {
+            let limit = plan::camera_packages_limit(true, elapsed);
+            if limit > 0 {
+                assert!(
+                    elapsed + limit + pk::STEP_GRACE + 15 <= budget,
+                    "{elapsed}: {limit}"
+                );
+            }
+        }
+        // (That the command's own bounds fit its limit, and its backstop
+        // the margin, is asserted at compile time beside the constants.)
+        // An ordinary update (a few minutes) leaves the step its whole
+        // limit; that is what the 45 minutes are for.
+        assert_eq!(plan::camera_packages_limit(true, 20 * 60), 1320);
+    }
+
+    /// The backstop for a command that does not keep to its limit: asked
+    /// to stop (SIGTERM, which the real command obeys at once unless an apt
+    /// transaction runs), and only much later killed as a group.
+    #[tokio::test]
+    async fn a_step_that_overruns_is_asked_to_stop_then_killed() {
+        async fn step(tag: &str, script: &str, last_resort: u64) -> (Vec<String>, Duration) {
+            let r = rig(tag);
+            let bin = r.p.live().join(plan::BIN_SRC);
+            fs::create_dir_all(bin.parent().unwrap()).unwrap();
+            sh(&bin, script);
+            let mut log: Vec<String> = Vec::new();
+            let t0 = std::time::Instant::now();
+            camera_packages_step(
+                &r.p,
+                "/h",
+                0,
+                Duration::from_millis(300),
+                Duration::from_secs(last_resort),
+                &mut log,
+            )
+            .await;
+            rm_rf(&r.dir);
+            (log, t0.elapsed())
+        }
+        // It obeys SIGTERM: gone at once, one line.
+        let (log, took) = step(
+            "campkg-over1",
+            "echo 'camera packages: x: downloading y'; exec sleep 30",
+            20,
+        )
+        .await;
+        assert_eq!(
+            log,
+            [
+                "camera packages: x: downloading y",
+                "camera packages: WARN the step did not keep to its time limit and was asked to stop (an apt transaction that is running is left to finish); the update itself is complete",
+            ]
+        );
+        assert!(took < Duration::from_secs(10), "{took:?}");
+        // It ignores SIGTERM (as during a transaction) and ends by itself:
+        // it is waited for, not killed.
+        let (log, took) = step(
+            "campkg-over2",
+            "trap '' TERM; sleep 2; echo 'camera packages: x: installed y'",
+            20,
+        )
+        .await;
+        assert_eq!(log.len(), 2, "{log:?}");
+        assert_eq!(log[1], "camera packages: x: installed y");
+        assert!(took >= Duration::from_secs(2), "{took:?}");
+        // It never ends: the last resort, its process group.
+        let (log, took) = step("campkg-over3", "trap '' TERM; exec sleep 30", 1).await;
+        assert_eq!(
+            log[1],
+            "camera packages: WARN the step did not stop and was killed; check with `xorgate-rs camera requirements`"
+        );
+        assert!(took < Duration::from_secs(10), "{took:?}");
     }
 }

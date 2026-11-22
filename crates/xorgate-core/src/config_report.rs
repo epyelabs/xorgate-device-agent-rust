@@ -1121,7 +1121,14 @@ pub fn clip_long_words(text: &str, max: usize) -> String {
             let keep = max.saturating_sub(1 + closing.len()).max(8);
             let head: String = w.chars().take(keep).collect();
             let tail: String = closing.into_iter().rev().collect();
-            format!("{head}…{tail}")
+            let clipped = format!("{head}…{tail}");
+            // Never longer than it was (a word made of closing punctuation
+            // alone would grow: its "closing" part is all of it).
+            if clipped.chars().count() < w.chars().count() {
+                clipped
+            } else {
+                w.to_string()
+            }
         })
         .collect::<Vec<_>>()
         .join(" ")
@@ -1306,6 +1313,9 @@ pub fn camera_sensors_status(
     };
     let pending = named(CameraSensorsVerdict::PendingReboot);
     let outside = named(CameraSensorsVerdict::ChangedOutside);
+    // Nobody can say who wrote it (the boot in which the agent was
+    // updated from a build that kept no record of its writes): neutral.
+    let since = named(CameraSensorsVerdict::ChangedSinceBoot);
     let blocked: Vec<(String, String)> = state
         .cameras
         .iter()
@@ -1338,6 +1348,12 @@ pub fn camera_sensors_status(
                 outside.join(", ")
             ));
         }
+        if !since.is_empty() {
+            waiting.push(format!(
+                "changed since this boot and waiting for a reboot: {}",
+                since.join(", ")
+            ));
+        }
         let waiting = (!waiting.is_empty()).then(|| waiting.join("; "));
         return NamespaceStatus::rejected(at, join_status_parts(&blocked, waiting.as_deref()));
     }
@@ -1352,6 +1368,12 @@ pub fn camera_sensors_status(
         waiting.push(format!(
             "the camera line was changed outside the agent since this boot (not written by this setting) — REBOOT REQUIRED to apply: {}",
             outside.join(", ")
+        ));
+    }
+    if !since.is_empty() {
+        waiting.push(format!(
+            "the camera line was changed since this boot — REBOOT REQUIRED to apply: {}",
+            since.join(", ")
         ));
     }
     if !waiting.is_empty() {
@@ -2530,6 +2552,23 @@ mod tests {
             clip_long_words("under [abcdefghijklmnopqrstuvwxyz], ok \"0123456789012345678901234567890123456789\".", 20),
             "under [abcdefghijklmnop…], ok \"0123456789012345…\"."
         );
+        // Clipping never makes a text longer: a run of closing punctuation
+        // (all of it "closing") is left as it is.
+        for odd in [
+            ".".repeat(50),
+            "\"\"\"\"\"]]]]]))))),,,,,.....;;;;;:::::".to_string(),
+            "a".repeat(41),
+            format!("{}.", "]".repeat(60)),
+        ] {
+            for width in [40, 28, 8, 1] {
+                let out = clip_long_words(&odd, width);
+                assert!(
+                    out.chars().count() <= odd.chars().count(),
+                    "{odd:?} at {width}: {out:?}"
+                );
+            }
+        }
+        assert_eq!(clip_long_words(&".".repeat(50), 40), ".".repeat(50));
         // So many ports that a share would not hold a sentence: the first
         // ones speak, the others are named.
         let many: Vec<(String, String)> = (0..16)

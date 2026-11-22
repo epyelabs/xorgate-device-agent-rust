@@ -116,7 +116,7 @@ What gets uploaded, and the guard rails:
 | `/usr/local/bin/xorgate-camcfg` (+ `xorgate-camcfg.overlays`) | the camera-line owner: the root helper through which the agent changes the camera `dtoverlay=` lines of `config.txt`, and its allow-list: the overlay names it may write and, per overlay, the parameter names (generated from the sensor catalog). It builds every line itself from checked parts and never reboots |
 | `/etc/sudoers.d/025_xorgate-camcfg` | lets the agent run that helper, nothing else |
 | `/var/lib/xorgate/camera-boot-lines.json` | each camera port's `dtoverlay=` line as the agent first saw it in the current boot (keyed by the kernel's boot id). A line that differs now waits for a reboot. Rust-only; rewritten once per boot; safe to delete |
-| `/var/lib/xorgate-packages/camera-packages.json` | root-owned: which extra OS packages `xorgate-rs camera requirements --install` put there for a camera sensor, and the versions it replaced (for a rollback by hand). Its download directories (`download-XXXXXX`, mode 0700) exist only while a download runs |
+| `/var/lib/xorgate-packages/` | root-owned, 0755, checked before use. `camera-packages.json` (0644): which extra OS packages `xorgate-rs camera requirements --install` installed for a camera sensor, the versions they replaced and the holds it set (for a rollback by hand). `lock`: held while an install runs. `download-XXXXXX` (0700): exists while a download runs; one left by a killed run is removed by the next |
 | `/etc/xorgate/` | identity, `agent.env`, manifests: shared with the reference agent, read-only for the converter |
 | `/var/lib/xorgate/` | settings and state: shared with the reference agent |
 
@@ -165,10 +165,12 @@ The cloud's `update` command (or the console's update button) makes the agent ru
    automatically** if any later step fails;
 4. reinstalls the units, the wrapper, the updater unit and the sudoers grant (and the shared modem
    and system assets only on a device that no longer has the reference agent);
-5. runs the NEW build's `xorgate-rs camera requirements --install --no-restart --quiet`: the
-   extra OS packages a declared camera sensor needs (next section). It prints nothing when
-   nothing is to do, and it never fails the update;
-6. reloads systemd and restarts the agent, only if it was running.
+5. reloads systemd and restarts the agent, only if it was running. **The update is complete
+   here** ("updated to …");
+6. then runs the NEW build's `xorgate-rs camera requirements --install --quiet --time-limit N`:
+   the extra OS packages a declared camera sensor needs (next section). It prints nothing and
+   takes no time when nothing is to do, it cannot undo or delay the update, and it restarts the
+   agent once more itself only when it installed something.
 
 All the decisions and every file body are in `xorgate_core::update_plan`; `update.rs` is only the
 I/O, with a timeout on every tool it runs. It requires root. By hand:
@@ -194,6 +196,8 @@ sudo xorgate-rs camera requirements --install  # root: install what is missing, 
 #   --from-claim <claim.json>   the sensors of a claim response instead of the held cameraSensors setting
 #   --no-restart                do not restart the agent afterwards
 #   --quiet                     print only what was changed or what failed
+#   --time-limit <seconds>      finish within this time; the install itself is only started when
+#                               it can finish inside it, and is never cut short
 ```
 
 Exit codes: 0 nothing is needed or everything is in place; 1 something is missing (listing) or
@@ -204,33 +208,46 @@ catalog lists no packages for its OS release and architecture, or an entry is no
 package names and "run `sudo xorgate-rs update` on the device (the console's Update button does
 the same), or `sudo xorgate-rs camera requirements --install`". Three things run the install, all
 as root: the provisioner (step 8c, with the claim, before the agent starts), `xorgate-rs update`
-(step 5 above, so the console's Update button installs them), and a person at a shell. In the
+(step 6 above, so the console's Update button installs them), and a person at a shell. In the
 first two a failure is a `WARN` line and nothing more: the device is as it was, and the next
 update tries again.
 
 What `--install` does (`cli/camera_packages.rs`; the plan and every check are in
 `xorgate_core::camera_packages`, the download in `xorgate_cloud::fetch`):
 
-1. **Refuses** in one sentence when the catalog has no packages for this OS release and
+1. **Takes the state directory** `/var/lib/xorgate-packages`: it must be a real directory (not a
+   link), owned by root, that nobody else can write; it is created 0755 when absent and refused
+   otherwise. The run locks it (a second run is turned away) and removes the `download-*`
+   directories an earlier run left behind.
+2. **Refuses** in one sentence when the catalog has no packages for this OS release and
    architecture, or a pinned entry is not plain. Nothing is changed.
-2. **Downloads** each missing package over HTTPS from the catalog's URL into a new directory under
-   `/var/lib/xorgate-packages` that only root can read. The URL's host must be `github.com` (the
+3. **Refuses before any download when dpkg was interrupted** (below).
+4. **Downloads** each missing package over HTTPS from the catalog's URL into a new directory under
+   the state directory that only root can read. The URL's host must be `github.com` (the
    backend's `CAMERA_PACKAGE_HOSTS`). GitHub answers a release-asset download with a redirect to
    its asset store, so a redirect is followed only to `github.com`,
    `release-assets.githubusercontent.com` or `objects.githubusercontent.com` (the store's earlier
    name), over HTTPS, at most four times; the HTTP library itself follows none. No credentials,
-   no proxy. Bounds: 20 s to connect, 30 s between reads, 5 minutes in all, and never more bytes
-   than the catalog's `bytes`.
-3. **Verifies** size and sha256 against the pin BEFORE anything is installed. A file that is not
-   the pinned one is refused. The directory is removed on every path, so no partial file stays.
-4. **Asks apt first**: `apt-get -s install <those files>` (a simulation) and reads the plan. Apt
-   may install the pinned packages in the pinned versions and nothing else, and remove nothing;
-   otherwise the install is refused before the system is touched.
-5. **Installs** exactly those files with `apt-get install` in one transaction, checks with
-   `dpkg-query` that the versions are now the pinned ones, and writes what it replaced to
-   `/var/lib/xorgate-packages/camera-packages.json`.
-6. **Holds** the packages (`apt-mark hold`) when the set says so.
-7. **Restarts the agent** (`systemctl try-restart`, so only if it runs) unless `--no-restart`:
+   no proxy, and never more bytes than the catalog's `bytes`.
+5. **Verifies** size and sha256 against the pin BEFORE anything is installed. A file that is not
+   the pinned one is refused, and the download directory is removed when the run ends. (A run
+   that is KILLED cannot remove it; the next run's sweep in step 1 does. The directory is
+   root-only and holds about 1 MB.)
+6. **Asks apt first**: `apt-get -s install <those files>` (a simulation) and reads the plan. It
+   must be exactly the pinned packages in the pinned versions: every one of them, nothing else
+   installed, nothing removed. Otherwise the install is refused before the system is touched.
+7. **The transaction.** Installs exactly those files with `apt-get install`: the simulation's
+   arguments without `-s`. They include `--no-remove` (apt aborts rather than remove a package,
+   also if its view changed since the simulation) and dpkg's `--force-confdef --force-confold`
+   (a changed configuration file keeps the local version without a question nobody could
+   answer). Then the WHOLE dpkg database is read back: the pinned versions must be there, and a
+   package outside the pinned set that changed during the install is reported loudly. What was
+   replaced is written to `camera-packages.json` at once, also when apt failed half-way, so the
+   way back always names versions that were there before. If the database cannot be read back
+   after apt reported success, the line says "could not confirm", and the hold and the record
+   are still written.
+8. **Holds** the packages (`apt-mark hold`) when the set says so.
+9. **Restarts the agent** (`systemctl try-restart`, so only if it runs) unless `--no-restart`:
    the camera is then listed within seconds. Without the restart it appears at the agent's next
    camera re-listing, at most five minutes later. No reboot is needed either way.
 
@@ -240,6 +257,63 @@ runs remote shell code), never adds an apt source, and passes no catalog string 
 every tool is run with an argument vector and a fixed environment
 (`PATH=/usr/sbin:/usr/bin:/sbin:/bin`, `DEBIAN_FRONTEND=noninteractive`, `LC_ALL=C`), by absolute
 path (`/usr/bin/apt-get`, `/usr/bin/apt-mark`, `/usr/bin/dpkg-query`).
+
+**Time, and why nothing can cut an install in half.** Every step has a bound (seconds,
+`camera_packages::T_*`):
+
+| Step | Bound | May it be cut short? |
+|---|---|---|
+| `apt-mark showhold` | 30 | yes |
+| read the dpkg database (start) | 30 | yes |
+| download, per file (two files) | 180 (connect 20, between reads 30) | yes |
+| `apt-get -s install` | 90 | yes |
+| read the dpkg database (before the install) | 30 | yes |
+| **`apt-get install`** (apt's own wait for the dpkg lock, 120, included) | **600** | **no** |
+| read the dpkg database back, `apt-mark hold`, `try-restart` | 30 + 30 + 90 | no (reserved) |
+| the command at its worst | 1290 | |
+| `--time-limit` a caller gives (`STEP_LIMIT`) | 1320 (22 min) | |
+| the caller's backstop: the limit + 60 | 1380 | |
+| the updater unit, `TimeoutStartSec` | 2700 (45 min) | |
+
+- A step that "may be cut short" is ended by its bound and by a stop request (SIGTERM, Ctrl-C),
+  and its tool is killed as a process group, so nothing it started is left running.
+- The real `apt-get install` is the one exception. Once it has started, nothing in the agent's
+  code ends it except its own 600 s, a last resort against an apt that hangs (two small packages
+  take seconds). A stop request is noted ("a stop was requested: waiting for apt-get to finish
+  its transaction, which is never interrupted") and waited out. Its `apt-get` runs in its own
+  process group, so a signal sent to the command's group (`timeout`, a terminal's Ctrl-C) does
+  not reach it.
+- With `--time-limit N` the steps before the install are cut so that they end 750 s (600 + 150)
+  before the limit, and the install is started only then. An install that could not finish
+  inside the limit is never started: "not enough time left in this run; run `sudo xorgate-rs
+  camera requirements --install`".
+- **`xorgate-rs update`** runs the step AFTER the update is complete, so the step can no longer
+  keep the new build from being restarted. It gives the step `min(1320, what is left of the
+  unit's 45 minutes − 120)` seconds. By hand (no unit) the limit is 1320.
+- **What systemd does when the unit's `TimeoutStartSec` runs out:** it fails the start job and
+  stops the unit, which with the default `KillMode=control-group` sends SIGTERM to EVERY
+  process in the unit's cgroup (the updater, the step, and any apt or dpkg they started), and
+  SIGKILL 90 s later to what is left. That is the one thing that could interrupt dpkg, and it
+  can no longer fall into an install: the install starts only when its full 600 s and the 150 s
+  after it fit before the step's limit, the limit ends at least 120 s before the unit's budget,
+  and the unit's budget was raised from the JS unit's 20 minutes to 45 so that an ordinary
+  update (minutes) leaves the step its whole 22. Worst case: an update that itself used more
+  than 21 minutes leaves less than the step's limit; with less than 750 s left the install is
+  not started and one line says so.
+- The updater's own backstop for a step that overruns its limit: SIGTERM to the step (which
+  ends a killable step at once, and is waited out by an install), and only 810 s later a kill
+  of the step's process group, which does not contain an install's `apt-get`.
+- The provisioner passes `--time-limit 1320` inside a `timeout 1500`.
+
+**An interrupted dpkg.** If a power cut or a kill ever stops dpkg half-way, packages are left
+unpacked or half-configured and dpkg's journal (`/var/lib/dpkg/updates`) is not empty; libcamera
+itself may then be broken for every camera, not only the IMX335. apt refuses to do anything in
+that state, so the command looks first (the dpkg database's states and the journal) and neither
+downloads nor installs: "dpkg was interrupted on this device (libcamera0.5 is unpacked, not
+configured). Run `sudo dpkg --configure -a` there, then `sudo xorgate-rs camera requirements
+--install` again; nothing was downloaded or changed". The agent's `requirements-missing`
+sentence and the listing say the same. The remedy is that one command at a shell; nothing in
+the agent runs it for you.
 
 **The hold and a later `apt upgrade`.** The stock `libcamera0.5` and `libcamera-ipa` come from the
 Raspberry Pi apt repository, and a newer stock version would replace Arducam's build on the next
