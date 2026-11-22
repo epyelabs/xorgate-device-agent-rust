@@ -177,6 +177,12 @@ Value rules:
     A real fault outranks it: when the capture is failing or nothing answers and the pending
     change keeps the overlay, the verdict is the fault's (`no-frames`, `not-detected`) and the
     sentence ends "…also waits for a reboot".
+  - The `no-frames` sentence says where to look by who wrote the port's line. On a managed port
+    (`declared.source` = `config`): "Check the ribbon cable and that the camera sensor setting
+    names the sensor that is really attached." On a port whose line is hand-written
+    (`boot-config`) or expected by the model: "…and that the dtoverlay line in config.txt names
+    the sensor that is really attached." A managed port's line is written from the setting, so
+    sending its user to config.txt would have them edit a line the agent writes.
   - When the running video preset is one the sensor cannot run (the catalog's
     `unsupportedPresets`), the sentence of an `ok` or `no-frames` port ends with the catalog's reason.
 - **A third deliberate addition (the same plan, Phase 2): the namespace `cameraSensors`** and the

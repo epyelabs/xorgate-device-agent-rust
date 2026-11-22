@@ -7,7 +7,9 @@
 //! Without `--install` it only LOOKS and lists, for the sensors the device
 //! declares (the held `cameraSensors` setting, or a claim response with
 //! `--from-claim`), each package set with its required and installed
-//! versions. Anyone may run that.
+//! versions. Anyone may run that. It also lists what an earlier install
+//! left of a set no declared sensor needs any more (still installed, still
+//! held), with the lines to go back; that state asks for nothing (exit 0).
 //!
 //! With `--install` (ROOT only) it makes the device match, and is
 //! idempotent: a set that is already installed and held costs no download
@@ -41,7 +43,9 @@
 //! 7. sets `apt-mark hold` when the set says so;
 //! 8. unless `--no-restart`: `systemctl try-restart` of the agent, so the
 //!    camera is listed again at once instead of at the agent's next
-//!    re-listing (up to 5 minutes).
+//!    re-listing (up to 5 minutes). The closing line says "no reboot is
+//!    needed" unless a camera line waits for one by the agent's own record
+//!    of this boot ([`reboot_still_needed`]); then it names the port.
 //!
 //! TIME (`camera_packages::T_*`). Every step but one is KILLABLE: its own
 //! bound cuts it, a stop request (SIGTERM, SIGINT, SIGHUP) ends it at once,
@@ -79,11 +83,14 @@ use std::time::{Duration, Instant};
 
 use tokio::io::AsyncReadExt;
 use xorgate_cloud::fetch::{fetch_client, fetch_pinned, FetchLimits, Pinned};
+use xorgate_core::boot_config::{Board, BOOT_CONFIG_CANDIDATES, PROC_DEVICE_TREE};
 use xorgate_core::camera_catalog::{catalog, Catalog, Package};
 use xorgate_core::camera_packages::{
     self as pk, DpkgSnapshot, InstallRecord, Replaced, SetPlan, SetState, LINE_PREFIX,
 };
-use xorgate_core::camera_sensors::{apply_plan, os_codename, wanted, HostFacts, Wanted};
+use xorgate_core::camera_sensors::{
+    apply_plan, os_codename, ports_waiting_for_reboot, wanted, BootLines, HostFacts, Wanted,
+};
 use xorgate_core::settings::clip;
 
 pub const USAGE: &str = "usage: xorgate-rs camera requirements [--install] [--from-claim <claim.json>] [--no-restart] [--quiet] [--time-limit <seconds>]\n  Lists the extra OS packages the declared camera sensors need (the held cameraSensors setting,\n  or a claim response), with the required and the installed versions.\n  --install      (root) download the missing packages from the URLs the sensor catalog pins,\n                 check size and sha256, install exactly those files, hold them, restart the agent\n  --no-restart   do not restart the agent after an install\n  --quiet        print only what was changed or what failed\n  --time-limit   with --install: finish within this many seconds; the install itself is only\n                 started when it can finish inside them, and is never cut short\n  Never reboots.";
@@ -132,6 +139,17 @@ pub struct PkgEnv<'c> {
     pub state_owner: u32,
     /// settings.json (the held `cameraSensors`).
     pub settings: PathBuf,
+    /// The camera lines as the agent first saw them in this boot
+    /// (`<home>/camera-boot-lines.json`, kept by the agent's
+    /// `BootLineStore`): what its `reboot-required` verdict goes by. Only
+    /// read here, never written.
+    pub boot_lines: PathBuf,
+    /// The kernel's boot id, as the agent reads it.
+    pub boot_id: String,
+    /// config.txt; `None` = this OS has none.
+    pub boot_config: Option<PathBuf>,
+    /// The board, for config.txt's `[section]` filters.
+    pub board: Board,
     /// The agent's unit.
     pub service: String,
     pub limits: FetchLimits,
@@ -186,6 +204,13 @@ impl PkgEnv<'static> {
             state_dir: STATE_DIR.into(),
             state_owner: 0,
             settings: xorgate_hal::settings_io::settings_path(&home),
+            boot_lines: home.join(crate::ops::camera_mount::BOOT_LINES_FILE),
+            boot_id: xorgate_hal::boot_id::read_boot_id(),
+            boot_config: xorgate_hal::boot_config_io::resolve_boot_config_path_fs(
+                BOOT_CONFIG_CANDIDATES,
+            )
+            .map(PathBuf::from),
+            board: xorgate_hal::boot_config_io::read_board(Path::new(PROC_DEVICE_TREE)),
             service: xorgate_core::update_plan::SERVICE.to_string(),
             limits: FetchLimits::default(),
             install_bound: Duration::from_secs(pk::T_INSTALL),
@@ -550,6 +575,60 @@ fn declared_sensors(args: &Args, env: &PkgEnv<'_>) -> Result<Vec<(String, String
         .collect())
 }
 
+/// Why a reboot is still needed after the packages are in place, as the
+/// end of a sentence, or `None`.
+///
+/// THE SOURCE IS THE AGENT'S: the snapshot of the camera lines it took
+/// when it first ran in this boot (`camera-boot-lines.json`), compared with
+/// config.txt as it is now, by the same function the per-port report's
+/// `reboot-required` goes by (`camera_sensors::changed_since_boot`). So the
+/// closing line and the port's verdict cannot disagree. Every port the
+/// snapshot has a word on counts (the camera ports of the device model),
+/// managed or not, as in the report.
+///
+/// `None` also when nothing can be said: no snapshot of THIS boot (the
+/// agent has not run in it; it will take its snapshot from config.txt as it
+/// is, and report no pending change either), no config.txt. With
+/// `--from-claim` (the installer, before the agent first starts) the
+/// question is not asked: the installer has its own reboot notice.
+///
+/// The snapshot is only read. It is the agent's file; a root command that
+/// took one would leave a root-owned file in the agent's home.
+fn reboot_still_needed(args: &Args, env: &PkgEnv<'_>) -> Option<String> {
+    if args.from_claim.is_some() {
+        return None;
+    }
+    // A small regular file, or nothing.
+    let meta = std::fs::metadata(&env.boot_lines).ok()?;
+    if !meta.is_file() || meta.len() > 64 * 1024 {
+        return None;
+    }
+    let booted: BootLines = xorgate_hal::read_lossy::read_text(&env.boot_lines)
+        .ok()
+        .and_then(|t| serde_json::from_str(&t).ok())?;
+    if booted.boot_id != env.boot_id {
+        return None;
+    }
+    let config = env.boot_config.as_deref()?;
+    if !regular_file(config) {
+        return None;
+    }
+    let text = xorgate_hal::read_lossy::read_text(config).ok()?;
+    let ports = ports_waiting_for_reboot(&booted, &text, env.board, env.catalog);
+    // The ports by their fixed names (nothing of the file is printed).
+    let names: Vec<&str> = ports.iter().map(|p| p.token()).collect();
+    match names.as_slice() {
+        [] => None,
+        [one] => Some(format!(
+            "the camera line of {one} in config.txt was changed since this device booted (sudo reboot)"
+        )),
+        many => Some(format!(
+            "the camera lines of {} in config.txt were changed since this device booted (sudo reboot)",
+            many.join(" and ")
+        )),
+    }
+}
+
 /// The whole dpkg database, within `bound`; `None` = it could not be read.
 async fn snapshot(env: &PkgEnv<'_>, bound: Duration) -> Option<DpkgSnapshot> {
     let (program, tool_env) = (env.dpkg_query.clone(), env.tool_env.clone());
@@ -741,6 +820,28 @@ pub async fn run(args: &Args, env: &PkgEnv<'_>, out: &mut dyn FnMut(String)) -> 
         if !args.quiet {
             say("no declared camera sensor needs extra packages".to_string());
         }
+        // The listing also says what an earlier install left on the device
+        // (a sensor that needed packages was here and is gone): it is still
+        // installed and held, and nothing else would mention it. Nothing is
+        // asked of the device unless the record names a set; `--install`
+        // does nothing here, as before.
+        if !args.install && !args.quiet {
+            let record = read_record(env);
+            if !record.sets.is_empty() {
+                let held = held_packages(env, Duration::from_secs(pk::T_HELD), &mut say).await;
+                let db = snapshot(env, Duration::from_secs(pk::T_DPKG)).await;
+                let installed = db.as_ref().map(pk::installed_versions);
+                for line in pk::leftover_listing(
+                    &record,
+                    &[],
+                    env.catalog,
+                    installed.as_ref(),
+                    held.as_deref(),
+                ) {
+                    say(line);
+                }
+            }
+        }
         return 0;
     }
     // Root is asked for before any tool is run.
@@ -797,6 +898,18 @@ pub async fn run(args: &Args, env: &PkgEnv<'_>, out: &mut dyn FnMut(String)) -> 
                 SetState::Unknown(_) => 1,
                 _ => i32::from(pk::needs_work(plan, held.as_deref())),
             });
+        }
+        // What an earlier install left of a set no declared sensor needs
+        // any more (the exit code is not its business).
+        let needed: Vec<&str> = plans.iter().map(|p| p.id.as_str()).collect();
+        for line in pk::leftover_listing(
+            &record,
+            &needed,
+            env.catalog,
+            host.packages.as_ref(),
+            held.as_deref(),
+        ) {
+            say(line);
         }
         if interrupted.is_some() && busy {
             say(BUSY.to_string());
@@ -966,8 +1079,15 @@ pub async fn run(args: &Args, env: &PkgEnv<'_>, out: &mut dyn FnMut(String)) -> 
         }
     }
     if installed_any {
+        // A camera line that waits for a reboot (the agent's own record of
+        // this boot): the packages need no reboot, that line does, and the
+        // closing line must not say otherwise.
+        let reboot = reboot_still_needed(args, env);
         if args.no_restart {
-            say("the camera appears when the agent starts next (or at its next camera re-listing, within 5 minutes); no reboot is needed".to_string());
+            say(match &reboot {
+                None => "the camera appears when the agent starts next (or at its next camera re-listing, within 5 minutes); no reboot is needed".to_string(),
+                Some(why) => format!("the packages are in place (the agent uses them when it starts next, or at its next camera re-listing, within 5 minutes), but a reboot is still needed: {why}"),
+            });
         } else {
             let r = tool(
                 env,
@@ -978,16 +1098,22 @@ pub async fn run(args: &Args, env: &PkgEnv<'_>, out: &mut dyn FnMut(String)) -> 
                 &mut say,
             )
             .await;
+            // Read again after the restart: the record is the agent's.
+            let reboot = reboot.or_else(|| reboot_still_needed(args, env));
             if r.failed {
                 say(format!(
-                    "WARN the agent could not be restarted ({}); the camera appears at its next camera re-listing, within 5 minutes",
-                    last_line(&r)
+                    "WARN the agent could not be restarted ({}); {}",
+                    last_line(&r),
+                    match &reboot {
+                        None => "the camera appears at its next camera re-listing, within 5 minutes".to_string(),
+                        Some(why) => format!("it uses the packages at its next camera re-listing, within 5 minutes, and a reboot is still needed: {why}"),
+                    }
                 ));
             } else {
-                say(
-                    "the agent was restarted so the camera is listed again; no reboot is needed"
-                        .to_string(),
-                );
+                say(match &reboot {
+                    None => "the agent was restarted so the camera is listed again; no reboot is needed".to_string(),
+                    Some(why) => format!("the packages are in place and the agent was restarted, but a reboot is still needed: {why}"),
+                });
             }
         }
     }

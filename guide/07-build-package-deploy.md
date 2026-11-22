@@ -255,7 +255,17 @@ What `--install` does (`cli/camera_packages.rs`; the plan and every check are in
 8. **Holds** the packages (`apt-mark hold`) when the set says so.
 9. **Restarts the agent** (`systemctl try-restart`, so only if it runs) unless `--no-restart`:
    the camera is then listed within seconds. Without the restart it appears at the agent's next
-   camera re-listing, at most five minutes later. No reboot is needed either way.
+   camera re-listing, at most five minutes later. The PACKAGES need no reboot either way, and
+   the closing line says "no reboot is needed" unless a camera line of `config.txt` waits for
+   one. That is asked of the agent's own record of this boot's camera lines
+   (`camera-boot-lines.json`, the fact behind the port's `reboot-required`; it is only read):
+   when a port's line differs from the one the device booted with, the closing line reads "the
+   packages are in place and the agent was restarted, but a reboot is still needed: the camera
+   line of cam0 in config.txt was changed since this device booted (sudo reboot)". The usual
+   case is a port that was just set to the sensor: the agent wrote its line, and the update
+   that installs the packages runs before the reboot. With no record of this boot (the agent
+   has not run in it) nothing is said to be pending, as in the agent's own report. The
+   provisioner (`--from-claim`) is not asked this: it has its own reboot notice.
 
 It is idempotent: a set that is installed and held costs no download and no apt call. It never
 runs a script of the package's vendor (Arducam's install script pulls in about 200 packages and
@@ -388,6 +398,28 @@ install that with the same command.
 With only the HOLD missing (someone ran `apt-mark unhold`), the listing says "to set the hold
 again: sudo xorgate-rs camera requirements --install" and exits 1; `--install` then sets the
 hold and does nothing else (no download, no apt-get, no restart).
+
+**When the sensor leaves the device, the packages stay.** Setting the port to another sensor
+removes nothing: Arducam's two packages remain installed and held, the other sensors run on
+that libcamera build, and the hold keeps the OS's own libcamera updates off the device. The
+listing says so, for every set the record shows as installed by this command that no declared
+sensor needs any more, while a package is still at the version it installed or a hold it set
+still exists:
+
+```
+no declared camera sensor needs extra packages
+arducam-libcamera (Arducam's libcamera build (adds the IMX335 camera helper)), the set imx335 needs: no declared sensor needs it any more, but what xorgate-rs installed for it is still in place:
+  libcamera0.5   installed 0.5.2+rpt20250909-1  held  (installed by xorgate-rs; it replaced <version>)
+  libcamera-ipa  installed 0.5.2+rpt20250909-1  held  (installed by xorgate-rs; it replaced <version>)
+  while they are held, apt does not update these packages: the OS's own updates of them do not reach this device
+  to go back: sudo apt-mark unhold libcamera0.5 libcamera-ipa
+  to go back: sudo apt-get install -y --allow-downgrades libcamera0.5=<version> libcamera-ipa=<version>
+  to go back: then: sudo systemctl restart xorgate-agent-rs (…)
+```
+
+That state is not a fault: the exit code stays 0, and `--install` and `xorgate-rs update` do
+nothing in it (they never remove a package). Going back is the same hand procedure as above;
+after it the listing is the one line again.
 
 **A first update INTO this build does not install them yet.** `xorgate-rs update` is run by the
 build that is being replaced, and a build before this one has no such step. The port then reads

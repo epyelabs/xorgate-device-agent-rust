@@ -590,6 +590,23 @@ pub fn changed_since_boot(
     })
 }
 
+/// The ports whose camera line waits for a reboot, by the snapshot of this
+/// boot: every port the snapshot has a word on whose line differs now
+/// ([`changed_since_boot`], the fact behind the report's `reboot-required`).
+/// For a reader outside the agent (`xorgate-rs camera requirements`), which
+/// has the snapshot the agent kept and never takes one itself.
+pub fn ports_waiting_for_reboot(
+    booted: &BootLines,
+    text: &str,
+    board: Board,
+    catalog: &Catalog,
+) -> Vec<CamPort> {
+    [CamPort::Cam0, CamPort::Cam1]
+        .into_iter()
+        .filter(|p| changed_since_boot(booted, text, board, *p, catalog).is_some())
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // requirements
 // ---------------------------------------------------------------------------
@@ -1332,9 +1349,24 @@ mod tests {
         let gone = same("dtoverlay=imx290,cam0\n", CamPort::Cam1).unwrap();
         assert!(gone.overlay && !gone.rotation_only);
         assert_eq!(gone.now, None);
+        // The ports that wait for a reboot, for a reader outside the agent.
+        let waiting = |text: &str| ports_waiting_for_reboot(&boot, text, Board::Cm5, c);
+        assert_eq!(waiting(BENCH1), []);
+        assert_eq!(
+            waiting("dtoverlay=imx335,cam0,rotation=180\ndtoverlay=imx290,cam1\n"),
+            [CamPort::Cam0]
+        );
+        assert_eq!(
+            waiting("dtoverlay=imx335,cam0,rotation=180\n"),
+            [CamPort::Cam0, CamPort::Cam1]
+        );
         // A one-port model: the snapshot has no word on the other port, and
         // nothing is concluded for it.
         let one = snapshot_boot_lines("b1", BENCH1, Board::Cm4, c, &[CamPort::Cam0]);
+        assert_eq!(
+            ports_waiting_for_reboot(&one, "", Board::Cm4, c),
+            [CamPort::Cam0]
+        );
         assert_eq!(one.ports.keys().collect::<Vec<_>>(), ["cam0"]);
         assert_eq!(
             changed_since_boot(&one, "", Board::Cm4, CamPort::Cam1, c),

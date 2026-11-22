@@ -27,6 +27,7 @@ use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use xorgate_agent::cli::camera_packages::{parse, run, Args, PkgEnv, LOCK_FILE, RECORD_FILE};
 use xorgate_cloud::fetch::FetchLimits;
+use xorgate_core::boot_config::{Board, CamPort};
 use xorgate_core::camera_catalog::{catalog, Catalog, Package, PackageTarget};
 use xorgate_core::camera_packages as pk;
 
@@ -40,6 +41,8 @@ const A: &[u8] = b"the first tiny package: libcamera0.5\n";
 const B: &[u8] = b"the second tiny package: libcamera-ipa, a little longer\n";
 const SET: &str = "arducam-libcamera";
 const BASE: &str = "https://github.com/test/pkgs/releases/download/v1/";
+/// The boot the device is in.
+const BOOT: &str = "boot-1";
 
 fn sha(bytes: &[u8]) -> String {
     hex(&Sha256::digest(bytes))
@@ -256,6 +259,12 @@ impl Dev {
             // The tests run as whoever runs them (root in the gate).
             state_owner: nix::unistd::geteuid().as_raw(),
             settings: dir.join("settings.json"),
+            // The agent's snapshot of this boot's camera lines and
+            // config.txt: absent unless a test writes them.
+            boot_lines: dir.join("camera-boot-lines.json"),
+            boot_id: BOOT.to_string(),
+            boot_config: Some(dir.join("config.txt")),
+            board: Board::Cm5,
             service: "xorgate-agent-rs".to_string(),
             limits: FetchLimits {
                 connect: Duration::from_secs(5),
@@ -296,6 +305,23 @@ impl Dev {
 
     fn read(&self, name: &str) -> String {
         std::fs::read_to_string(self.state.join(name)).unwrap_or_default()
+    }
+
+    /// The agent's side of a pending reboot: it took its snapshot of the
+    /// camera lines in boot `boot` when config.txt read `booted`, and
+    /// config.txt reads `now` since. Returns the snapshot file's bytes.
+    fn camera_lines(&self, boot: &str, booted: &str, now: &str) -> Vec<u8> {
+        let snap = xorgate_core::camera_sensors::snapshot_boot_lines(
+            boot,
+            booted,
+            Board::Cm5,
+            catalog(),
+            &[CamPort::Cam0, CamPort::Cam1],
+        );
+        let bytes = serde_json::to_vec(&snap).unwrap();
+        std::fs::write(&self.env.boot_lines, &bytes).unwrap();
+        std::fs::write(self.env.boot_config.as_ref().unwrap(), now).unwrap();
+        bytes
     }
 
     fn set(&self, name: &str, text: &str) {
@@ -930,6 +956,209 @@ async fn going_back_and_the_hold_alone() {
             "  to go back: sudo apt-get install -y --allow-downgrades libcamera-ipa=0.5.2+rpt20250903-1",
             "  to go back: then: sudo systemctl restart xorgate-agent-rs (until the agent restarts, its running captures keep the replaced library loaded and the port still reads ok)"
         ]
+    );
+}
+
+/// Bench finding (2026-11-22, CM4): the update ended with "the agent was
+/// restarted so the camera is listed again; no reboot is needed" while the
+/// port read `reboot-required` (its camera line had been changed since
+/// boot). The closing line goes by the agent's own snapshot of this boot's
+/// camera lines, the fact behind that verdict, and says which port waits.
+#[tokio::test]
+async fn the_closing_line_does_not_deny_a_pending_reboot() {
+    const WAS: &str = "dtoverlay=imx708,cam0,rotation=180\ndtoverlay=imx219,cam1,rotation=180\n";
+    const NOW: &str = "dtoverlay=imx335,cam0,rotation=180\ndtoverlay=imx219,cam1,rotation=180\n";
+    const CAM0: &str =
+        "the camera line of cam0 in config.txt was changed since this device booted (sudo reboot)";
+    let last = |lines: &[String]| lines.last().cloned().unwrap_or_default();
+
+    // The update's case: installed, agent restarted, cam0 waits.
+    let dev = Dev::new("pending").await;
+    let snapshot = dev.camera_lines(BOOT, WAS, NOW);
+    let (code, lines) = dev
+        .run(&["--install", "--quiet", "--time-limit", "1320"])
+        .await;
+    assert_eq!(code, 0, "{lines:?}");
+    assert_eq!(
+        last(&lines),
+        format!("camera packages: the packages are in place and the agent was restarted, but a reboot is still needed: {CAM0}")
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("no reboot is needed")),
+        "{lines:?}"
+    );
+    assert_eq!(dev.read("systemctl.log"), "try-restart xorgate-agent-rs\n");
+    // The snapshot is the agent's: read, never written.
+    assert_eq!(std::fs::read(&dev.env.boot_lines).unwrap(), snapshot);
+
+    // By hand with --no-restart.
+    let dev = Dev::new("pending-norestart").await;
+    dev.camera_lines(BOOT, WAS, NOW);
+    let (code, lines) = dev.run(&["--install", "--no-restart"]).await;
+    assert_eq!(code, 0, "{lines:?}");
+    assert_eq!(
+        last(&lines),
+        format!("camera packages: the packages are in place (the agent uses them when it starts next, or at its next camera re-listing, within 5 minutes), but a reboot is still needed: {CAM0}")
+    );
+
+    // The restart failed: still a WARN, and the reboot is not forgotten.
+    let dev = Dev::new("pending-restart-fails").await;
+    dev.camera_lines(BOOT, WAS, NOW);
+    dev.set("systemctl.fail", "");
+    let (code, lines) = dev.run(&["--install", "--quiet"]).await;
+    assert_eq!(code, 0, "{lines:?}");
+    assert_eq!(
+        last(&lines),
+        format!("camera packages: WARN the agent could not be restarted (Failed to try-restart: Unit not found.); it uses the packages at its next camera re-listing, within 5 minutes, and a reboot is still needed: {CAM0}")
+    );
+
+    // Both ports wait (the other one's line was edited by hand: the
+    // report says `reboot-required` for it too, managed or not).
+    let dev = Dev::new("pending-both").await;
+    dev.camera_lines(
+        BOOT,
+        WAS,
+        "dtoverlay=imx335,cam0,rotation=180\ndtoverlay=imx219,cam1,rotation=0\n",
+    );
+    let (_, lines) = dev.run(&["--install", "--quiet"]).await;
+    assert_eq!(
+        last(&lines),
+        "camera packages: the packages are in place and the agent was restarted, but a reboot is still needed: the camera lines of cam0 and cam1 in config.txt were changed since this device booted (sudo reboot)"
+    );
+
+    // NOTHING WAITS: today's line, in each of these.
+    const TODAY: &str = "camera packages: the agent was restarted so the camera is listed again; no reboot is needed";
+    // The device was rebooted since: the lines are as booted (another
+    // spelling of the same line is not a change).
+    let dev = Dev::new("pending-none").await;
+    dev.camera_lines(
+        BOOT,
+        "dtoverlay=imx335,cam0\ndtoverlay=imx219,cam1,rotation=180\n",
+        NOW,
+    );
+    assert_eq!(last(&dev.run(&["--install", "--quiet"]).await.1), TODAY);
+    // A snapshot of ANOTHER boot says nothing about this one (the agent
+    // has not run in this boot; when it does, it takes its snapshot from
+    // config.txt as it is and reports no pending change either).
+    let dev = Dev::new("pending-other-boot").await;
+    dev.camera_lines("boot-0", WAS, NOW);
+    assert_eq!(last(&dev.run(&["--install", "--quiet"]).await.1), TODAY);
+    // A snapshot that is not a small regular JSON file, or no config.txt.
+    let dev = Dev::new("pending-unreadable").await;
+    dev.camera_lines(BOOT, WAS, NOW);
+    std::fs::write(&dev.env.boot_lines, "{not json").unwrap();
+    assert_eq!(last(&dev.run(&["--install", "--quiet"]).await.1), TODAY);
+    let dev = Dev::new("pending-no-config").await;
+    dev.camera_lines(BOOT, WAS, NOW);
+    std::fs::remove_file(dev.env.boot_config.as_ref().unwrap()).unwrap();
+    assert_eq!(last(&dev.run(&["--install", "--quiet"]).await.1), TODAY);
+
+    // THE INSTALLER (`--from-claim --no-restart`, before the agent first
+    // starts) keeps the line it replaces with its own: the question is not
+    // asked there, whatever an earlier agent left on the device.
+    let dev = Dev::new("pending-claim").await;
+    dev.camera_lines(BOOT, WAS, NOW);
+    let claim = dev.dir.join("claim.json");
+    std::fs::write(
+        &claim,
+        json!({"cameraSensors": {"cameras": {"cam0": {"sensor": "imx335"}}}}).to_string(),
+    )
+    .unwrap();
+    let (code, lines) = dev
+        .run(&[
+            "--install",
+            "--no-restart",
+            "--quiet",
+            "--from-claim",
+            &claim.display().to_string(),
+        ])
+        .await;
+    assert_eq!(code, 0, "{lines:?}");
+    assert_eq!(
+        last(&lines),
+        "camera packages: the camera appears when the agent starts next (or at its next camera re-listing, within 5 minutes); no reboot is needed"
+    );
+}
+
+/// Bench finding (2026-11-22, bench 2): once the IMX335 had left the
+/// device, the listing said only "no declared camera sensor needs extra
+/// packages" while the Arducam packages stayed installed and held. The
+/// listing now says what is still there and how to go back; the exit code
+/// stays 0, and `--install` (so `update`) still does nothing.
+#[tokio::test]
+async fn packages_no_sensor_needs_any_more_are_still_listed() {
+    let dev = Dev::new("leftover").await;
+    assert_eq!(
+        dev.run(&["--install", "--quiet", "--no-restart"]).await.0,
+        0
+    );
+    // The sensor that needed them is gone.
+    dev.settings(json!({"cameraSensors": {"cameras": {"cam0": {"sensor": "imx708"}, "cam1": {"sensor": "imx219"}}}}));
+    for log in ["dpkg-query.log", "mark.log", "apt.log", "systemctl.log"] {
+        dev.set(log, "");
+    }
+    let hits = dev.stub.hits();
+    let record = dev.record();
+    let (code, lines) = dev.run(&[]).await;
+    assert_eq!(code, 0, "nothing is asked for");
+    assert_eq!(
+        lines,
+        [
+            "no declared camera sensor needs extra packages",
+            "arducam-libcamera (Arducam's libcamera build (adds the IMX335 camera helper)), the set imx335 needs: no declared sensor needs it any more, but what xorgate-rs installed for it is still in place:",
+            "  libcamera0.5   installed 0.5.2+rpt20250909-1  held  (installed by xorgate-rs; it replaced 0.5.2+rpt20250903-1)",
+            "  libcamera-ipa  installed 0.5.2+rpt20250909-1  held  (installed by xorgate-rs; it replaced 0.5.2+rpt20250903-1)",
+            "  while they are held, apt does not update these packages: the OS's own updates of them do not reach this device",
+            "  to go back: sudo apt-mark unhold libcamera0.5 libcamera-ipa",
+            "  to go back: sudo apt-get install -y --allow-downgrades libcamera0.5=0.5.2+rpt20250903-1 libcamera-ipa=0.5.2+rpt20250903-1",
+            "  to go back: then: sudo systemctl restart xorgate-agent-rs (until the agent restarts, its running captures keep the replaced library loaded and the port still reads ok)",
+        ]
+    );
+    // It looked (dpkg and the holds, once each), and that is all.
+    assert_eq!(dev.read("dpkg-query.log").matches("-W").count(), 1);
+    assert_eq!(dev.read("mark.log"), "showhold\n");
+    // --quiet prints nothing; --install and the update's call do nothing
+    // and run no tool.
+    dev.set("dpkg-query.log", "");
+    dev.set("mark.log", "");
+    assert_eq!(dev.run(&["--quiet"]).await, (0, vec![]));
+    assert_eq!(
+        dev.run(&["--install"]).await,
+        (
+            0,
+            vec!["camera packages: no declared camera sensor needs extra packages".to_string()]
+        )
+    );
+    assert_eq!(
+        dev.run(&["--install", "--quiet", "--time-limit", "1320"])
+            .await,
+        (0, vec![])
+    );
+    assert_eq!(dev.read("dpkg-query.log"), "");
+    assert_eq!(dev.read("mark.log"), "");
+    assert_eq!(dev.read("apt.log"), "");
+    assert_eq!(dev.read("systemctl.log"), "");
+    assert_eq!(dev.stub.hits(), hits);
+    assert_eq!(dev.record(), record);
+    assert_eq!(dev.read("held"), "libcamera0.5\nlibcamera-ipa\n");
+
+    // The hold released by hand: the packages are still said, without the
+    // hold line and without an unhold.
+    dev.set("held", "");
+    let (code, lines) = dev.run(&[]).await;
+    assert_eq!(code, 0);
+    assert_eq!(lines.len(), 6, "{lines:?}");
+    assert!(lines[2].contains("  not held  "), "{lines:?}");
+    assert!(lines[4].starts_with("  to go back: sudo apt-get install -y --allow-downgrades "));
+    // Gone back all the way: one line again, as on a device that never had
+    // them.
+    dev.installed(&[("libcamera0.5", STOCK), ("libcamera-ipa", STOCK)]);
+    assert_eq!(
+        dev.run(&[]).await,
+        (
+            0,
+            vec!["no declared camera sensor needs extra packages".to_string()]
+        )
     );
 }
 
