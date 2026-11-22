@@ -702,3 +702,33 @@ The helper itself, and the reconciler over the REAL helper, are covered off the 
 `reconcileCameraMount`, pass by pass, with every by-design difference named in
 `fixtures/camera_mount/rust-divergences.json`).
 
+
+## The sensor setting (support-other-camera-models, Phase 2): EVERY JS-vs-Rust lane now differs in `report`, and what the rig needs
+
+Since branch `camera/phase2-agent` the Rust agent advertises the capability `camera.sensors`, knows
+the namespace `cameraSensors`, and changed four texts (accepted divergences **D107–D114**).
+
+**No tolerance matcher was built, no tolerance row was widened, and nothing under `tools/replay/` or
+in `xorgate-replay` was changed** (a harness change lapses every tape's eligibility and needs the
+orchestrator's go). What differs by design, and the harness change that would absorb each:
+
+| # | Stream | Where | JS side | Rust side | Row | The harness change (NOT built) |
+|---|---|---|---|---|---|---|
+| 1 | `report` | **every tape, every report with an `agent` block** | `capabilities: ["sms.read","sms.clear","obd.scan","obd.forget"]` | the same plus `"camera.sensors"` last | D107 | the D85 normaliser in `crates/xorgate-replay/src/diff.rs` (the one that drops `runtime: "rust"` from the Rust side's `agent` block) also drops a trailing `"camera.sensors"` from the Rust side's `capabilities`, and asserts it was there |
+| 2 | end snapshot of the home directory | every real-mode tape with a `config.txt` | no such file | `camera-boot-lines.json` (the lines as booted) | D109 | the snapshot comparison lists the file as Rust-only (like `xorgate-rs` state the JS never writes) |
+| 3 | `events` | a tape whose `config.txt` has no camera line for a camera port of the model | `…: no camera enumerated on csiN (expected …) — stream held down until one appears (check the ribbon + overlays, reboot after install)` | `…: no camera is configured on csiN (config.txt has no camera line for it; the device model expects …) — stream held down` | D112 | run such a tape Rust-vs-Rust, as the camera tapes already are |
+| 4 | CLI matrix, `status` with the daemon stopped | `tools/replay/cli/cases.txt` | `  start it with: xorgate start` | `  start it with: sudo systemctl start xorgate-agent-rs` | D113 | the matrix maps that one line, as `cli_status.rs` does |
+| 5 | `sudo` | a tape that sends `cameraSensors` (none exists) | — | `sudo -n /usr/local/bin/xorgate-camcfg set …` / `remove …` | D109 | Rust-only scenario; the sudo shim executes `xorgate-camcfg` (the change already described in the Phase 1 section above) |
+
+Row 1 is the one that matters today: until the normaliser is extended, a `jsrs` lane fails on its
+first report. `rsrs` and `ab` lanes are not affected.
+
+A faithful Rust-only scenario for the setting (NOT built): seed a hardware block and a `config.txt`
+with two `imx290` lines; send `cameraSensors` `{cam0: imx708}`; expect one `set cam0 imx708
+rotation=180` sudo record, `status.cameraSensors` `adjusted` ("REBOOT REQUIRED"), the port's verdict
+`reboot-required`; simulate the reboot (the agent restarted with a new `XORGATE_BOOT_ID`, as a
+real reboot restarts it; the device tree and the camera listing moved to the imx708); expect
+`applied` and `ok`. Then a wrong declaration (`imx219` on a
+port where nothing answers: `not-detected`, "Check the ribbon cable and the selected sensor"). It
+needs the two Phase 1 harness changes (the helper bound into the namespace, the sudo shim executing
+it) plus a mid-run agent restart with another `XORGATE_BOOT_ID` (the agent reads the boot id once).

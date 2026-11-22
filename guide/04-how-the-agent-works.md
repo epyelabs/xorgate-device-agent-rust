@@ -310,6 +310,26 @@ red. The resolved state is also published as `system.led_state` and `system.heal
   stand behind (two lines on one port, a `[section]` it cannot evaluate, a port whose sensor the
   kernel and libcamera do not confirm). It never reboots; it reports `rebootRequired`.
   (`system/xorgate-camrotate` is the JS agent's helper: still shipped, no longer called.)
+
+  The same pass also applies **the sensor setting**, `cameraSensors`. A port with an entry there is
+  *managed*: the pass first makes the port's line the declared sensor's line (overlay, the
+  catalog's fixed parameters, the chosen options, and the rotation above) with one
+  `xorgate-camcfg set` call, or deletes it with `remove` for a port declared `none`. It writes
+  nothing when `config.txt` already says exactly that (`camera_sensors::line_op`): a device whose
+  line matches its setting gets no write at all. A port without an entry is unmanaged and goes
+  through the rotation-only path above, unchanged. What cannot be applied (a port the device does
+  not have, a sensor or option this build's catalog lacks, a malformed entry, a helper refusal) is
+  refused for that one port, with a sentence in `status.cameraSensors`; the other ports are still
+  applied.
+
+  One pass, two statuses: `cameraSensors` (the line) and `cameraMount` (the rotation). Neither says
+  `applied` for a line that is written and not booted. To know, the agent keeps each port's line as
+  it first saw it in the current boot (`<home>/camera-boot-lines.json`, keyed by the kernel's boot
+  id): a line that differs now waits for a reboot. The per-port camera report uses the same record
+  for its `reboot-required` verdict.
+
+  The installer writes the first lines with the same code: `xorgate-rs camera apply --from-claim
+  <file>` (`cli/camera.rs`), run as root by `scripts/provision-rs.sh` step 8b.
 - **SMS reader** (`sms.rs`): reads stored SMS over the modem's spare AT port without marking them
   read, for the `read_sms` command and `xorgate-rs sms`.
 

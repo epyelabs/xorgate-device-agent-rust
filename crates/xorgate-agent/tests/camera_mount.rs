@@ -1994,7 +1994,13 @@ const ALL_OVERLAYS: [&str; 4] = ["imx290", "imx219", "imx708", "imx335"];
 async fn unmanaged_to_managed_with_the_same_sensor_writes_nothing() {
     // (fixture, model, [(key, node, dt rotation)], setting, mounts)
     type Cams = &'static [(&'static str, &'static str, u32)];
-    type Case = (&'static str, &'static str, Cams, Value, &'static [(&'static str, u32)]);
+    type Case = (
+        &'static str,
+        &'static str,
+        Cams,
+        Value,
+        &'static [(&'static str, u32)],
+    );
     let cases: [Case; 4] = [
         (
             "config-bench1-imx290.txt",

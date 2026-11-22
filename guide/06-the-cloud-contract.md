@@ -94,7 +94,8 @@ pub const CONFIG_APPLY_CLASSES: &[(&str, ApplyClass)] = &[
     ("recording", ApplyClass::AgentPoll),
     ("lteRecovery", ApplyClass::ModemPoll),
     ("timeSync", ApplyClass::AgentPoll),
-    // … cellular (modem-poll), cameraMount, simulation, obd (agent-poll)
+    // … cellular (modem-poll), cameraMount, simulation, obd (agent-poll),
+    // cameraSensors (agent-poll; Rust-only, last)
 ];
 ```
 
@@ -112,7 +113,8 @@ Value rules:
   anything else. Key names are wire names and are never renamed: the modem daemon reads the file by
   exact key path.
 - Some report blocks are reported-only (the cloud never sets them): `agent` (mode, build,
-  capabilities, runtime), `telemetryScope`, `sim`, `uplink`, `apn`, and the camera-mount state. Status
+  capabilities, runtime), `telemetryScope`, `sim`, `uplink`, `apn`, the camera-mount state and the
+  per-port camera report. Status
   `detail` and `reason` texts are part of the contract, word for word.
 - **One deliberate addition (D85, Phase 8):** `effective.agent.runtime` is `"rust"`, the last key of
   the `agent` block (`config_report.rs` `AGENT_RUNTIME`). The JS agent sends no such key. The backend
@@ -133,17 +135,53 @@ Value rules:
 
   | Field | Values |
   |---|---|
-  | `verdict` | `ok`, `mismatch`, `reboot-required`, `not-detected`, `no-frames`, `empty`, `unchecked` |
+  | `verdict` | `ok`, `mismatch`, `reboot-required`, `not-detected`, `no-frames`, `empty`, `unchecked`, `requirements-missing`, `unknown-sensor` |
   | `capture.state` | `streaming`, `starting`, `failing`, `absent`, `off` |
-  | `declared.source` | `boot-config`, `model` |
+  | `declared.source` | `config`, `boot-config`, `model` |
   | `bound.identity` | `chip-id`, `weak`, `none`, or `null` |
 
   **A reader must tolerate a value it does not know in any of these, and a key it does not know
-  anywhere in the block.** Later phases add verdicts (`requirements-missing`, `unknown-sensor`,
-  and `unmanaged` for a port with no sensor setting), a `config` source, and
-  fields. `detail` is for people: show it, never parse it. `capture.lastError` is plain text
-  (terminal colour codes are stripped). `declared`, `bootConfig` and every field of `bound` may be
-  `null`.
+  anywhere in the block.** A later phase may add verdicts and fields. `detail` is for people: show
+  it, never parse it. `capture.lastError` is plain text (terminal colour codes are stripped).
+  `declared`, `bootConfig` and every field of `bound` may be `null`.
+
+  What Phase 2 of that plan added to the block (the key set and key order did not change):
+  - `declared.source` `config`: the port is **managed**, its sensor comes from the `cameraSensors`
+    setting (`declared.sensor` is the setting's id, `none` for a port declared empty). A port
+    without a setting reports as before (`boot-config` or `model`); there is no `unmanaged` verdict.
+  - `unknown-sensor`: the setting names a sensor this build's catalog lacks. Nothing is written.
+  - `requirements-missing`: the declared sensor needs an OS release the device does not run, or
+    packages that `dpkg-query` does not show installed in the catalog's versions, and the camera is
+    not listed. The agent installs nothing; the sentence names the packages.
+  - `reboot-required` also covers a camera line that differs from the one the device booted with
+    (an option, the rotation, a line removed or added), on a managed and on an unmanaged port.
+  - When the running video preset is one the sensor cannot run (the catalog's
+    `unsupportedPresets`), the sentence of an `ok` or `no-frames` port ends with the catalog's reason.
+- **A third deliberate addition (the same plan, Phase 2): the namespace `cameraSensors`** and the
+  capability `camera.sensors`. Neither exists in the JS agent, and the cloud never stores or
+  publishes the namespace for a JS device.
+  - **Shape:** `{ "cameras": { "<streamKey>": { "sensor": "<catalog id>" | "none", "options"?: { "<key>": <number> } } } }`.
+    An ABSENT port key is unmanaged: the agent leaves that port's camera line exactly as it found it.
+  - **Retained message:** key absent = keep the local value; `{}` = drop it; a value = replace whole.
+  - **Held as delivered.** Unlike the other namespaces, an entry is not normalised: a sensor id or an
+    option this build's catalog lacks, an unknown key and an entry of the wrong type are kept, so
+    the agent can refuse that one port with a sentence and hand the value back unchanged in a local
+    fold-back. Only a key that is not a stream key is dropped.
+  - **What it does:** the camera reconciler makes each managed port's `dtoverlay=` line the declared
+    sensor's line through `xorgate-camcfg set` (or `remove` for `none`), one write per change, none
+    when the line already says it. It never reboots. See `guide/04`.
+  - **Reported:** `effective.cameraSensors` is the namespace as held plus `reconciled: false` (not
+    looked at yet) or `rebootRequired`; `status.cameraSensors` is `applied`, `adjusted` (saved but
+    not in force: "saved; the device has not reconciled its boot config yet", or "written to the boot
+    config — REBOOT REQUIRED to apply: cam0 imx708") or `rejected` ("cam0: <why>; …", naming every
+    port that could not be applied). A local `xorgate-rs set cameraSensors.…` folds back as
+    `changed.cameraSensors`: the whole namespace, or `null` when it was removed.
+  - **The capability** is in `effective.agent.capabilities`, last. The backend refuses the namespace
+    for an agent that does not advertise it and **withdraws a stored value on the first report whose
+    list lacks it**. So the list is one compile-time constant (`AGENT_CAPABILITIES`), emitted whole in
+    every report that has an `agent` block. Never build it conditionally. The provisioner sends the
+    same string in its claim body (`capabilities: ["camera.sensors"]`); without it the device starts
+    unmanaged.
 
 ### Commands
 
