@@ -244,7 +244,7 @@ updater_case() {
     > $D/xorgate-updater-rs.service.d/10-test.conf
   systemctl daemon-reload
 }
-wait_log() { local i; for i in $(seq "${2:-100}"); do grep -q "$1" $UL 2>/dev/null && return 0; sleep 0.1; done; return 1; }
+wait_log() { for _ in $(seq "${2:-100}"); do grep -q "$1" $UL 2>/dev/null && return 0; sleep 0.1; done; return 1; }
 gone() { [ -z "$(cat "/sys/fs/cgroup/system.slice/xorgate-updater-rs.service/cgroup.procs" 2>/dev/null)" ]; }
 show_log() { sed 's/^/      /' $UL; }
 
