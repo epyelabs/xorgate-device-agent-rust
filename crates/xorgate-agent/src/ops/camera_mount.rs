@@ -19,19 +19,32 @@
 //! (the wire is unchanged): 0 = upright as mounted.
 //!
 //! THE SENSOR SETTING (Phase 2 of that plan, RUST-ONLY). A port with an
-//! entry in the `cameraSensors` namespace is MANAGED: the same pass first
-//! makes the port's camera line the declared sensor's line (overlay, the
-//! catalog's fixed parameters, the chosen options, and the rotation above)
-//! with ONE `xorgate-camcfg set` call, or deletes it with `remove` for a
-//! port declared empty, and writes nothing when config.txt already says
-//! exactly that (`camera_sensors::line_op`). The declaration is the
-//! authority there, so the B7 gate below does not apply to a managed port.
-//! A port WITHOUT an entry is unmanaged: everything below is as it was.
-//! Two namespaces report from this one pass: `cameraSensors` (the line) and
-//! `cameraMount` (the rotation). Neither says `applied` for a line that is
-//! written and not booted: the pass remembers each port's line as it first
-//! saw it in this boot ([`BootLineStore`]) and a line that differs waits
-//! for a reboot.
+//! entry in the `cameraSensors` namespace is MANAGED: the same pass makes
+//! the port's camera line the declared sensor's line with ONE helper call
+//! (`camera_sensors::line_op`), and NEVER LOSES A HAND-SET PARAMETER
+//! SILENTLY:
+//! - the line already names the sensor's overlay: what the entry does not
+//!   name is as found (an un-named option, an unlisted token, and the
+//!   rotation when `cameraMount` does not name the port); nothing to
+//!   enforce differs = NO call; only the rotation differs = `rotate`, in
+//!   place; a named option differs = one `set` that carries the named
+//!   options and the line's own un-named catalog options, UNLESS the line
+//!   holds a token the catalog does not list: then nothing is written and
+//!   the port is refused with a sentence naming the token;
+//! - the line names another overlay, or there is none: one `set` (the old
+//!   tokens were the old sensor's);
+//! - `none`: `remove`.
+//!
+//! The declaration is the authority there, so the B7 gate below does not
+//! apply to a managed port. A port WITHOUT an entry is unmanaged:
+//! everything below is as it was. Two namespaces report from this one pass:
+//! `cameraSensors` (the line) and `cameraMount` (the rotation). Neither
+//! says `applied` for a line that is written and not booted: the pass
+//! remembers each port's line as it first saw it in this boot
+//! ([`BootLineStore`]) and a line that differs waits for a reboot. WHAT
+//! RUNS on a port is read from the live device tree and the pass's camera
+//! listing, never from the `<key>.camera` cache file, which outlives the
+//! camera it names.
 //!
 //! What `cameraMount` says on a managed port:
 //! - a sensor that cannot flip (`imx335`): mount 0 = `applied`, mount 180 =
@@ -77,7 +90,7 @@ use xorgate_core::camera_sensors::{
     changed_since_boot, declared_id, line_op, snapshot_boot_lines, wanted, BootLines, Wanted,
 };
 use xorgate_core::camera_truth::{
-    rotation_write_block, CaptureOff, CaptureTruth, PortFacts, PortNode,
+    node_sensor, rotation_write_block, CaptureOff, CaptureTruth, PortFacts, PortNode,
 };
 use xorgate_core::cameras::EnumeratedCamera;
 use xorgate_core::clock::Clock;
@@ -393,14 +406,23 @@ fn in_force_mount(
     line_default: Option<u16>,
 ) -> Option<f64> {
     let name = camera_name_for(&o.pipeline_dir, stream_key)?;
-    let node = name.rsplit('/').next().unwrap_or(&name);
+    in_force_of(o, &name, line_default)
+}
+
+/// [`in_force_mount`] for a camera named by its libcamera path.
+fn in_force_of(
+    o: &ReconcileCameraMountOptions,
+    name: &str,
+    line_default: Option<u16>,
+) -> Option<f64> {
+    let node = name.rsplit('/').next().unwrap_or(name);
     let default = o
         .catalog
         .by_dt_node(node)
         .map(|s| s.default_rotation)
         .or(line_default)
         .unwrap_or(0);
-    match dt_rotation_state(&name, &o.dt_root) {
+    match dt_rotation_state(name, &o.dt_root) {
         DtRotation::Value(v) => Some(f64::from(mount_of_rotation(default, v))),
         // As the kernel reads it: no property = rotation 0.
         DtRotation::Absent => Some(f64::from(mount_of_rotation(default, 0))),
@@ -467,6 +489,9 @@ pub async fn reconcile_cameras(o: ReconcileCameraMountOptions) -> CameraStates {
     let mut wrote = false;
 
     // The managed ports: the line, rotation included, in one call each.
+    // What is on the ports is looked at once per pass, and only when a
+    // managed port gets as far as needing it.
+    let evidence: std::sync::OnceLock<PortEvidence> = std::sync::OnceLock::new();
     let mut ports: Vec<CameraSensorsPortState> = Vec::new();
     let mut sensors_wrote = false;
     let mut sensor_keys: Vec<&String> = managed.keys().collect();
@@ -480,6 +505,7 @@ pub async fn reconcile_cameras(o: ReconcileCameraMountOptions) -> CameraStates {
             mount,
             path.as_deref(),
             board,
+            &evidence,
         )
         .await;
         sensors_wrote |= changed;
@@ -828,6 +854,7 @@ pub async fn reconcile_cameras(o: ReconcileCameraMountOptions) -> CameraStates {
                 .any(|c| c.verdict == CameraSensorsVerdict::PendingReboot),
             cameras: ports,
             wrote: sensors_wrote,
+            settings: serde_json::to_string(&o.sensors).unwrap_or_default(),
         }),
     }
 }
@@ -935,6 +962,7 @@ async fn managed_port(
     mount: Option<CameraRotationDeg>,
     path: Option<&str>,
     board: Board,
+    evidence: &std::sync::OnceLock<PortEvidence>,
 ) -> (CameraSensorsPortState, Option<CameraMountCameraState>, bool) {
     let declared = declared_id(entry);
     let sens = |verdict: CameraSensorsVerdict, detail: Option<String>| CameraSensorsPortState {
@@ -1038,7 +1066,20 @@ async fn managed_port(
     let mut text_now = text;
     let mut changed = false;
     let mut written: Option<String> = None;
-    if let Some(op) = line_op(&text_now, board, port, &want, mount_deg, o.catalog) {
+    let op = match line_op(&text_now, board, port, &want, mount_deg, o.catalog) {
+        Ok(op) => op,
+        // A write is needed and would drop a hand-set token the catalog
+        // does not list: nothing is written, the sentence names the token.
+        Err(why) => {
+            forget();
+            return (
+                sens(CameraSensorsVerdict::Rejected, Some(why.clone())),
+                cam(None, None, CameraMountVerdict::Unsupported, Some(why)),
+                false,
+            );
+        }
+    };
+    if let Some(op) = op {
         let failed = |detail: String| {
             (
                 sens(CameraSensorsVerdict::WriteFailed, Some(detail.clone())),
@@ -1115,7 +1156,12 @@ async fn managed_port(
                 CamCfgOp::Remove { .. } => format!(
                     "camera line for {cam_token} removed from {path} (the port is declared empty)"
                 ),
-                _ => format!(
+                // In place: every other token of the line is kept.
+                CamCfgOp::Rotate { rotation, .. } => format!(
+                    "camera line for {cam_token} in {path}: rotation={rotation} set on the {} line, the rest of the line kept",
+                    want.id()
+                ),
+                CamCfgOp::Set { .. } => format!(
                     "camera line for {cam_token} in {path} is now the {} line ({})",
                     want.id(),
                     op.args()[2..].join(",")
@@ -1138,14 +1184,52 @@ async fn managed_port(
     // one this boot started with, or the camera running on the port is
     // another overlay's (an edit made before the agent first ran).
     let change = changed_since_boot(&booted, &text_now, board, port, o.catalog);
-    let running = camera_name_for(&o.pipeline_dir, stream_key).and_then(|name| {
-        let node = name.rsplit('/').next().unwrap_or(&name).to_string();
-        o.catalog.by_dt_node(&node).map(|s| s.overlay.clone())
-    });
-    let running_other = match (&running, &want) {
-        (Some(r), Wanted::Line { sensor, .. }) => *r != sensor.overlay,
-        (Some(_), Wanted::Empty) => true,
+    // WHAT RUNS ON THE PORT comes from the LIVE device tree (the sysfs scan
+    // of this pass), else from this pass's camera listing: never from the
+    // `<key>.camera` file, which is a cache that outlives the camera (it is
+    // rewritten only when a camera IS listed, so a port declared empty, or
+    // a wrong declaration after its reboot, would read "another camera
+    // runs here: reboot" for ever).
+    let ev = evidence.get_or_init(|| (o.evidence)());
+    let connector = port.connector();
+    let node_of = |path: &str| node_sensor(path.rsplit('/').next().unwrap_or(path)).to_string();
+    let on_port: Option<Vec<String>> = match (&ev.nodes, &ev.cameras) {
+        (Some(nodes), _) => Some(
+            nodes
+                .iter()
+                .filter(|n| n.connector == connector)
+                .map(|n| node_sensor(&n.node).to_string())
+                .collect(),
+        ),
+        (None, Some(cams)) => Some(
+            cams.iter()
+                .filter(|c| c.connector.as_deref() == Some(connector))
+                .map(|c| node_of(&c.camera_name))
+                .collect(),
+        ),
+        // The agent could not look at all: nothing is concluded.
+        (None, None) => None,
+    };
+    let running_other = match (&on_port, &want) {
         (None, _) => false,
+        (Some(on), Wanted::Empty) => !on.is_empty(),
+        (Some(on), Wanted::Line { sensor, .. }) => {
+            !on.is_empty() && !on.iter().any(|n| sensor.dt_node_names.contains(n))
+        }
+    };
+    // The camera whose device-tree rotation is "in force" on this port: the
+    // one this pass's listing has there. Where cameras cannot be listed,
+    // the cached name, but only while its node is in the live device tree.
+    let camera_name: Option<String> = match &ev.cameras {
+        Some(cams) => cams
+            .iter()
+            .find(|c| c.connector.as_deref() == Some(connector))
+            .map(|c| c.camera_name.clone()),
+        None => camera_name_for(&o.pipeline_dir, stream_key).filter(|name| {
+            on_port
+                .as_ref()
+                .is_some_and(|on| on.contains(&node_of(name)))
+        }),
     };
     let pending = change.is_some() || running_other;
     if let Some(what) = written {
@@ -1177,10 +1261,9 @@ async fn managed_port(
         return (port_state, None, changed);
     };
     let desired_deg = f64::from(desired.degrees());
-    let in_force = if running_other {
-        None
-    } else {
-        in_force_mount(o, stream_key, Some(sensor.default_rotation))
+    let in_force = match &camera_name {
+        Some(name) if !running_other => in_force_of(o, name, Some(sensor.default_rotation)),
+        _ => None,
     };
     if !sensor.can_flip {
         // Mount 0 is the only picture it has; reported only where a camera

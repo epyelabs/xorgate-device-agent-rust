@@ -703,26 +703,33 @@ The helper itself, and the reconciler over the REAL helper, are covered off the 
 `fixtures/camera_mount/rust-divergences.json`).
 
 
-## The sensor setting (support-other-camera-models, Phase 2): EVERY JS-vs-Rust lane now differs in `report`, and what the rig needs
+## The sensor setting (support-other-camera-models, Phase 2): the capability is tolerated (T8/D107); what else differs, and what the rig still needs
 
 Since branch `camera/phase2-agent` the Rust agent advertises the capability `camera.sensors`, knows
 the namespace `cameraSensors`, and changed a few journal texts (accepted divergences **D107–D115**).
 
-**No tolerance matcher was built, no tolerance row was widened, and nothing under `tools/replay/` or
-in `xorgate-replay` was changed** (a harness change lapses every tape's eligibility and needs the
-orchestrator's go). What differs by design, and the harness change that would absorb each:
+**One harness change was made, with the orchestrator's go: decision row `T8/D107`**
+(`tolerances.toml`; `rust_only_last_item` in `tolerances.rs`, the branch in `diff.rs` `cmp`). On a
+JS-vs-Rust pair, `effective.agent.capabilities` is tolerated when, and only when, the Rust array is
+the JS array with exactly `"camera.sensors"` appended. Another item, another position, a changed
+shared item, the item on the JS side, and every Rust-vs-Rust or JS-vs-JS difference stay
+UNTOLERATED. (A harness change lapses every tape's eligibility: re-qualify before the next gate
+that counts tapes.) Nothing else under `tools/replay/` or in `xorgate-replay` was changed. What
+differs by design, and for the rows still open, the harness change that would absorb each:
 
 | # | Stream | Where | JS side | Rust side | Row | The harness change (NOT built) |
 |---|---|---|---|---|---|---|
-| 1 | `report` | **every tape, every report with an `agent` block** | `capabilities: ["sms.read","sms.clear","obd.scan","obd.forget"]` | the same plus `"camera.sensors"` last | D107 | the D85 normaliser in `crates/xorgate-replay/src/diff.rs` (the one that drops `runtime: "rust"` from the Rust side's `agent` block) also drops a trailing `"camera.sensors"` from the Rust side's `capabilities`, and asserts it was there |
+| 1 | `report` | **every tape, every report with an `agent` block** | `capabilities: ["sms.read","sms.clear","obd.scan","obd.forget"]` | the same plus `"camera.sensors"` last | D107 | **BUILT**: decision row `T8/D107` (above) |
 | 2 | end snapshot of the home directory | every real-mode tape with a `config.txt` | no such file | `camera-boot-lines.json` (the lines as booted) | D109 | the snapshot comparison lists the file as Rust-only (like `xorgate-rs` state the JS never writes) |
 | 3 | `events` | a tape whose `config.txt` has no camera line for a camera port of the model | `…: no camera enumerated on csiN (expected …) — stream held down until one appears (check the ribbon + overlays, reboot after install)` | `…: no camera is configured on csiN (config.txt has no camera line for it; the device model expects …) — stream held down` | D112 | run such a tape Rust-vs-Rust, as the camera tapes already are |
 | 4 | CLI matrix, `status` with the daemon stopped | `tools/replay/cli/cases.txt` | `  start it with: xorgate start` | `  start it with: sudo systemctl start xorgate-agent-rs` | D113 | the matrix maps that one line, as `cli_status.rs` does |
 | 5 | `sudo` | a tape that sends `cameraSensors` (none exists) | — | `sudo -n /usr/local/bin/xorgate-camcfg set …` / `remove …` | D109 | Rust-only scenario; the sudo shim executes `xorgate-camcfg` (the change already described in the Phase 1 section above) |
 | 6 | `events` | a tape where `cameraMount` is rejected (a sensor that cannot rotate, a port that is not confirmed, a section the agent cannot evaluate, no line, an unknown camera), or where a write returns the line to the rotation in force | no line for a rejection; `… — REBOOT required before the image changes …` for every write | `camera mount: <key>: rotation not applied — <the status sentence>`, once per change; `… — no reboot needed: the device already runs this rotation` | D115 | run such a tape Rust-vs-Rust |
 
-Row 1 is the one that matters today: until the normaliser is extended, a `jsrs` lane fails on its
-first report. `rsrs` and `ab` lanes are not affected.
+Row 1 was the one that failed every `jsrs` lane on its first report; it is tolerated now. Rows 2
+to 6 are still open (none is hit by a tape that sends no `cameraSensors`, has a camera line for
+every camera port and never has `cameraMount` rejected, except row 2's extra file). `rsrs` and
+`ab` lanes are not affected.
 
 A faithful Rust-only scenario for the setting (NOT built): seed a hardware block and a `config.txt`
 with two `imx290` lines; send `cameraSensors` `{cam0: imx708}`; expect one `set cam0 imx708

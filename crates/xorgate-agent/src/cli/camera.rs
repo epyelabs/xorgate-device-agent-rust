@@ -30,10 +30,15 @@ use xorgate_core::boot_config::{
     CAMCFG_HELPER, PROC_DEVICE_TREE,
 };
 use xorgate_core::camera_catalog::catalog;
-use xorgate_core::camera_sensors::{apply_plan, line_op, port_boot_line, wanted_for_apply, Wanted};
+use xorgate_core::camera_sensors::{apply_plan, line_op, port_boot_line, wanted, Wanted};
 use xorgate_core::js;
+use xorgate_core::settings::clip;
 
 pub const USAGE: &str = "usage: xorgate-rs camera apply --from-claim <claim.json>\n  Writes the camera dtoverlay lines of /boot/firmware/config.txt for the ports the claim\n  response declares (its cameraSensors, else hardware.video[].sensor, else two imx290 lines).\n  Run as root. Never reboots.";
+
+/// Marks the line that says a port was left with no camera line at all
+/// (the installer turns it into its own WARN).
+pub const NO_LINE_MARK: &str = "NO CAMERA LINE";
 
 /// The last stdout line when something was written.
 pub const CHANGED_LINE: &str = "config.txt changed: REBOOT required before the cameras stream";
@@ -54,15 +59,23 @@ pub struct CameraEnv {
 }
 
 impl CameraEnv {
-    /// From this process. The three variables are the helper's own test
-    /// seams (`system/xorgate-camcfg`), which it ignores under sudo: with
-    /// them unset (every real run) the real paths are used.
+    /// From this process: the real paths, always, when it runs as root (the
+    /// way the installer runs it).
     pub fn from_process() -> Self {
-        let var = |k: &str| {
+        Self::from_env(nix::unistd::geteuid().is_root(), |k| {
             std::env::var_os(k)
                 .filter(|v| !v.is_empty())
                 .map(PathBuf::from)
-        };
+        })
+    }
+
+    /// `XORGATE_BOOT_CONFIG`, `XORGATE_CAMCFG_MODEL` and `XORGATE_CAMCFG`
+    /// are TEST SEAMS (the first two are the helper's own, which it ignores
+    /// under sudo). They are honoured only when the process is NOT root: a
+    /// root run never takes the executable it runs, or the file it edits,
+    /// from its environment.
+    pub fn from_env(is_root: bool, var: impl Fn(&str) -> Option<PathBuf>) -> Self {
+        let var = |k: &str| if is_root { None } else { var(k) };
         let board = match var("XORGATE_CAMCFG_MODEL") {
             Some(model) => xorgate_hal::read_lossy::read_text(&model)
                 .ok()
@@ -134,70 +147,89 @@ pub fn apply(claim: &serde_json::Value, env: &CameraEnv) -> (i32, Vec<String>) {
     let c = catalog();
     let (mut failed, mut changed) = (false, false);
     for choice in apply_plan(claim) {
-        let key = &choice.stream_key;
-        let port = match &choice.port {
-            Ok(p) => *p,
-            Err(why) => {
-                say!("{key}: FAILED: {why}; config.txt is left as it is");
-                failed = true;
-                continue;
-            }
-        };
-        // Read per port: the helper may just have rewritten the file.
-        let text = match xorgate_hal::boot_config_io::read_boot_config(&config.to_string_lossy()) {
-            Ok(t) => t,
-            Err(e) => {
-                say!("{key}: FAILED: cannot read {}: {e}", config.display());
-                failed = true;
-                continue;
-            }
-        };
-        let want = match wanted_for_apply(&choice, port, &text, env.board, c) {
-            Ok(w) => w,
-            Err(refusal) => {
-                say!("{key}: FAILED: {refusal}");
-                failed = true;
-                continue;
-            }
-        };
-        let was = port_boot_line(&parse_scoped_lines(&text, env.board), port, c).map(|l| l.text);
+        // A stream key out of the claim is printed clipped.
+        let key = &clip(&choice.stream_key);
         let from = choice.source.words();
-        let Some(op) = line_op(&text, env.board, port, &want, None, c) else {
-            match (&want, &was) {
-                (Wanted::Empty, _) => {
-                    say!("{key}: no change (no camera line; the port is declared empty by {from})")
-                }
-                (_, Some(line)) => say!("{key}: no change ({line}; {} by {from})", want.id()),
-                (_, None) => say!("{key}: no change"),
-            }
-            continue;
-        };
-        if let Err(why) = camcfg_call(op.clone(), c) {
-            say!("{key}: FAILED: {why}");
-            failed = true;
-            continue;
-        }
-        match run_helper(env, &op) {
-            Ok(true) => {
-                changed = true;
-                let was = was.map(|l| format!(" (was: {l})")).unwrap_or_default();
-                match &op {
-                    CamCfgOp::Remove { .. } => say!(
-                        "{key}: camera line removed{was}; the port is declared empty by {from}"
+        // One port: `Ok(true)` = written, `Ok(false)` = already as declared,
+        // `Err` = why it could not be applied.
+        let mut port_no = None;
+        let result: Result<bool, String> = (|| {
+            let port = choice
+                .port
+                .clone()
+                .map_err(|why| format!("{why}; config.txt is left as it is"))?;
+            port_no = Some(port);
+            // Read per port: the helper may just have rewritten the file.
+            let text = xorgate_hal::boot_config_io::read_boot_config(&config.to_string_lossy())
+                .map_err(|e| format!("cannot read {}: {e}", config.display()))?;
+            let want = wanted(&choice.entry, c).map_err(|refusal| refusal.to_string())?;
+            let was =
+                port_boot_line(&parse_scoped_lines(&text, env.board), port, c).map(|l| l.text);
+            // The same decision as the running agent's (`cameraMount` is not
+            // known here: a line's own rotation is kept).
+            let Some(op) = line_op(&text, env.board, port, &want, None, c)? else {
+                match (&want, &was) {
+                    (Wanted::Empty, _) => say!(
+                        "{key}: no change (no camera line; the port is declared empty by {from})"
                     ),
-                    _ => say!(
-                        "{key}: dtoverlay={} written{was}; {} by {from}",
-                        op.args()[2..]
-                            .join(",")
-                            .replacen(',', &format!(",{},", port.token()), 1),
+                    (_, Some(line)) => say!("{key}: no change ({line}; {} by {from})", want.id()),
+                    (_, None) => say!("{key}: no change"),
+                }
+                return Ok(false);
+            };
+            camcfg_call(op.clone(), c)?;
+            let wrote = run_helper(env, &op)?;
+            if !wrote {
+                say!("{key}: no change");
+                return Ok(false);
+            }
+            let was = was.map(|l| format!(" (was: {l})")).unwrap_or_default();
+            match &op {
+                CamCfgOp::Remove { .. } => {
+                    say!("{key}: camera line removed{was}; the port is declared empty by {from}")
+                }
+                CamCfgOp::Rotate { rotation, .. } => {
+                    say!(
+                        "{key}: rotation={rotation} set on the camera line{was}; {} by {from}",
                         want.id()
-                    ),
+                    )
                 }
+                CamCfgOp::Set { .. } => say!(
+                    "{key}: dtoverlay={} written{was}; {} by {from}",
+                    op.args()[2..]
+                        .join(",")
+                        .replacen(',', &format!(",{},", port.token()), 1),
+                    want.id()
+                ),
             }
-            Ok(false) => say!("{key}: no change"),
+            Ok(true)
+        })();
+        match result {
+            Ok(wrote) => changed |= wrote,
             Err(why) => {
-                say!("{key}: FAILED: {why}");
                 failed = true;
+                say!("{key}: FAILED: {why}");
+                // A port that was to get a camera and now has NO camera line
+                // at all: said in so many words, with the way out. (No
+                // fallback line is written: a guessed sensor is worse than a
+                // port that says it has none.)
+                let wants_camera = choice.entry.get("sensor").and_then(|s| s.as_str())
+                    != Some(xorgate_core::settings::CAMERA_SENSOR_NONE);
+                // Only for a port this device has, whose file can be read.
+                let no_line = port_no.is_some_and(|port| {
+                    xorgate_hal::boot_config_io::read_boot_config(&config.to_string_lossy())
+                        .map(|t| {
+                            port_boot_line(&parse_scoped_lines(&t, env.board), port, c).is_none()
+                        })
+                        .unwrap_or(false)
+                });
+                if wants_camera && no_line {
+                    say!(
+                        "{key}: {NO_LINE_MARK}: {key} has NO camera line in {}, so no camera will appear on that port ({why}). To fix it: correct the cause, then `xorgate-rs set cameraSensors.{key}.sensor <{}>` (the agent writes the line within a minute; reboot after), or add the dtoverlay line for {key} by hand and reboot",
+                        config.display(),
+                        c.sensors.iter().map(|s| s.id.as_str()).collect::<Vec<_>>().join("|")
+                    );
+                }
             }
         }
     }

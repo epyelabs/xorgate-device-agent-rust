@@ -953,7 +953,10 @@ fn preset_note(f: &PortFacts<'_>, declared: Option<&Declared>, verdict: CameraVe
 ///    device lacks, and the camera is not listed. Ahead of a pending
 ///    reboot, because a reboot alone would not bring the camera.
 /// 3. `reboot-required`: the port's camera line changed since this boot
-///    (managed or not, whoever changed it).
+///    (managed or not, whoever changed it) and nothing else is wrong. A
+///    real fault of the camera that the reboot brings back (`no-frames`,
+///    `not-detected`, with the overlay unchanged) keeps its own verdict
+///    and its sentence says that the line also waits for a reboot.
 /// 4. `mismatch`: config.txt does not hold the declared line (yet): the
 ///    setting is not applied.
 /// 5. a port declared empty and applied: `empty`, or `reboot-required`
@@ -994,6 +997,29 @@ fn setting_verdict(r: &Resolved<'_>) -> Option<(CameraVerdict, String)> {
         }
     }
     if let Some(ch) = f.setting.line_change {
+        // A REAL FAULT OUTRANKS A PENDING CHANGE. When the change keeps the
+        // overlay (an option or the rotation was rewritten), the camera
+        // that runs now is the one the reboot will bring back: if its
+        // capture is failing, or nothing answers, that is the verdict, and
+        // the sentence ends by saying the line also waits for a reboot.
+        // `reboot-required` is for a port with nothing else wrong. (When
+        // the overlay itself changes, or the line was added or removed,
+        // what runs now is what the reboot replaces: its state is not the
+        // new line's fault, and the port reads `reboot-required`.)
+        if !ch.overlay {
+            let (verdict, detail) = verdict_of(r);
+            if matches!(
+                verdict,
+                CameraVerdict::NoFrames | CameraVerdict::NotDetected
+            ) {
+                return Some((
+                    verdict,
+                    format!(
+                        "{detail} The camera line of {port} in config.txt also waits for a reboot: it was changed since this device booted."
+                    ),
+                ));
+            }
+        }
         let detail = match (&ch.booted, &ch.now) {
             (Some(was), Some(now)) => format!(
                 "The camera line of {port} in config.txt was changed since this device booted (it booted with `{was}`, the file now says `{now}`). Reboot to apply."
@@ -2915,6 +2941,118 @@ mod tests {
                 assert_eq!(p.capture.state, CaptureTruth::Streaming);
             }
         }
+    }
+
+    /// A REAL FAULT OUTRANKS A PENDING CHANGE (review N1). After a rotation
+    /// or an option was rewritten, a camera that dies, or that does not
+    /// answer, keeps its own verdict; the sentence ends by saying that the
+    /// line also waits for a reboot. `reboot-required` is for a port with
+    /// nothing else wrong. When the OVERLAY changes, what runs now is what
+    /// the reboot replaces, and the port reads `reboot-required`.
+    #[test]
+    fn a_real_fault_outranks_a_pending_line_change() {
+        const ALSO: &str = " The camera line of csi0 in config.txt also waits for a reboot: it was changed since this device booted.";
+        let rotated = LineChange {
+            booted: Some("dtoverlay=imx290,cam0".into()),
+            now: Some("dtoverlay=imx290,cam0,rotation=180".into()),
+            overlay: false,
+        };
+        let nodes = [node("csi0", "imx290@1a", Some("imx290"))];
+        let running = PortFacts {
+            boot_text: Some("dtoverlay=imx290,cam0,rotation=180\n"),
+            nodes: Some(&nodes),
+            listed: Some(IMX290_CM5),
+            capture: CaptureTruth::Streaming,
+            setting: PortSetting {
+                line_change: Some(&rotated),
+                ..Default::default()
+            },
+            ..facts("cam0", "csi0")
+        };
+        // Nothing else wrong: reboot-required.
+        assert_eq!(derive_port(&running).verdict, CameraVerdict::RebootRequired);
+        // The capture is failing: `no-frames`, with the usual sentence and
+        // the closing clause. Managed or not.
+        for sensor in [None, Some("imx290")] {
+            let p = derive_port(&PortFacts {
+                capture: CaptureTruth::Failing,
+                last_error: Some("ERROR: Camera frontend has timed out!"),
+                setting: PortSetting {
+                    sensor,
+                    ..running.setting.clone()
+                },
+                ..running.clone()
+            });
+            assert_eq!(p.verdict, CameraVerdict::NoFrames, "{sensor:?}");
+            assert_eq!(
+                p.detail,
+                format!("imx290 is listed on csi0 but delivers no frames: its capture process keeps failing. The imx290 driver cannot confirm which chip is attached, so the camera on this port may be a different sensor, or nothing may be attached. Check the ribbon cable and that the dtoverlay line in config.txt names the sensor that is really attached.{ALSO}"),
+                "{sensor:?}"
+            );
+        }
+        // Nothing answers on a line whose overlay did not change (an option
+        // was rewritten on a chip-ID sensor that is not there).
+        let option = LineChange {
+            booted: Some("dtoverlay=imx708,cam0,rotation=180".into()),
+            now: Some("dtoverlay=imx708,cam0,link-frequency=447000000,rotation=180".into()),
+            overlay: false,
+        };
+        let unbound = [node("csi0", "imx708@1a", None)];
+        let p = derive_port(&PortFacts {
+            boot_text: Some("dtoverlay=imx708,cam0,link-frequency=447000000,rotation=180\n"),
+            nodes: Some(&unbound),
+            listed: None,
+            capture: CaptureTruth::Absent,
+            setting: PortSetting {
+                sensor: Some("imx708"),
+                line_change: Some(&option),
+                ..Default::default()
+            },
+            ..facts("cam0", "csi0")
+        });
+        assert_eq!(p.verdict, CameraVerdict::NotDetected);
+        assert_eq!(
+            p.detail,
+            format!("csi0 is set to imx708, but no imx708 answered on this port (the kernel driver did not bind). Check the ribbon cable and the selected sensor.{ALSO}")
+        );
+        // The OVERLAY changed (the user is replacing a camera that fails):
+        // what runs now is not the new line's fault. reboot-required.
+        let swapped = LineChange {
+            booted: Some("dtoverlay=imx290,cam0".into()),
+            now: Some("dtoverlay=imx708,cam0,rotation=180".into()),
+            overlay: true,
+        };
+        let p = derive_port(&PortFacts {
+            boot_text: Some("dtoverlay=imx708,cam0,rotation=180\n"),
+            capture: CaptureTruth::Failing,
+            last_error: Some("ERROR: x"),
+            setting: PortSetting {
+                sensor: Some("imx708"),
+                line_change: Some(&swapped),
+                ..Default::default()
+            },
+            ..running.clone()
+        });
+        assert_eq!(p.verdict, CameraVerdict::RebootRequired);
+        // A line ADDED on an empty port: nothing answers yet, by design.
+        let added = LineChange {
+            booted: None,
+            now: Some("dtoverlay=imx219,cam0,rotation=180".into()),
+            overlay: true,
+        };
+        let p = derive_port(&PortFacts {
+            boot_text: Some("dtoverlay=imx219,cam0,rotation=180\n"),
+            nodes: Some(&[]),
+            listed: None,
+            capture: CaptureTruth::Absent,
+            setting: PortSetting {
+                sensor: Some("imx219"),
+                line_change: Some(&added),
+                ..Default::default()
+            },
+            ..facts("cam0", "csi0")
+        });
+        assert_eq!(p.verdict, CameraVerdict::RebootRequired);
     }
 
     /// config.txt does not hold the declared line (the reconciler could not

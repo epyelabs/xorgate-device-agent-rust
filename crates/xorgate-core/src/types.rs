@@ -322,6 +322,12 @@ pub struct CameraSensorsState {
     pub reboot_required: bool,
     /// The boot config changed on THIS pass.
     pub wrote: bool,
+    /// The namespace this pass looked at, as JSON (`null` = absent). The
+    /// status says `applied` only for the value the pass was computed
+    /// from: a value held since (a cloud message applied a moment ago, a
+    /// local edit) is "saved, not reconciled yet".
+    #[serde(default)]
+    pub settings: String,
 }
 
 /// `CameraMountState` (`boot-config.ts:246`): the reconciler's last pass.

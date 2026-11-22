@@ -646,6 +646,14 @@ pub struct CameraSensorsSettings {
     pub cameras: Option<IndexMap<String, Value>>,
 }
 
+/// The most port keys `cameraSensors.cameras` holds (the backend's bound);
+/// keys beyond it are dropped.
+pub const MAX_CAMERA_SENSOR_PORTS: usize = 16;
+
+/// The largest entry (its JSON text, in bytes) `cameraSensors.cameras`
+/// holds as delivered.
+pub const MAX_CAMERA_SENSOR_ENTRY_BYTES: usize = 512;
+
 /// The `sensor` value of a port declared empty.
 pub const CAMERA_SENSOR_NONE: &str = "none";
 
@@ -663,6 +671,22 @@ pub fn parse_camera_sensors_settings(v: &Value) -> Option<CameraSensorsSettings>
     let mut out: IndexMap<String, Value> = IndexMap::new();
     for (key, entry) in cameras {
         if !stream_key_re_test(key) || js_assign_drops_key(key) {
+            continue;
+        }
+        // The backend's bound on ports; only a hand-edited file exceeds it.
+        if out.len() >= MAX_CAMERA_SENSOR_PORTS {
+            break;
+        }
+        // An entry is held as delivered, so its size is what the report
+        // carries (twice, with a local fold-back), and the backend drops a
+        // report over 32 KB. A real entry is some 60 bytes; one over the
+        // bound (a hand-edited file) is replaced by a marker the reconciler
+        // refuses, so nothing is written for the port.
+        let bytes = serde_json::to_string(entry).map_or(0, |s| s.len());
+        if bytes > MAX_CAMERA_SENSOR_ENTRY_BYTES {
+            let mut marker = serde_json::Map::new();
+            marker.insert("oversized".to_string(), Value::from(bytes));
+            out.insert(key.clone(), Value::Object(marker));
             continue;
         }
         out.insert(key.clone(), entry.clone());
@@ -693,6 +717,11 @@ pub fn camera_sensor_choice(entry: &Value) -> Result<CameraSensorChoice, String>
         return Err("is not an object".to_string());
     };
     let Some(Value::String(id)) = e.get("sensor") else {
+        if let Some(bytes) = e.get("oversized").and_then(Value::as_u64) {
+            return Err(format!(
+                "is larger than the agent keeps ({bytes} bytes; at most {MAX_CAMERA_SENSOR_ENTRY_BYTES})"
+            ));
+        }
         return Err("has no \"sensor\" name".to_string());
     };
     let options = match e.get("options") {

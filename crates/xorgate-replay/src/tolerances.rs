@@ -131,6 +131,14 @@ pub struct Row {
     /// if the row did not exist.
     #[serde(default)]
     pub rust_only_value: Option<serde_json::Value>,
+    /// ONE EXTRA LAST ITEM (T8/D107): the row's `paths` name an ARRAY that
+    /// is tolerated ONLY on a JS-vs-Rust pair where the Rust side's array is
+    /// the JS side's array with exactly this item appended. Any other
+    /// difference (the item missing on a Rust side against another Rust
+    /// side, another item, another position, a changed shared item) is
+    /// compared as if the row did not exist.
+    #[serde(default)]
+    pub rust_only_last_item: Option<serde_json::Value>,
     /// Largest allowed |A − B| of a measured duration (T8 `sms-duration`).
     #[serde(default)]
     pub max_delta_ms: Option<u64>,
@@ -379,7 +387,18 @@ mod tests {
         assert!(!d85.values_only, "D85 is a one-sided key");
         assert_eq!(d85.rust_only_value, Some(serde_json::json!("rust")));
         assert_eq!(t.excluded("report", "effective.agent.mode"), None);
-        assert_eq!(t.excluded("report", "effective.agent.capabilities"), None);
+        // D107: the Rust-only last capability, an array with one item more.
+        assert_eq!(
+            t.excluded("report", "effective.agent.capabilities")
+                .as_deref(),
+            Some("T8/D107")
+        );
+        let d107 = t.decision_row("D107").unwrap().1;
+        assert_eq!(
+            d107.rust_only_last_item,
+            Some(serde_json::json!("camera.sensors"))
+        );
+        assert!(d107.rust_only_value.is_none() && !d107.values_only);
         assert_eq!(t.excluded("telemetry", "metrics.gps.lat.value"), None);
         assert_eq!(
             t.numeric("telemetry", "metrics.system.cpu_usage.value"),

@@ -762,8 +762,13 @@ provision_main() {
     || log "WARN: gstreamer1.0-libcamera not installed; Raspberry Pi cameras will not stream"
   # Rust-only (no JS counterpart): rpicam-hello is how the claim probe below
   # and the agent list the cameras. Without it the agent cannot check a port.
-  apt-get install -y -qq rpicam-apps 2>/dev/null \
-    || log "WARN: rpicam-apps not installed; the agent cannot list cameras and reports every camera port as unchecked"
+  # Installed ONLY when it is missing, and then the Lite package (no desktop
+  # dependencies): an image that already has rpicam-hello, through either
+  # package, keeps what it has.
+  if ! command -v rpicam-hello >/dev/null 2>&1; then
+    apt-get install -y -qq rpicam-apps-lite 2>/dev/null \
+      || log "WARN: rpicam-apps-lite not installed; the agent cannot list cameras and reports every camera port as unchecked"
+  fi
 
   # P2. Stage the build and smoke-run it, still before the claim.
   log "staging the build in $STAGING"
@@ -1020,8 +1025,14 @@ provision_main() {
     fi
     cam_rc=0
     cam_out=$(timeout 120 "$RS_PREFIX/bin/xorgate-rs" camera apply --from-claim "$RESP" 2>&1) || cam_rc=$?
+    # A port left with NO camera line gets its own WARN, in the command's
+    # words (which port, why, how to fix it); the other lines are the log.
     printf '%s\n' "$cam_out" | while IFS= read -r cam_line; do
-      [ -z "$cam_line" ] || log "  camera: $cam_line"
+      case $cam_line in
+        '') ;;
+        *': NO CAMERA LINE: '*) log "WARN: ${cam_line#*: NO CAMERA LINE: }" ;;
+        *) log "  camera: $cam_line" ;;
+      esac
     done
     case $cam_rc in
       0)
@@ -1031,7 +1042,7 @@ provision_main() {
           log "camera overlays already present in $CONFIG_TXT"
         fi
         ;;
-      1) log "WARN: a camera line could not be written to $CONFIG_TXT (see the camera lines above); the agent reports that port, and the camera sensor can be set again in the console" ;;
+      1) log "WARN: a camera port could not be applied to $CONFIG_TXT (its 'camera: … FAILED' line above says which and why); the other ports were written" ;;
       *) log "WARN: xorgate-rs camera apply failed (exit $cam_rc); the camera lines in $CONFIG_TXT were not written" ;;
     esac
   else

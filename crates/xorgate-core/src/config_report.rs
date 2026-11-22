@@ -1022,11 +1022,136 @@ pub fn effective_camera_sensors(
     let Value::Object(mut out) = serde_json::to_value(settings).expect("cameraSensors") else {
         unreachable!()
     };
-    match state {
+    match camera_sensors_state_for(state, Some(settings)) {
         None => out.insert("reconciled".into(), Value::Bool(false)),
         Some(s) => out.insert("rebootRequired".into(), Value::Bool(s.reboot_required)),
     };
     Some(out)
+}
+
+/// The reconciler's state, when it was computed from the value held NOW
+/// (`CameraSensorsState::settings`). A pass that looked at another value
+/// says nothing about this one: `None`, like "not reconciled yet".
+pub fn camera_sensors_state_for<'a>(
+    state: Option<&'a CameraSensorsState>,
+    held: Option<&CameraSensorsSettings>,
+) -> Option<&'a CameraSensorsState> {
+    let now = serde_json::to_string(&held).expect("cameraSensors serialises");
+    state.filter(|s| s.settings == now)
+}
+
+/// THE BACKEND'S BOUND on a status entry's `detail` and `reason`
+/// (`z.string().max(500)`, `device-config-report.ts:69-71`; JavaScript
+/// string length, i.e. UTF-16 units). A longer value fails the report
+/// schema and the backend DROPS THE WHOLE REPORT: the cloud then shows the
+/// previous one for ever. No status text of any namespace may exceed it
+/// ([`build_status`] ends with [`fit_status_text`] over every entry; the
+/// two camera namespaces join their ports with [`join_status_parts`]).
+/// RUST-ONLY (D117): the TS has no such bound.
+pub const MAX_STATUS_TEXT: usize = 500;
+
+fn utf16_len(s: &str) -> usize {
+    s.encode_utf16().count()
+}
+
+/// `text` within `max` UTF-16 units: unchanged when it fits. Otherwise cut
+/// at a sentence boundary (after the last `. ` that fits, else after the
+/// last `; `), else at a word boundary, never inside a word, and closed
+/// with an ellipsis.
+pub fn fit_text(text: &str, max: usize) -> String {
+    if utf16_len(text) <= max {
+        return text.to_string();
+    }
+    if max < 2 {
+        return "…".chars().take(max).collect();
+    }
+    // The longest prefix that leaves room for " …" (2 units).
+    let mut used = 0;
+    let mut end = 0;
+    for (i, c) in text.char_indices() {
+        if used + c.len_utf16() > max - 2 {
+            break;
+        }
+        used += c.len_utf16();
+        end = i + c.len_utf8();
+    }
+    let head = &text[..end];
+    // A cut that keeps less than a third of the room is not worth its
+    // boundary: fall through to the next kind.
+    let worth = |cut: usize| cut >= end / 3;
+    let cut = head
+        .rfind(". ")
+        .map(|i| i + 1)
+        .filter(|c| worth(*c))
+        .or_else(|| head.rfind("; ").filter(|c| worth(*c)))
+        .or_else(|| head.rfind(' '))
+        .unwrap_or(end);
+    format!("{} …", head[..cut].trim_end())
+}
+
+/// [`fit_text`] at the backend's bound.
+pub fn fit_status_text(text: &str) -> String {
+    fit_text(text, MAX_STATUS_TEXT)
+}
+
+/// Several ports' sentences as ONE status text within the backend's bound:
+/// `a; b; c` exactly as before when it fits. When it does not:
+/// - the FIRST part is kept whole whenever it fits by itself (with room
+///   left to name the others);
+/// - a later part that does not fit whole is cut at a sentence boundary
+///   ([`fit_text`]);
+/// - parts for which no room is left are named in a closing
+///   `; and <key>, <key>` (`keys` gives each part's port).
+///
+/// `tail` (a closing clause such as "written … waiting for a reboot: …")
+/// is kept when it fits and shortened or dropped when it does not.
+pub fn join_status_parts(parts: &[(String, String)], tail: Option<&str>) -> String {
+    let whole: String = parts
+        .iter()
+        .map(|(key, text)| format!("{key}: {text}"))
+        .chain(tail.map(str::to_string))
+        .collect::<Vec<_>>()
+        .join("; ");
+    if utf16_len(&whole) <= MAX_STATUS_TEXT {
+        return whole;
+    }
+    // Room kept free, while parts remain, to at least name them.
+    const RESERVE: usize = 48;
+    let mut out = String::new();
+    let mut unnamed: Vec<&str> = Vec::new();
+    for (i, (key, text)) in parts.iter().enumerate() {
+        let piece = format!("{key}: {text}");
+        let sep = if out.is_empty() { "" } else { "; " };
+        let more = i + 1 < parts.len() || tail.is_some();
+        let room = MAX_STATUS_TEXT
+            .saturating_sub(utf16_len(&out) + sep.len())
+            .saturating_sub(if more { RESERVE } else { 0 });
+        if utf16_len(&piece) <= room {
+            out.push_str(sep);
+            out.push_str(&piece);
+        } else if room >= utf16_len(key) + 40 {
+            out.push_str(sep);
+            out.push_str(&fit_text(&piece, room));
+        } else {
+            unnamed.push(key);
+        }
+    }
+    // A closing clause, when it still fits.
+    fn close(out: &mut String, clause: String) {
+        if utf16_len(out) + utf16_len(&clause) <= MAX_STATUS_TEXT {
+            out.push_str(&clause);
+        }
+    }
+    if !unnamed.is_empty() {
+        close(&mut out, format!("; and {}", unnamed.join(", ")));
+    }
+    if let Some(tail) = tail {
+        let room = MAX_STATUS_TEXT.saturating_sub(utf16_len(&out) + 2);
+        if room >= 24 {
+            close(&mut out, format!("; {}", fit_text(tail, room)));
+        }
+    }
+    out
 }
 
 /// The `cameraSensors` verdict off the camera reconciler's last pass,
@@ -1034,8 +1159,13 @@ pub fn effective_camera_sensors(
 /// applied makes the namespace `rejected`, with every such port named (and
 /// the ports that wait for a reboot named after them); a port whose line is
 /// written and not booted makes it `adjusted`: "saved, not in force yet".
-pub fn camera_sensors_status(state: Option<&CameraSensorsState>, at: i64) -> NamespaceStatus {
-    let Some(state) = state else {
+pub fn camera_sensors_status(
+    state: Option<&CameraSensorsState>,
+    held: Option<&CameraSensorsSettings>,
+    at: i64,
+) -> NamespaceStatus {
+    // Only a pass that looked at the value held now may speak for it.
+    let Some(state) = camera_sensors_state_for(state, held) else {
         return NamespaceStatus::adjusted(
             at,
             "saved; the device has not reconciled its boot config yet".into(),
@@ -1050,7 +1180,7 @@ pub fn camera_sensors_status(state: Option<&CameraSensorsState>, at: i64) -> Nam
             None => c.stream_key.clone(),
         })
         .collect();
-    let blocked: Vec<String> = state
+    let blocked: Vec<(String, String)> = state
         .cameras
         .iter()
         .filter(|c| {
@@ -1060,32 +1190,30 @@ pub fn camera_sensors_status(state: Option<&CameraSensorsState>, at: i64) -> Nam
             )
         })
         .map(|c| {
-            format!(
-                "{}: {}",
-                c.stream_key,
+            (
+                c.stream_key.clone(),
                 c.detail
                     .clone()
-                    .unwrap_or_else(|| c.verdict.as_str().to_string())
+                    .unwrap_or_else(|| c.verdict.as_str().to_string()),
             )
         })
         .collect();
     if !blocked.is_empty() {
-        let mut reason = blocked.join("; ");
-        if !pending.is_empty() {
-            reason.push_str(&format!(
-                "; written to the boot config and waiting for a reboot: {}",
+        let waiting = (!pending.is_empty()).then(|| {
+            format!(
+                "written to the boot config and waiting for a reboot: {}",
                 pending.join(", ")
-            ));
-        }
-        return NamespaceStatus::rejected(at, reason);
+            )
+        });
+        return NamespaceStatus::rejected(at, join_status_parts(&blocked, waiting.as_deref()));
     }
     if !pending.is_empty() {
         return NamespaceStatus::adjusted(
             at,
-            format!(
+            fit_status_text(&format!(
                 "written to the boot config — REBOOT REQUIRED to apply: {}",
                 pending.join(", ")
-            ),
+            )),
         );
     }
     NamespaceStatus::applied(at)
@@ -1344,7 +1472,14 @@ pub fn build_status(
         }
 
         if *key == "cameraSensors" {
-            out.insert(key_s, camera_sensors_status(camera_sensors, at));
+            out.insert(
+                key_s,
+                camera_sensors_status(
+                    camera_sensors,
+                    settings.and_then(|s| s.camera_sensors.as_ref()),
+                    at,
+                ),
+            );
             continue;
         }
 
@@ -1384,6 +1519,16 @@ pub fn build_status(
         let mut st = NamespaceStatus::applied(at);
         st.detail = latch_detail(key, hints);
         out.insert(key_s, st);
+    }
+    // The backend's bound, for every namespace (D117): one text over it
+    // would cost the whole report. A text within it is left byte for byte.
+    for st in out.values_mut() {
+        if let Some(d) = st.detail.as_mut() {
+            *d = fit_status_text(d);
+        }
+        if let Some(r) = st.reason.as_mut() {
+            *r = fit_status_text(r);
+        }
     }
     out
 }
@@ -1474,7 +1619,7 @@ pub fn camera_mount_status(state: Option<&CameraMountState>, at: i64) -> Namespa
             "saved; the device has not reconciled its boot config yet".into(),
         );
     };
-    let blocked: Vec<String> = state
+    let blocked: Vec<(String, String)> = state
         .cameras
         .iter()
         .filter(|c| {
@@ -1487,17 +1632,20 @@ pub fn camera_mount_status(state: Option<&CameraMountState>, at: i64) -> Namespa
             )
         })
         .map(|c| {
-            format!(
-                "{}: {}",
-                c.stream_key,
+            (
+                c.stream_key.clone(),
                 c.detail
                     .clone()
-                    .unwrap_or_else(|| c.verdict.as_str().to_string())
+                    .unwrap_or_else(|| c.verdict.as_str().to_string()),
             )
         })
         .collect();
     if !blocked.is_empty() {
-        return NamespaceStatus::rejected(at, blocked.join("; "));
+        // `blocked.join("; ")` (`config-sync.ts:893`) whenever it fits the
+        // backend's 500 characters; else shortened, the first port's
+        // sentence whole (D117: the TS sends it as is and the backend then
+        // drops the whole report).
+        return NamespaceStatus::rejected(at, join_status_parts(&blocked, None));
     }
     let pending: Vec<String> = state
         .cameras
@@ -1861,8 +2009,15 @@ mod tests {
                 })
                 .collect(),
             wrote: false,
+            // Computed from the value the status test holds.
+            settings: HELD_SENSORS.to_string(),
         }
     }
+
+    /// The `cameraSensors` value the status tests hold, as the reconciler
+    /// stamps it on its state.
+    const HELD_SENSORS: &str =
+        r#"{"cameras":{"cam0":{"sensor":"imx708"},"cam1":{"sensor":"none"}}}"#;
 
     /// `status.cameraSensors` and `effective.cameraSensors` (RUST-ONLY).
     #[test]
@@ -1991,6 +2146,20 @@ mod tests {
             status(&held, Some(&dropped), None).1,
             Some(r#"{"state":"adjusted","at":9,"detail":"the device clamped or normalized the delivered value"}"#.into())
         );
+        // The pass looked at ANOTHER value than the one held now (a cloud
+        // message applied a moment ago, a local edit): it does not speak
+        // for this one. Not `applied`, not its old rejection either.
+        for verdict in [Applied, Rejected] {
+            let mut stale = sensors_state(&[("cam0", "imx290", verdict, Some("old"))]);
+            stale.settings = r#"{"cameras":{"cam0":{"sensor":"imx290"}}}"#.to_string();
+            assert_eq!(
+                status(&held, Some(&d), Some(&stale)),
+                (
+                    Some(r#"{"cameras":{"cam0":{"sensor":"imx708"},"cam1":{"sensor":"none"}},"reconciled":false}"#.into()),
+                    Some(r#"{"state":"adjusted","at":9,"detail":"saved; the device has not reconciled its boot config yet"}"#.into())
+                )
+            );
+        }
         // A sensor this build does not know is NOT "normalized away": the
         // entry is held as delivered and the reconciler's verdict is the status.
         let unknown = desired(
@@ -2082,6 +2251,147 @@ mod tests {
         .is_empty());
     }
 
+    /// THE BACKEND DROPS A WHOLE REPORT whose status `detail` or `reason`
+    /// is longer than 500 characters (`z.string().max(500)`). Two ports,
+    /// each with a long path-bearing sentence, were over it. No status text
+    /// of either camera namespace, nor of any other, may be: shortened at a
+    /// sentence boundary, the first port's sentence whole.
+    #[test]
+    fn no_status_text_exceeds_the_backends_500_characters() {
+        use crate::types::{CameraMountCameraState, CameraRotationDeg};
+        let len = |s: &str| s.encode_utf16().count();
+        // The real sentences: a port that is not confirmed (Phase 1b), and
+        // the helper's refusal with its paths.
+        let not_confirmed = "the camera line for cam0 is left as it is, because the camera on this port is not confirmed: csi0 is declared as imx708 by config.txt, but no imx708 answered on this port (the kernel driver did not bind). Check the ribbon cable and that the dtoverlay line in config.txt names the sensor that is really attached, then reboot.";
+        let helper = "could not edit /boot/firmware/config.txt: a dtparam= line follows the camera line of cam1 and would then apply to another overlay; move it into the dtoverlay line or remove it first (/boot/firmware/config.txt not changed)";
+        assert!(
+            len(not_confirmed) + len(helper) + 20 > MAX_STATUS_TEXT,
+            "the case is over the bound"
+        );
+
+        // `cameraMount`, two blocked ports.
+        let mount = |cams: &[(&str, &str)]| CameraMountState {
+            at: 1,
+            cameras: cams
+                .iter()
+                .map(|(k, d)| CameraMountCameraState {
+                    stream_key: (*k).to_string(),
+                    desired_deg: CameraRotationDeg::from_f64(180.0).unwrap(),
+                    in_force_deg: None,
+                    boot_deg: None,
+                    verdict: CameraMountVerdict::Unsupported,
+                    detail: Some((*d).to_string()),
+                })
+                .collect(),
+            reboot_required: false,
+            wrote: false,
+        };
+        let st = camera_mount_status(
+            Some(&mount(&[("cam0", not_confirmed), ("cam1", helper)])),
+            9,
+        );
+        let reason = st.reason.unwrap();
+        assert!(len(&reason) <= MAX_STATUS_TEXT, "{}", len(&reason));
+        // The first port's sentence is whole; the second is cut at a
+        // sentence boundary, not inside a word.
+        assert_eq!(
+            reason,
+            format!("cam0: {not_confirmed}; cam1: could not edit /boot/firmware/config.txt: a dtparam= line follows the camera line of cam1 and would then apply to another overlay …")
+        );
+        // Within the bound nothing changes: the TS text, byte for byte.
+        let short = camera_mount_status(Some(&mount(&[("cam0", "a b."), ("cam1", "c d.")])), 9);
+        assert_eq!(short.reason.as_deref(), Some("cam0: a b.; cam1: c d."));
+
+        // `cameraSensors`: three refused ports and a waiting one.
+        let sensors = CameraSensorsState {
+            at: 1,
+            cameras: [("cam0", helper), ("cam1", not_confirmed), ("cam2", helper)]
+                .iter()
+                .map(|(k, d)| crate::types::CameraSensorsPortState {
+                    stream_key: (*k).to_string(),
+                    sensor: Some("imx708".into()),
+                    verdict: CameraSensorsVerdict::WriteFailed,
+                    detail: Some((*d).to_string()),
+                })
+                .chain(std::iter::once(crate::types::CameraSensorsPortState {
+                    stream_key: "cam3".into(),
+                    sensor: Some("none".into()),
+                    verdict: CameraSensorsVerdict::PendingReboot,
+                    detail: None,
+                }))
+                .collect(),
+            reboot_required: true,
+            wrote: false,
+            settings: "null".into(),
+        };
+        let st = camera_sensors_status(Some(&sensors), None, 9);
+        let reason = st.reason.unwrap();
+        assert!(len(&reason) <= MAX_STATUS_TEXT, "{}", len(&reason));
+        assert!(
+            reason.starts_with(&format!(
+                "cam0: {helper}; cam1: the camera line for cam0 is left as it is"
+            )),
+            "{reason}"
+        );
+        // Every port is at least named, and the text does not end mid-word.
+        assert!(reason.contains("; and cam2"), "{reason}");
+        assert!(!reason.contains("  "), "{reason}");
+
+        // One sentence over the bound by itself: cut at a sentence end.
+        let long = format!("{} {}", "First sentence here.", "word ".repeat(200));
+        let cut = fit_status_text(&long);
+        assert!(len(&cut) <= MAX_STATUS_TEXT);
+        assert!(cut.ends_with("word …"), "{cut}");
+        let two = format!("{}. {}", "a".repeat(300), "b".repeat(300));
+        assert_eq!(fit_status_text(&two), format!("{}. …", "a".repeat(300)));
+        // Astral characters count as two (JavaScript string length).
+        let emoji = "😀".repeat(300);
+        assert!(len(&fit_status_text(&emoji)) <= MAX_STATUS_TEXT);
+        assert_eq!(fit_status_text("short"), "short");
+
+        // The net under every namespace: whatever a namespace's own code
+        // produced, `build_status` hands nothing over the bound to the report.
+        let build = BuildInfo {
+            version: "abc1234".into(),
+            channel: "dev".into(),
+            built_at: None,
+            package_version: "0.2.0".into(),
+        };
+        let held: AgentSettings = serde_json::from_str(
+            r#"{"cameraMount":{"cameras":{"cam0":{"rotationDeg":180},"cam1":{"rotationDeg":180}}}}"#,
+        )
+        .unwrap();
+        let state = mount(&[("cam0", &"x ".repeat(400)), ("cam1", helper)]);
+        let report = build_config_report(
+            &ReportInput {
+                device_id: "d".into(),
+                ts: 1,
+                origin: ReportOrigin::Cloud,
+                last_applied_rev: 3,
+                settings: held,
+                modem: ModemBiasSample::default(),
+                desired: Some(desired(
+                    r#"{"v":1,"rev":3,"cameraMount":{"cameras":{"cam0":{"rotationDeg":180},"cam1":{"rotationDeg":180}}}}"#,
+                )),
+                hints: None,
+                mode: Some("real".into()),
+                camera_mount: Some(state),
+                telemetry_scope: None,
+                changed: None,
+                obd: None,
+                cameras: None,
+                camera_sensors: None,
+            },
+            &build,
+        );
+        for (key, st) in &report.status {
+            for text in [&st.detail, &st.reason].into_iter().flatten() {
+                assert!(len(text) <= MAX_STATUS_TEXT, "{key}: {}", len(text));
+            }
+        }
+        assert_eq!(report.status["cameraMount"].state, NamespaceState::Rejected);
+    }
+
     /// A local edit folds back as the WHOLE namespace, or `null` when it
     /// was removed (`changed.cameraSensors`).
     #[test]
@@ -2147,6 +2457,7 @@ mod tests {
                             cameras: vec![],
                             reboot_required: true,
                             wrote: false,
+                            settings: String::new(),
                         }),
                     ] {
                         let report = build_config_report(

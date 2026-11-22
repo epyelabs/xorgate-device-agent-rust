@@ -112,6 +112,12 @@ Value rules:
 - **`settings.json` is an allowlist.** Parsing keeps only keys the agent knows, so the next save drops
   anything else. Key names are wire names and are never renamed: the modem daemon reads the file by
   exact key path.
+- **A status `detail` or `reason` is at most 500 characters** (JavaScript string length). That is
+  the backend's schema bound, and a longer one makes it drop the whole report. `build_status` ends
+  by fitting every entry (`fit_status_text`: cut at a sentence boundary, closed with `…`); the
+  camera namespaces, whose reason joins one sentence per port, keep the first port's sentence
+  whole and shorten or only name the others (`join_status_parts`). The report as a whole must stay
+  under 32 768 bytes; `cameraSensors` holds at most 16 ports and no entry over 512 bytes.
 - Some report blocks are reported-only (the cloud never sets them): `agent` (mode, build,
   capabilities, runtime), `telemetryScope`, `sim`, `uplink`, `apn`, the camera-mount state and the
   per-port camera report. Status
@@ -155,6 +161,9 @@ Value rules:
     not listed. The agent installs nothing; the sentence names the packages.
   - `reboot-required` also covers a camera line that differs from the one the device booted with
     (an option, the rotation, a line removed or added), on a managed and on an unmanaged port.
+    A real fault outranks it: when the capture is failing or nothing answers and the pending
+    change keeps the overlay, the verdict is the fault's (`no-frames`, `not-detected`) and the
+    sentence ends "…also waits for a reboot".
   - When the running video preset is one the sensor cannot run (the catalog's
     `unsupportedPresets`), the sentence of an `ok` or `no-frames` port ends with the catalog's reason.
 - **A third deliberate addition (the same plan, Phase 2): the namespace `cameraSensors`** and the
@@ -170,8 +179,12 @@ Value rules:
   - **What it does:** the camera reconciler makes each managed port's `dtoverlay=` line the declared
     sensor's line through `xorgate-camcfg set` (or `remove` for `none`), one write per change, none
     when the line already says it. It never reboots. See `guide/04`.
+  - **An option the entry does not name is "as found".** On a line of the declared sensor the agent
+    keeps whatever the line has for it, so the value in force is in the port's report
+    (`effective.cameras.<key>.bootConfig.line`), not in the setting. A reader that shows options
+    should take an un-named option from that line (no token = the overlay's default).
   - **Reported:** `effective.cameraSensors` is the namespace as held plus `reconciled: false` (not
-    looked at yet) or `rebootRequired`; `status.cameraSensors` is `applied`, `adjusted` (saved but
+    looked at yet, or the pass looked at an older value) or `rebootRequired`; `status.cameraSensors` is `applied`, `adjusted` (saved but
     not in force: "saved; the device has not reconciled its boot config yet", or "written to the boot
     config — REBOOT REQUIRED to apply: cam0 imx708") or `rejected` ("cam0: <why>; …", naming every
     port that could not be applied). A local `xorgate-rs set cameraSensors.…` folds back as

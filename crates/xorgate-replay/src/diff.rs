@@ -1645,6 +1645,21 @@ fn cmp(cx: &Cx, path: &str, a: Option<&Value>, b: Option<&Value>, out: &mut Repo
                 out.push(cx.mismatch(path, a, b, id));
                 return;
             }
+        } else if let Some(item) = row.and_then(|r| r.rust_only_last_item.as_ref()) {
+            // One extra last item (T8/D107): the Rust array is the JS array
+            // plus exactly `item`; anything else falls through to the plain
+            // comparison (UNTOLERATED).
+            let (js, rs) = match cx.js_a {
+                Some(true) => (a, b),
+                Some(false) => (b, a),
+                None => (None, None),
+            };
+            if let (Some(Value::Array(j)), Some(Value::Array(r))) = (js, rs) {
+                if r.len() == j.len() + 1 && r.last() == Some(item) && r[..j.len()] == j[..] {
+                    out.push(cx.mismatch(path, a, b, id));
+                    return;
+                }
+            }
         } else if !values_only || (a.is_some() && b.is_some()) {
             out.push(cx.mismatch(path, a, b, id));
             return;
@@ -6382,6 +6397,59 @@ mod tests {
             got,
             vec![("effective.agent.runtime".to_string(), "T8/D85".to_string())]
         );
+        // D107 (support-other-camera-models Phase 2): the Rust agent's
+        // capability list is the JS list plus `camera.sensors`, last. Only
+        // that exact shape is tolerated, and only JS-vs-Rust.
+        let rust_caps =
+            |caps: Value| serde_json::json!({"mode":"real","capabilities":caps,"runtime":"rust"});
+        assert_eq!(
+            agent_tols(
+                js_agent.clone(),
+                rust_caps(serde_json::json!(["sms.read", "camera.sensors"]))
+            ),
+            vec![
+                (
+                    "effective.agent.capabilities".to_string(),
+                    "T8/D107".to_string()
+                ),
+                ("effective.agent.runtime".to_string(), "T8/D85".to_string()),
+            ]
+        );
+        for wrong in [
+            serde_json::json!(["sms.read", "camera.other"]),
+            serde_json::json!(["camera.sensors", "sms.read"]),
+            serde_json::json!(["sms.clear", "camera.sensors"]),
+            serde_json::json!(["sms.read", "x", "camera.sensors"]),
+            serde_json::json!(["camera.sensors"]),
+        ] {
+            let got = agent_tols(js_agent.clone(), rust_caps(wrong.clone()));
+            assert!(
+                got.iter().any(|(p, t)| p.starts_with("effective.agent.capabilities")
+                    && t == UNTOLERATED),
+                "{wrong}: {got:?}"
+            );
+        }
+        // Rust-vs-Rust: one side without the item is a real difference.
+        let a = cap(
+            "rust",
+            vec![msg(
+                1_000,
+                "config/reported",
+                rep_r(rust_caps(serde_json::json!(["sms.read"]))),
+            )],
+        );
+        let b = cap(
+            "rust",
+            vec![msg(
+                1_000,
+                "config/reported",
+                rep_r(rust_caps(serde_json::json!(["sms.read", "camera.sensors"]))),
+            )],
+        );
+        assert!(diff(&a, &b, &PlayInfo::default(), &[], &t)
+            .mismatches
+            .iter()
+            .any(|m| m.path.starts_with("effective.agent.capabilities") && m.tol == UNTOLERATED));
         // A different shared value is NOT covered by D85.
         let got = agent_tols(
             js_agent,

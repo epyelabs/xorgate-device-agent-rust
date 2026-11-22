@@ -193,6 +193,12 @@ through `xorgate-camcfg`), reports "REBOOT REQUIRED", and the change is folded b
 never reboots: reboot the device, then `xorgate-rs status` shows the port's verdict. A port without
 an entry is unmanaged and is never rewritten for its sensor.
 
+A line that already names the chosen sensor keeps what the setting does not name: a hand-set
+option stays "as found", and a parameter the catalog does not list (`4lane`, …) is never dropped
+silently. If a named option would force a rewrite of such a line, the port is `rejected` with a
+sentence that names the parameter: edit the line by hand or remove the parameter. Choosing
+another sensor replaces the whole line.
+
 What to expect when it does not work, as `xorgate-rs status` and the console show it:
 
 | Verdict | Meaning |

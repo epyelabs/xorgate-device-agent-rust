@@ -421,6 +421,14 @@ kind = "decisions"
   pinned_by = "D85 (accepted-divergences.md); config_report::tests::d85_effective_agent_reports_runtime_rust_last; tests/config_report_fixtures.rs strip_d85 (12 JS-golden agent blocks); diff::tests::should_narrowings_host_sign_build_o2_end_snapshot (presence-only arms)"
 
   [[rule.row]]
+  id = "D107"
+  what = "D107 (phase-1/evidence/accepted-divergences.md; plan support-other-camera-models Phase 2): the Rust agent advertises one capability the JS agent does not have, `camera.sensors`, as the LAST item of `effective.agent.capabilities` (config_report.rs AGENT_CAPABILITIES, CAPABILITY_CAMERA_SENSORS). ONE EXTRA LAST ITEM (`rust_only_last_item`, diff.rs cmp): tolerated ONLY on a JS-vs-Rust pair where the Rust side's array is the JS side's array with exactly \"camera.sensors\" appended. Another item, another position, a changed shared item, the item on the JS side, and any Rust-vs-Rust or JS-vs-JS difference stay UNTOLERATED"
+  streams = ["report"]
+  paths = ["effective.agent.capabilities"]
+  rust_only_last_item = "camera.sensors"
+  pinned_by = "D107 (accepted-divergences.md); config_report::tests::the_capability_list_is_one_constant_in_every_agent_block; tests/config_report_fixtures.rs strip_d85; diff::tests::should_narrowings_host_sign_build_o2_end_snapshot (the D107 arms)"
+
+  [[rule.row]]
   id = "cli-banner"
   what = "build identity + usage (README §6, Q7; WP6 A5; review-wp6 item 2 — NOT D20, which is the build-info fallback channel): `-v` prints `xorgate-rs <build>` vs `xorgate <ver>` (version.rs:1-15 vs cli.tsx:24-26,64-67); `help` / no verb / an unknown verb print the Rust usage (cli.rs usage(): this binary's verbs, the systemd hint for start/stop/restart, `manage` without daemon control — Q10/D35) vs cli.tsx's. C11: stdout differs; exit code and stderr must match"
   streams = ["cli"]

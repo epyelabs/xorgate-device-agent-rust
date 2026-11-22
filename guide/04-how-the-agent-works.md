@@ -312,12 +312,26 @@ red. The resolved state is also published as `system.led_state` and `system.heal
   (`system/xorgate-camrotate` is the JS agent's helper: still shipped, no longer called.)
 
   The same pass also applies **the sensor setting**, `cameraSensors`. A port with an entry there is
-  *managed*: the pass first makes the port's line the declared sensor's line (overlay, the
-  catalog's fixed parameters, the chosen options, and the rotation above) with one
-  `xorgate-camcfg set` call, or deletes it with `remove` for a port declared `none`. It writes
-  nothing when `config.txt` already says exactly that (`camera_sensors::line_op`): a device whose
-  line matches its setting gets no write at all. A port without an entry is unmanaged and goes
-  through the rotation-only path above, unchanged. What cannot be applied (a port the device does
+  *managed*: the pass makes the port's line the declared sensor's line with ONE helper call, or
+  deletes it with `remove` for a port declared `none`, and writes nothing when `config.txt`
+  already says it (`camera_sensors::line_op`). A port without an entry is unmanaged and goes
+  through the rotation-only path above, unchanged.
+
+  The rule behind "which call": **never lose a hand-set parameter silently.**
+  - *The line already names the declared sensor's overlay.* An option the entry does not name is
+    "as found": whatever the line has for it stays. An option the entry names is enforced (its
+    default included). Nothing to enforce differs: no call. Only the rotation differs: `rotate`,
+    in place, which keeps every token. A named option differs: one `set` with the named options
+    plus the line's own un-named catalog options. But if that `set` would drop a token the
+    catalog does not list for the overlay (`4lane`, `mono`, …), nothing is written and the port
+    is `rejected` with a sentence that names the token.
+  - *The line names another overlay (a sensor change), or there is none.* One `set`: the
+    catalog's fixed parameters, the named options, the overlay's defaults for the rest. The old
+    line's tokens were the old sensor's.
+
+  "What runs on the port" (to tell a booted line from a pending one) is read from the live device
+  tree and the pass's camera listing, never from the `<key>.camera` cache file: that file is only
+  rewritten when a camera IS listed, so it outlives the camera. What cannot be applied (a port the device does
   not have, a sensor or option this build's catalog lacks, a malformed entry, a helper refusal) is
   refused for that one port, with a sentence in `status.cameraSensors`; the other ports are still
   applied.

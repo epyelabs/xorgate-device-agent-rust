@@ -728,7 +728,10 @@ async fn watcher_never_reports_off_an_unreadable_file() {
 /// is reported once the file can be read again.
 #[tokio::test(start_paused = true)]
 async fn a_local_report_off_an_unreadable_file_erases_nothing() {
-    for reason in [SettingsReadFailure::Unreadable, SettingsReadFailure::Invalid] {
+    for reason in [
+        SettingsReadFailure::Unreadable,
+        SettingsReadFailure::Invalid,
+    ] {
         let (h, cap) = (Home::new("s4"), Arc::new(Cap::default()));
         h.save_settings(
             r#"{"gnssAntBias":true,"timeSync":{"offlineSources":true},"cameraMount":{"cameras":{"cam0":{"rotationDeg":180}}},"cameraSensors":{"cameras":{"cam0":{"sensor":"imx708"}}}}"#,

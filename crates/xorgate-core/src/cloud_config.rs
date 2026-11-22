@@ -561,6 +561,42 @@ mod tests {
             "p",
         );
         assert!(!m2.changed, "the stored form is stable");
+        // Bounds (only a hand-edited file reaches them): at most 16 ports,
+        // the backend's own limit; an entry over 512 bytes is not held as
+        // delivered but as a marker the reconciler refuses.
+        let many: String = (0..20)
+            .map(|i| format!(r#""p{i}":{{"sensor":"imx290"}}"#))
+            .collect::<Vec<_>>()
+            .join(",");
+        let m = merge(
+            &Ok(AgentSettings::default()),
+            &cloud(&format!(
+                r#"{{"v":1,"cameraSensors":{{"cameras":{{{many}}}}}}}"#
+            )),
+            "p",
+        );
+        let held = m.next.unwrap().camera_sensors.unwrap().cameras.unwrap();
+        assert_eq!(held.len(), crate::settings::MAX_CAMERA_SENSOR_PORTS);
+        assert!(held.contains_key("p15") && !held.contains_key("p16"));
+        let big = format!(r#"{{"sensor":"imx290","junk":"{}"}}"#, "x".repeat(600));
+        let m = merge(
+            &Ok(AgentSettings::default()),
+            &cloud(&format!(
+                r#"{{"v":1,"cameraSensors":{{"cameras":{{"cam0":{big},"cam1":{{"sensor":"none"}}}}}}}}"#
+            )),
+            "p",
+        );
+        assert_eq!(
+            m.document_json().unwrap(),
+            format!(
+                r#"{{"cameraSensors":{{"cameras":{{"cam0":{{"oversized":{}}},"cam1":{{"sensor":"none"}}}}}}}}"#,
+                big.len()
+            )
+        );
+        assert_eq!(
+            crate::settings::camera_sensor_choice(&serde_json::json!({"oversized": 633})),
+            Err("is larger than the agent keeps (633 bytes; at most 512)".to_string())
+        );
     }
 
     #[test]

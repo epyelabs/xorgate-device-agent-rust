@@ -211,6 +211,7 @@ elif a[:3] == ["camera", "apply", "--from-claim"] and len(a) == 4:
     path = "/boot/firmware/config.txt"
     lines = open(path).read().split("\n")
     changed = False
+    failed = False
     for cam, sensor in ports.items():
         mine = [l for l in lines if re.match(r"dtoverlay=imx[0-9]+(,|$)", l) and (("cam0" in l.split(",")) == (cam == "cam0"))]
         if sensor == "none":
@@ -222,8 +223,13 @@ elif a[:3] == ["camera", "apply", "--from-claim"] and len(a) == 4:
                 print(cam + ": no change (no camera line)")
             continue
         if sensor not in DEFAULT:
-            print(cam + ": FAILED: this agent build does not know the camera sensor \"" + str(sensor) + "\"")
-            sys.exit(1)
+            why = "this agent build does not know the camera sensor \"" + str(sensor) + "\""
+            print(cam + ": FAILED: " + why)
+            if not mine:
+                # The real command's line for a port left with no camera line.
+                print(cam + ": NO CAMERA LINE: " + cam + " has NO camera line in " + path + ", so no camera will appear on that port (" + why + "). To fix it: correct the cause, then `xorgate-rs set cameraSensors." + cam + ".sensor <imx290|imx219|imx708|imx335>` (the agent writes the line within a minute; reboot after), or add the dtoverlay line for " + cam + " by hand and reboot")
+            failed = True
+            continue
         if len(mine) == 1 and mine[0].split(",")[0] == "dtoverlay=" + sensor:
             print(cam + ": no change (" + mine[0] + ")")
             continue
@@ -238,6 +244,7 @@ elif a[:3] == ["camera", "apply", "--from-claim"] and len(a) == 4:
         with open(path, "w") as f:
             f.write("\n".join(lines))
     print("config.txt changed: REBOOT required before the cameras stream" if changed else "config.txt unchanged: the camera lines were already as declared")
+    sys.exit(1 if failed else 0)
 PY
   chmod 0755 "$1"
 }

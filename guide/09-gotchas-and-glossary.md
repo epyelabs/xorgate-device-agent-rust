@@ -152,6 +152,22 @@ drop-in: pass `--tag latest`.
 - A capture child that writes nothing for 45 s is killed and restarted (a known GStreamer stall at
   high resolutions).
 
+### Camera lines: known limits
+
+- **A camera overlay outside the sensor catalog, without a port token, on CAM1 is nobody's line.**
+  `dtoverlay=imx477` (no `cam0`, no `cam1`) does not say it is a camera's line, and the agent only
+  attributes such an overlay to a port when it carries an explicit `cam0` / `cam1`
+  (`boot_config::line_is_ports`). So when `cameraSensors` manages cam1 on that device, the agent
+  ADDS the declared sensor's line beside it (two overlays then target the port), and a port set to
+  `none` reports `applied` while that line stays. Give such a line its port token by hand, or
+  remove it, before managing the port.
+- **`<key>.camera` is a cache, not a fact.** It is rewritten only when a camera is listed, so it
+  keeps naming a camera that is gone. Nothing may conclude "a camera runs here" from it; the live
+  device tree (the sysfs scan) and the pass's camera listing say that.
+- **An edit made in this boot before the agent first ran is not seen as pending** when it changed
+  only an option or the rotation (the snapshot of the lines as booted is taken at the agent's
+  first pass). An overlay swapped that way is still found, from the live device tree.
+
 ### Reproduced quirks
 
 Some behaviour of the reference is kept on purpose even though it is not ideal, because the cloud

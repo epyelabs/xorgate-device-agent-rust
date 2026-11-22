@@ -217,7 +217,7 @@ fn what_the_installer_writes_the_agent_does_not_rewrite() {
             for mount in [None, Some(0)] {
                 assert_eq!(
                     line_op(&text, d.board, port, &want, mount, catalog()),
-                    None,
+                    Ok(None),
                     "{cameras} {key} mount {mount:?}\n{text}"
                 );
             }
@@ -377,15 +377,36 @@ fn a_port_that_cannot_be_applied_fails_alone() {
         }}
     }));
     assert_eq!(code, 1);
+    let dir = d.dir.to_str().unwrap().to_string();
+    let lines: Vec<String> = lines.iter().map(|l| l.replace(&dir, "<dir>")).collect();
     assert_eq!(
         lines,
         [
             "cam0: FAILED: this agent build does not know the camera sensor \"imx999\" (it knows: imx290, imx219, imx708, imx335); update the agent or choose another sensor. config.txt is left as it is",
+            // The port was to get a camera and has no line at all: said in
+            // so many words, with the way out (the installer's WARN).
+            "cam0: NO CAMERA LINE: cam0 has NO camera line in <dir>/config.txt, so no camera will appear on that port (this agent build does not know the camera sensor \"imx999\" (it knows: imx290, imx219, imx708, imx335); update the agent or choose another sensor. config.txt is left as it is). To fix it: correct the cause, then `xorgate-rs set cameraSensors.cam0.sensor <imx290|imx219|imx708|imx335>` (the agent writes the line within a minute; reboot after), or add the dtoverlay line for cam0 by hand and reboot",
             "cam1: dtoverlay=imx219,cam1,rotation=180 written; imx219 by the camera sensor setting",
+            // A key the device has no port for: nothing to say about a line.
             "cam5: FAILED: the device model declares no camera by that stream key; config.txt is left as it is",
             CHANGED_LINE,
         ]
     );
+    // A port that FAILS but still has a line (its old one) is not "no line".
+    let d2 = Dev::new("camera_auto_detect=0\ndtoverlay=imx290,cam0\n", MODEL_CM5);
+    let (code, lines2) = d2.apply(&json!({
+        "hardware": hardware("imx290", "imx290"),
+        "cameraSensors": {"cameras": {"cam0": {"sensor": "imx999"}}}
+    }));
+    assert_eq!(code, 1);
+    assert_eq!(lines2.len(), 2, "{lines2:?}");
+    assert!(lines2[0].starts_with("cam0: FAILED: "));
+    assert_eq!(lines2[1], UNCHANGED_LINE);
+    // A port declared empty never gets the warning.
+    assert!(!lines
+        .iter()
+        .chain(&lines2)
+        .any(|l| l.starts_with("cam5: NO CAMERA LINE")));
     assert_eq!(d.camera_lines(), ["dtoverlay=imx219,cam1,rotation=180"]);
     // The helper's own refusal (no overlay file on the device), in its words.
     let d = Dev::new(STOCK, MODEL_CM5);
@@ -399,6 +420,77 @@ fn a_port_that_cannot_be_applied_fails_alone() {
         "cam0: FAILED: no overlay file <dir>/overlays/imx335.dtbo on this device"
     );
     assert_eq!(d.camera_lines(), ["dtoverlay=imx290,cam1,rotation=0"]);
+}
+
+/// A re-provision resets nothing by itself: a line of the same sensor
+/// keeps what the claim does not name (a hand-set option, a parameter the
+/// catalog does not list, its rotation), whichever source the choice has.
+/// A write that would drop an unlisted parameter is refused, not made.
+#[test]
+fn a_reprovision_keeps_what_the_claim_does_not_name() {
+    let hand = "camera_auto_detect=0\ndtoverlay=imx290,cam0,4lane,rotation=180\ndtoverlay=imx290,cam1,clock-frequency=74250000\n";
+    for claim in [
+        json!({"hardware": hardware("imx290", "imx290")}),
+        json!({
+            "hardware": hardware("imx290", "imx290"),
+            "cameraSensors": {"cameras": {"cam0": {"sensor": "imx290"}, "cam1": {"sensor": "imx290"}}}
+        }),
+    ] {
+        let d = Dev::new(hand, MODEL_CM5);
+        let (code, lines) = d.apply(&claim);
+        assert_eq!(
+            (code, lines.last().map(String::as_str)),
+            (0, Some(UNCHANGED_LINE)),
+            "{lines:?}"
+        );
+        assert_eq!(d.read(), hand);
+    }
+    // A NAMED option: cam1's line holds only catalog tokens and is written;
+    // cam0's would lose `4lane` and is refused (it keeps its line).
+    let d = Dev::new(hand, MODEL_CM5);
+    let (code, lines) = d.apply(&json!({
+        "hardware": hardware("imx290", "imx290"),
+        "cameraSensors": {"cameras": {
+            "cam0": {"sensor": "imx290", "options": {"clockFrequency": 74250000}},
+            "cam1": {"sensor": "imx290", "options": {"clockFrequency": 37125000}}
+        }}
+    }));
+    assert_eq!(code, 1);
+    assert_eq!(
+        lines,
+        [
+            "cam0: FAILED: the camera line for cam0 holds \"4lane\", which the sensor catalog does not list for imx290: rewriting the line would drop it, so the line is left as it is. Edit the line by hand, or remove \"4lane\" from it",
+            "cam1: dtoverlay=imx290,cam1,clock-frequency=37125000,rotation=0 written (was: dtoverlay=imx290,cam1,clock-frequency=74250000); imx290 by the camera sensor setting",
+            CHANGED_LINE,
+        ]
+    );
+    assert_eq!(
+        d.read(),
+        "camera_auto_detect=0\ndtoverlay=imx290,cam0,4lane,rotation=180\ndtoverlay=imx290,cam1,clock-frequency=37125000,rotation=0\n"
+    );
+}
+
+/// The test seams of the command (its config.txt, its board file, the
+/// helper it runs) are read from the environment only when it is NOT root:
+/// a root run, which is how the installer runs it, uses the real paths.
+#[test]
+fn a_root_run_ignores_the_environment_seams() {
+    use xorgate_core::boot_config::CAMCFG_HELPER;
+    let seams = |k: &str| match k {
+        "XORGATE_CAMCFG" => Some(PathBuf::from("/tmp/evil-helper")),
+        "XORGATE_BOOT_CONFIG" => Some(PathBuf::from("/tmp/other-config.txt")),
+        _ => None,
+    };
+    let root = CameraEnv::from_env(true, seams);
+    assert_eq!(root.helper, PathBuf::from(CAMCFG_HELPER));
+    assert_eq!(root.boot_config, None);
+    assert!(root.helper_env.is_empty());
+    let user = CameraEnv::from_env(false, seams);
+    assert_eq!(user.helper, PathBuf::from("/tmp/evil-helper"));
+    assert_eq!(
+        user.boot_config,
+        Some(PathBuf::from("/tmp/other-config.txt"))
+    );
 }
 
 #[test]

@@ -18,17 +18,32 @@
 //! - [`apply_plan`]: the installer's choice per port, read from a claim
 //!   response.
 //!
-//! WHEN A LINE "ALREADY SAYS THAT" ([`line_op`] = `None`):
-//! the port has exactly one camera line that applies on this board, it
-//! names the sensor's overlay, its parameters are the wanted ones, its
-//! rotation is the wanted one, and no `camera_auto_detect=<not 0>` line is
-//! left in the file. Parameters are compared as a set, and an option at the
-//! catalog's default value counts the same written or left out (so
-//! `dtoverlay=imx290,cam0` IS the line of `{"sensor": "imx290"}`). The
-//! rotation is compared as the device-tree rotation the line gives (its
-//! token, else the overlay's default), and only when a rotation is asked
-//! for (`cameraMount` manages the port); otherwise the line's own rotation
-//! is kept, also when the line is rewritten for another reason.
+//! WHICH LINE, AND WHEN IT IS WRITTEN ([`line_op`]). The rule is: NEVER
+//! LOSE A HAND-SET PARAMETER SILENTLY.
+//!
+//! The port's line names the SAME overlay as the declared sensor:
+//! - an option the entry does NOT name is "as found": whatever the line
+//!   has for it stays (`{"sensor": "imx290"}` on
+//!   `dtoverlay=imx290,cam1,clock-frequency=74250000` writes nothing);
+//! - an option the entry names is enforced, its default included (a line
+//!   without the token already gives the default, so that is no write);
+//! - the rotation is enforced only when `cameraMount` manages the port and
+//!   the sensor can flip; otherwise it is as found;
+//! - nothing to enforce differs, one line, in a section that applies: NO
+//!   call;
+//! - only the rotation differs: `rotate`, in place (it keeps every token);
+//! - a named option differs (or the port has several lines): one `set`
+//!   with the named options plus the line's own un-named catalog options;
+//! - but when that `set` would drop a token the catalog does not list for
+//!   the overlay (`4lane`, `mono`, `media-controller=…`), nothing is
+//!   written: the port is refused with a sentence that names the token.
+//!
+//! The port's line names ANOTHER overlay (a sensor change), or the port has
+//! no line: one `set` with the catalog's fixed parameters and the named
+//! options; un-named options are left out (the overlay's defaults). The
+//! old line's tokens belong to the old sensor and go with it.
+//!
+//! `none`: `remove` when the port has a line, else nothing.
 
 use std::collections::BTreeMap;
 
@@ -55,10 +70,11 @@ pub enum Wanted<'c> {
     /// The declared sensor's line.
     Line {
         sensor: &'c Sensor,
-        /// The parameters between the port token and `rotation=`: the
-        /// catalog's fixed parameters, then the chosen options in the
-        /// catalog's order (`clock-frequency=74250000`).
-        params: Vec<String>,
+        /// The options the entry NAMES, in the catalog's order, as
+        /// `(parameter name, token)`: `("clock-frequency",
+        /// "clock-frequency=74250000")`. An option the entry does not name
+        /// is not here: on a line of the same sensor it is left as found.
+        named: Vec<(String, String)>,
     },
 }
 
@@ -121,7 +137,7 @@ pub fn wanted<'c>(entry: &Value, catalog: &'c Catalog) -> Result<Wanted<'c>, Ref
             known: catalog.sensors.iter().map(|s| s.id.clone()).collect(),
         });
     };
-    let mut params = sensor.fixed_params.clone();
+    let mut named: Vec<(String, String)> = Vec::new();
     // The catalog's order, so the same choice always renders the same line.
     for opt in &sensor.options {
         let Some((_, value)) = options.iter().find(|(k, _)| *k == opt.key) else {
@@ -136,7 +152,7 @@ pub fn wanted<'c>(entry: &Value, catalog: &'c Catalog) -> Result<Wanted<'c>, Ref
             })
         };
         match listed {
-            Ok(token) => params.push(token),
+            Ok(token) => named.push((opt.param.clone(), token)),
             Err(_) => {
                 return Err(Refusal::Option(format!(
                     "option \"{}\" of the {} sensor must be one of {} (got {})",
@@ -175,7 +191,7 @@ pub fn wanted<'c>(entry: &Value, catalog: &'c Catalog) -> Result<Wanted<'c>, Ref
             clip(key)
         )));
     }
-    Ok(Wanted::Line { sensor, params })
+    Ok(Wanted::Line { sensor, named })
 }
 
 // ---------------------------------------------------------------------------
@@ -236,17 +252,6 @@ pub fn line_form(line: &OverlayLine, catalog: &Catalog) -> LineForm {
     }
 }
 
-/// Is an uncommented `camera_auto_detect=<not 0>` line left in the file?
-/// (Any section: the rule of `system/xorgate-camcfg`, which rewrites every
-/// such line when it sets a camera line.)
-pub fn auto_detect_on(text: &str) -> bool {
-    text.split('\n').any(|raw| {
-        let t = raw.trim_matches(|c| matches!(c, ' ' | '\t' | '\r' | '\x0b' | '\x0c'));
-        t.strip_prefix("camera_auto_detect=")
-            .is_some_and(|v| v != "0")
-    })
-}
-
 // ---------------------------------------------------------------------------
 // the one helper call
 // ---------------------------------------------------------------------------
@@ -260,14 +265,56 @@ pub fn port_lines<'a>(
     camera_lines_for_port(scoped, port, catalog)
 }
 
-/// The helper call that makes `port`'s camera line the wanted one, or
-/// `None` when config.txt already says exactly that (module docs).
+/// The name of an overlay parameter token (`clock-frequency=74250000` →
+/// `clock-frequency`).
+fn token_name(token: &str) -> &str {
+    token.split('=').next().unwrap_or(token)
+}
+
+/// The tokens of a line that are not the port token or a rotation.
+fn own_tokens(line: &OverlayLine) -> Vec<&String> {
+    line.params
+        .iter()
+        .filter(|p| !reserved_param_name(token_name(p)))
+        .collect()
+}
+
+/// The tokens of `line` whose NAME the catalog does not list for `sensor`:
+/// what a `set` would drop.
+pub fn unlisted_tokens<'a>(line: &'a OverlayLine, sensor: &Sensor) -> Vec<&'a String> {
+    let listed = sensor.param_names();
+    own_tokens(line)
+        .into_iter()
+        .filter(|p| !listed.contains(&token_name(p)))
+        .collect()
+}
+
+/// A config.txt token as it may appear in a sentence: at most 48
+/// characters of `[A-Za-z0-9_.+=-]` (anything else becomes `?`).
+fn clip_token(s: &str) -> String {
+    s.chars()
+        .take(48)
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-' | '=' | '+') {
+                c
+            } else {
+                '?'
+            }
+        })
+        .collect()
+}
+
+/// The one helper call that makes `port`'s camera line the declared one.
+///
+/// - `Ok(None)`: config.txt already says it; nothing is written.
+/// - `Ok(Some(op))`: one call (`rotate`, `set` or `remove`; module docs).
+/// - `Err(sentence)`: a write is needed and would drop a hand-set token the
+///   catalog does not list. Nothing is written; the sentence names it.
 ///
 /// `mount` is the `cameraMount` rotation of the port when that namespace
-/// manages it. With `None` the rotation is not the agent's to choose: a
-/// line that is rewritten keeps the rotation it gives now when it already
-/// names the same overlay, else it gets the overlay's default (the camera
-/// mounted upright). A sensor that cannot flip always gets its default.
+/// manages it. With `None` the rotation is not the agent's to choose: the
+/// line's own rotation stays, and a new line gets the overlay's default.
+/// A sensor that cannot flip is never rewritten for its rotation.
 pub fn line_op(
     text: &str,
     board: Board,
@@ -275,48 +322,101 @@ pub fn line_op(
     want: &Wanted<'_>,
     mount: Option<u16>,
     catalog: &Catalog,
-) -> Option<CamCfgOp> {
+) -> Result<Option<CamCfgOp>, String> {
     let scoped = parse_scoped_lines(text, board);
     let lines = port_lines(&scoped, port, catalog);
-    let (sensor, params) = match want {
+    let (sensor, named) = match want {
         Wanted::Empty => {
-            return (!lines.is_empty()).then_some(CamCfgOp::Remove { port });
+            return Ok((!lines.is_empty()).then_some(CamCfgOp::Remove { port }));
         }
-        Wanted::Line { sensor, params } => (*sensor, params),
+        Wanted::Line { sensor, named } => (*sensor, named),
     };
-    // The rotation the port's line gives now, when that line is this
-    // sensor's and the token is one the agent understands.
-    let current = lines
-        .last()
-        .filter(|l| l.line.name == sensor.overlay)
-        .and_then(|l| line_rotation(&l.line, sensor.default_rotation));
-    let rotation = match mount {
-        Some(m) if sensor.can_flip => rotation_for_mount(sensor.default_rotation, m),
-        Some(_) => sensor.default_rotation,
-        None if sensor.can_flip => current.unwrap_or(sensor.default_rotation),
-        None => sensor.default_rotation,
+    // The rotation to enforce; `None` = as found.
+    let enforced = mount
+        .filter(|_| sensor.can_flip)
+        .map(|m| rotation_for_mount(sensor.default_rotation, m));
+    let named_tokens = || named.iter().map(|(_, t)| t.clone());
+    let Some(last) = lines.last().filter(|l| l.line.name == sensor.overlay) else {
+        // No line, or a line of another overlay (a sensor change): the
+        // declared line replaces whatever is there.
+        return Ok(Some(CamCfgOp::Set {
+            port,
+            overlay: sensor.overlay.clone(),
+            params: sensor
+                .fixed_params
+                .iter()
+                .cloned()
+                .chain(named_tokens())
+                .collect(),
+            rotation: enforced.unwrap_or(sensor.default_rotation),
+        }));
     };
-    let settled = match lines.as_slice() {
-        [only] => {
-            only.scope == LineScope::Applies
-                && only.line.name == sensor.overlay
-                && params_form(&only.line.params, Some(sensor)) == params_form(params, Some(sensor))
-                // Unmanaged rotation: whatever the line gives is kept, an
-                // unreadable token included. A sensor that cannot flip is
-                // never rewritten for its rotation either.
-                && (mount.is_none()
-                    || !sensor.can_flip
-                    || line_rotation(&only.line, sensor.default_rotation) == Some(rotation))
-                && !auto_detect_on(text)
+    let line = &last.line;
+    let own = own_tokens(line);
+    // What the line gives for one catalog parameter: its token, else the
+    // option's default.
+    let gives = |param: &str| -> Option<String> {
+        own.iter()
+            .find(|t| token_name(t) == param)
+            .map(|t| (*t).clone())
+            .or_else(|| {
+                sensor
+                    .options
+                    .iter()
+                    .find(|o| o.param == param)
+                    .map(|o| format!("{}={}", o.param, o.default))
+            })
+    };
+    let named_ok = named
+        .iter()
+        .all(|(param, token)| gives(param).as_deref() == Some(token.as_str()));
+    let fixed_ok = sensor.fixed_params.iter().all(|f| own.contains(&f));
+    let rotation_now = line_rotation(line, sensor.default_rotation);
+    let rotation_ok = enforced.is_none_or(|r| rotation_now == Some(r));
+    let one_applying = lines.len() == 1 && last.scope == LineScope::Applies;
+    if one_applying && named_ok && fixed_ok {
+        return Ok(match enforced {
+            Some(rotation) if !rotation_ok => Some(CamCfgOp::Rotate {
+                port,
+                overlay: sensor.overlay.clone(),
+                rotation,
+            }),
+            _ => None,
+        });
+    }
+    // A `set` is needed. It writes only what the catalog lists, so a token
+    // it does not list would be lost: refuse, and say which.
+    let unlisted = unlisted_tokens(line, sensor);
+    if !unlisted.is_empty() {
+        let tokens = unlisted
+            .iter()
+            .map(|t| format!("\"{}\"", clip_token(t)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(format!(
+            "the camera line for {} holds {tokens}, which the sensor catalog does not list for {}: rewriting the line would drop it, so the line is left as it is. Edit the line by hand, or remove {tokens} from it",
+            port.token(),
+            sensor.overlay
+        ));
+    }
+    // The named options, plus the line's own un-named catalog options.
+    let mut params: Vec<String> = sensor.fixed_params.clone();
+    for opt in &sensor.options {
+        match named.iter().find(|(param, _)| *param == opt.param) {
+            Some((_, token)) => params.push(token.clone()),
+            None => params.extend(
+                own.iter()
+                    .find(|t| token_name(t) == opt.param)
+                    .map(|t| (*t).clone()),
+            ),
         }
-        _ => false,
-    };
-    (!settled).then(|| CamCfgOp::Set {
+    }
+    Ok(Some(CamCfgOp::Set {
         port,
         overlay: sensor.overlay.clone(),
-        params: params.clone(),
-        rotation,
-    })
+        params,
+        rotation: enforced.or(rotation_now).unwrap_or(sensor.default_rotation),
+    }))
 }
 
 // ---------------------------------------------------------------------------
@@ -643,42 +743,6 @@ pub fn apply_plan(claim: &Value) -> Vec<ApplyPort> {
         .collect()
 }
 
-/// [`wanted`] for the installer: a choice that does not come from the
-/// setting names a sensor only, so the parameters of a line that already
-/// names that sensor's overlay are kept (a hand-set `clock-frequency` must
-/// survive a re-provision). `Err` as in [`wanted`].
-pub fn wanted_for_apply<'c>(
-    choice: &ApplyPort,
-    port: CamPort,
-    text: &str,
-    board: Board,
-    catalog: &'c Catalog,
-) -> Result<Wanted<'c>, Refusal> {
-    let want = wanted(&choice.entry, catalog)?;
-    let Wanted::Line { sensor, params } = want else {
-        return Ok(want);
-    };
-    if choice.source == ChoiceSource::Setting {
-        return Ok(Wanted::Line { sensor, params });
-    }
-    let scoped = parse_scoped_lines(text, board);
-    let kept = port_lines(&scoped, port, catalog)
-        .last()
-        .filter(|l| l.line.name == sensor.overlay)
-        .map(|l| {
-            l.line
-                .params
-                .iter()
-                .filter(|p| !reserved_param_name(p.split('=').next().unwrap_or(p)))
-                .cloned()
-                .collect::<Vec<_>>()
-        });
-    Ok(Wanted::Line {
-        sensor,
-        params: kept.unwrap_or(params),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -688,10 +752,19 @@ mod tests {
     const BENCH1: &str =
         "[all]\ncamera_auto_detect=0\ndtoverlay=imx290,cam0\ndtoverlay=imx290,cam1\n";
 
-    fn op(text: &str, port: CamPort, entry: Value, mount: Option<u16>) -> Option<Vec<String>> {
+    fn try_op(
+        text: &str,
+        port: CamPort,
+        entry: Value,
+        mount: Option<u16>,
+    ) -> Result<Option<Vec<String>>, String> {
         let c = catalog();
         let w = wanted(&entry, c).expect("a usable entry");
-        line_op(text, Board::Cm5, port, &w, mount, c).map(|o| o.args())
+        line_op(text, Board::Cm5, port, &w, mount, c).map(|o| o.map(|o| o.args()))
+    }
+
+    fn op(text: &str, port: CamPort, entry: Value, mount: Option<u16>) -> Option<Vec<String>> {
+        try_op(text, port, entry, mount).expect("not refused")
     }
 
     fn args(a: &[&str]) -> Option<Vec<String>> {
@@ -707,11 +780,17 @@ mod tests {
             c,
         )
         .unwrap();
-        let Wanted::Line { sensor, params } = &w else {
+        let Wanted::Line { sensor, named } = &w else {
             panic!()
         };
         assert_eq!(sensor.id, "imx290");
-        assert_eq!(params, &["clock-frequency=74250000"]);
+        assert_eq!(
+            named,
+            &[(
+                "clock-frequency".to_string(),
+                "clock-frequency=74250000".to_string()
+            )]
+        );
         assert_eq!(w.id(), "imx290");
         // Refusals, as the status prints them.
         let say = |e: Value| wanted(&e, c).unwrap_err().to_string();
@@ -774,7 +853,8 @@ mod tests {
         for port in [CamPort::Cam0, CamPort::Cam1] {
             assert_eq!(op(BENCH1, port, json!({"sensor": "imx290"}), None), None);
             assert_eq!(op(BENCH1, port, json!({"sensor": "imx290"}), Some(0)), None);
-            // An option at its default is the same line.
+            // A NAMED option at its default: the line without the token
+            // already gives it.
             assert_eq!(
                 op(
                     BENCH1,
@@ -832,24 +912,59 @@ mod tests {
         );
     }
 
+    /// NEVER LOSE A HAND-SET PARAMETER SILENTLY: on a line of the same
+    /// sensor, what the entry does not name is as found.
     #[test]
-    fn one_call_makes_the_line() {
-        // A sensor change: the rotation is the new overlay's default.
+    fn what_the_entry_does_not_name_is_as_found() {
+        // An option the entry does not name: kept, no write (a 74.25 MHz
+        // board keeps its camera when the port becomes managed).
+        let hand = "dtoverlay=imx290,cam1,clock-frequency=74250000\n";
         assert_eq!(
-            op(BENCH1, CamPort::Cam0, json!({"sensor": "imx708"}), None),
-            args(&["set", "cam0", "imx708", "rotation=180"])
+            op(hand, CamPort::Cam1, json!({"sensor": "imx290"}), None),
+            None
         );
-        // ... plus the mount, when cameraMount manages the port.
+        assert_eq!(
+            op(hand, CamPort::Cam1, json!({"sensor": "imx290"}), Some(0)),
+            None
+        );
+        // ... and the same option NAMED is enforced, its default included.
         assert_eq!(
             op(
-                BENCH1,
-                CamPort::Cam0,
-                json!({"sensor": "imx708"}),
-                Some(180)
+                hand,
+                CamPort::Cam1,
+                json!({"sensor": "imx290", "options": {"clockFrequency": 37125000}}),
+                None
             ),
-            args(&["set", "cam0", "imx708", "rotation=0"])
+            args(&[
+                "set",
+                "cam1",
+                "imx290",
+                "clock-frequency=37125000",
+                "rotation=0"
+            ])
         );
-        // An option change keeps the rotation the line gives.
+        // A token the catalog does not list, and nothing to write: applied.
+        let lanes = "dtoverlay=imx290,cam0,4lane\n";
+        assert_eq!(
+            op(lanes, CamPort::Cam0, json!({"sensor": "imx290"}), None),
+            None
+        );
+        assert_eq!(
+            op(lanes, CamPort::Cam0, json!({"sensor": "imx290"}), Some(0)),
+            None
+        );
+        // Only the rotation differs: `rotate`, in place, which keeps every
+        // token (the unlisted one and the un-named option included).
+        assert_eq!(
+            op(lanes, CamPort::Cam0, json!({"sensor": "imx290"}), Some(180)),
+            args(&["rotate", "cam0", "imx290", "180"])
+        );
+        assert_eq!(
+            op(hand, CamPort::Cam1, json!({"sensor": "imx290"}), Some(180)),
+            args(&["rotate", "cam1", "imx290", "180"])
+        );
+        // A named option differs and the line holds only catalog tokens:
+        // one `set` with the named option; the rotation the line gives stays.
         let turned = "dtoverlay=imx708,cam0,rotation=0\n";
         assert_eq!(
             op(
@@ -866,27 +981,83 @@ mod tests {
                 "rotation=0"
             ])
         );
-        // An option dropped from the setting is dropped from the line.
+        // A named option differs and the line holds a token the catalog
+        // does not list: NOT written, and the sentence names the token.
         assert_eq!(
-            op(
-                "dtoverlay=imx290,cam1,clock-frequency=74250000\n",
-                CamPort::Cam1,
-                json!({"sensor": "imx290"}),
-                None
-            ),
-            args(&["set", "cam1", "imx290", "rotation=0"])
-        );
-        // A parameter the catalog does not list is not the sensor's line.
-        assert_eq!(
-            op(
-                "dtoverlay=imx290,cam0,4lane\n",
+            try_op(
+                lanes,
                 CamPort::Cam0,
-                json!({"sensor": "imx290"}),
+                json!({"sensor": "imx290", "options": {"clockFrequency": 74250000}}),
                 None
             ),
-            args(&["set", "cam0", "imx290", "rotation=0"])
+            Err("the camera line for cam0 holds \"4lane\", which the sensor catalog does not list for imx290: rewriting the line would drop it, so the line is left as it is. Edit the line by hand, or remove \"4lane\" from it".to_string())
         );
-        // Rotation only.
+        // Several of them, and a value form.
+        assert_eq!(
+            try_op(
+                "dtoverlay=imx290,cam0,mono,media-controller=0,clock-frequency=37125000\n",
+                CamPort::Cam0,
+                json!({"sensor": "imx290", "options": {"clockFrequency": 74250000}}),
+                Some(0)
+            ),
+            Err("the camera line for cam0 holds \"mono\", \"media-controller=0\", which the sensor catalog does not list for imx290: rewriting the line would drop it, so the line is left as it is. Edit the line by hand, or remove \"mono\", \"media-controller=0\" from it".to_string())
+        );
+        // Two lines on the port, the one in force with an unlisted token:
+        // collapsing them would rewrite it, so it is refused too.
+        assert!(try_op(
+            "dtoverlay=imx219,cam0\ndtoverlay=imx290,cam0,4lane\n",
+            CamPort::Cam0,
+            json!({"sensor": "imx290"}),
+            None
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn one_call_makes_the_line() {
+        // A sensor change: the declared line replaces the old one (its
+        // tokens were the old sensor's), with the new overlay's default
+        // rotation and no un-named option.
+        assert_eq!(
+            op(BENCH1, CamPort::Cam0, json!({"sensor": "imx708"}), None),
+            args(&["set", "cam0", "imx708", "rotation=180"])
+        );
+        assert_eq!(
+            op(
+                "dtoverlay=imx290,cam0,4lane,clock-frequency=74250000,rotation=180\n",
+                CamPort::Cam0,
+                json!({"sensor": "imx708"}),
+                None
+            ),
+            args(&["set", "cam0", "imx708", "rotation=180"])
+        );
+        // ... plus the mount, when cameraMount manages the port.
+        assert_eq!(
+            op(
+                BENCH1,
+                CamPort::Cam0,
+                json!({"sensor": "imx708"}),
+                Some(180)
+            ),
+            args(&["set", "cam0", "imx708", "rotation=0"])
+        );
+        // A sensor change with a named option.
+        assert_eq!(
+            op(
+                BENCH1,
+                CamPort::Cam1,
+                json!({"sensor": "imx335", "options": {"linkFrequency": 445500000}}),
+                None
+            ),
+            args(&[
+                "set",
+                "cam1",
+                "imx335",
+                "link-frequency=445500000",
+                "rotation=180"
+            ])
+        );
+        // Rotation only, on a clean line: `rotate`.
         assert_eq!(
             op(
                 BENCH1,
@@ -894,9 +1065,36 @@ mod tests {
                 json!({"sensor": "imx290"}),
                 Some(180)
             ),
-            args(&["set", "cam1", "imx290", "rotation=180"])
+            args(&["rotate", "cam1", "imx290", "180"])
         );
-        // A sensor that cannot flip gets its default whatever is asked.
+        // A named option and the rotation together: one `set`, which keeps
+        // the line's own un-named catalog options.
+        assert_eq!(
+            op(
+                "dtoverlay=imx708,cam0,link-frequency=453000000\n",
+                CamPort::Cam0,
+                json!({"sensor": "imx708"}),
+                Some(180)
+            ),
+            args(&["rotate", "cam0", "imx708", "0"])
+        );
+        assert_eq!(
+            op(
+                "dtoverlay=imx708,cam0,link-frequency=453000000,rotation=0\n",
+                CamPort::Cam0,
+                json!({"sensor": "imx708", "options": {"linkFrequency": 447000000}}),
+                Some(0)
+            ),
+            args(&[
+                "set",
+                "cam0",
+                "imx708",
+                "link-frequency=447000000",
+                "rotation=180"
+            ])
+        );
+        // A sensor that cannot flip is never written for its rotation; a new
+        // line of it gets the overlay's default whatever is asked.
         assert_eq!(
             op(
                 BENCH1,
@@ -906,7 +1104,7 @@ mod tests {
             ),
             args(&["set", "cam0", "imx335", "rotation=180"])
         );
-        // No line yet; two lines; a port declared empty.
+        // No line yet; a port declared empty.
         assert_eq!(
             op(
                 "dtparam=audio=on\n",
@@ -917,27 +1115,25 @@ mod tests {
             args(&["set", "cam1", "imx219", "rotation=180"])
         );
         assert_eq!(
-            op(
-                "dtoverlay=imx290,cam0\ndtoverlay=imx290,cam0\n",
-                CamPort::Cam0,
-                json!({"sensor": "imx290"}),
-                None
-            ),
-            args(&["set", "cam0", "imx290", "rotation=0"])
-        );
-        assert_eq!(
             op(BENCH1, CamPort::Cam1, json!({"sensor": "none"}), None),
             args(&["remove", "cam1"])
         );
-        // A matching line beside `camera_auto_detect=1`: one call fixes it.
+        // Two lines on the port: one `set` collapses them into the declared
+        // one, keeping the un-named option of the line in force.
         assert_eq!(
             op(
-                "camera_auto_detect=1\ndtoverlay=imx290,cam0\n",
+                "dtoverlay=imx290,cam0\ndtoverlay=imx290,cam0,clock-frequency=74250000\n",
                 CamPort::Cam0,
                 json!({"sensor": "imx290"}),
                 None
             ),
-            args(&["set", "cam0", "imx290", "rotation=0"])
+            args(&[
+                "set",
+                "cam0",
+                "imx290",
+                "clock-frequency=74250000",
+                "rotation=0"
+            ])
         );
         // A line under a section the agent cannot evaluate is not "settled":
         // the helper is asked, and refuses.
@@ -960,16 +1156,18 @@ mod tests {
             ),
             args(&["set", "cam0", "imx708", "rotation=180"])
         );
-    }
-
-    #[test]
-    fn auto_detect_as_the_helper_reads_it() {
-        assert!(auto_detect_on("camera_auto_detect=1\n"));
-        assert!(auto_detect_on("  camera_auto_detect=1\r\n"));
-        assert!(auto_detect_on("[cm4]\ncamera_auto_detect=01\n"));
-        assert!(!auto_detect_on("camera_auto_detect=0\n"));
-        assert!(!auto_detect_on("#camera_auto_detect=1\n"));
-        assert!(!auto_detect_on("dtoverlay=imx290\n"));
+        // `camera_auto_detect` is not the agent's reason to write: a line
+        // that matches beside `camera_auto_detect=1` is left (the installer
+        // edits that key itself, and every `set` fixes it on the way).
+        assert_eq!(
+            op(
+                "camera_auto_detect=1\ndtoverlay=imx290,cam0\n",
+                CamPort::Cam0,
+                json!({"sensor": "imx290"}),
+                None
+            ),
+            None
+        );
     }
 
     #[test]
@@ -1159,20 +1357,21 @@ mod tests {
                 "{claim}"
             );
         }
-        // A model's choice keeps the parameters of a line of the same sensor.
+        // Whatever the source, a line of the same sensor keeps what the
+        // entry does not name (a re-provision resets nothing by itself).
         let c = catalog();
-        let model = &apply_plan(&json!({"hardware": hw}))[0];
-        let kept = "dtoverlay=imx290,cam0,clock-frequency=74250000\n";
-        let w = wanted_for_apply(model, CamPort::Cam0, kept, Board::Cm5, c).unwrap();
-        assert_eq!(line_op(kept, Board::Cm5, CamPort::Cam0, &w, None, c), None);
-        // ... while the setting's own choice is the whole line.
-        let setting = &apply_plan(
-            &json!({"hardware": hw, "cameraSensors": {"cameras": {"cam0": {"sensor": "imx290"}}}}),
-        )[0];
-        let w = wanted_for_apply(setting, CamPort::Cam0, kept, Board::Cm5, c).unwrap();
-        assert_eq!(
-            line_op(kept, Board::Cm5, CamPort::Cam0, &w, None, c).map(|o| o.args()),
-            args(&["set", "cam0", "imx290", "rotation=0"])
-        );
+        let kept = "dtoverlay=imx290,cam0,clock-frequency=74250000,4lane,rotation=180\n";
+        for claim in [
+            json!({"hardware": hw}),
+            json!({"hardware": hw, "cameraSensors": {"cameras": {"cam0": {"sensor": "imx290"}}}}),
+        ] {
+            let choice = &apply_plan(&claim)[0];
+            let w = wanted(&choice.entry, c).unwrap();
+            assert_eq!(
+                line_op(kept, Board::Cm5, CamPort::Cam0, &w, None, c),
+                Ok(None),
+                "{claim}"
+            );
+        }
     }
 }

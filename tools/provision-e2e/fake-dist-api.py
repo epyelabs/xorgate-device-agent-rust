@@ -14,7 +14,7 @@ trusts). Stdlib only.
       POST /v1/device-registrations/<code>/claim
           The claim ASSERTION point: every claim is appended to
           <state>/claims.log as one JSON line {code, body}. The reply follows
-          <state>/claim-mode (default ok): ok | ok-nohw | ok-sensors | 409 | 404 | 500 | slow
+          <state>/claim-mode (default ok): ok | ok-nohw | ok-sensors | ok-newsensor | 409 | 404 | 500 | slow
           (ok-sensors: the reply also carries `cameraSensors`, as the backend
           seeds it, but only for a claim whose body declares the capability
           `camera.sensors`)
@@ -148,6 +148,10 @@ class H(http.server.BaseHTTPRequestHandler):
         caps = body.get("capabilities") if isinstance(body, dict) else None
         if mode == "ok-sensors" and isinstance(caps, list) and "camera.sensors" in caps:
             resp["cameraSensors"] = {"cameras": {"cam0": {"sensor": "imx708"}, "cam1": {"sensor": "none"}}}
+        # A sensor newer than the installed agent build knows (cam0), beside
+        # one it knows (cam1).
+        if mode == "ok-newsensor" and isinstance(caps, list) and "camera.sensors" in caps:
+            resp["cameraSensors"] = {"cameras": {"cam0": {"sensor": "imx999"}, "cam1": {"sensor": "imx219"}}}
         self.send(200, json.dumps(resp))
 
 
