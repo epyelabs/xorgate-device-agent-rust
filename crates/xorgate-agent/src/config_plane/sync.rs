@@ -50,7 +50,7 @@ use xorgate_core::config_report::{
     ModemBiasSample, ReportHints, ReportInput, ReportOrigin, SyncPatch,
 };
 use xorgate_core::config_sync_rules as rules;
-use xorgate_core::settings::{AgentSettings, SettingsReadResult};
+use xorgate_core::settings::{AgentSettings, SettingsReadFailure, SettingsReadResult};
 use xorgate_core::telemetry::ActivityLevel;
 use xorgate_core::telemetry_scope::TelemetryScopeReport;
 use xorgate_hal::config_sync_file::{load_config_sync_state, save_config_sync_state};
@@ -511,7 +511,33 @@ impl ConfigSync {
         let opts = self.opts();
         let now = (opts.now)();
         // `loadSettings()`: `{}` when the file could not be read.
-        let settings: AgentSettings = self.read_settings().unwrap_or_default();
+        let read = self.read_settings();
+        // RUST-ONLY (D116): a settings.json that EXISTS but cannot be read
+        // or parsed is not "the operator removed every namespace". The TS
+        // diffs the baseline against `{}` here and a `local` report then
+        // carries `changed: {<every baselined namespace>: null}`, which the
+        // cloud folds in: the device's whole cloud config is erased by a
+        // moment of bad permissions or a half-written file. The watcher,
+        // the cloud merge and the re-baseline already refuse such a file;
+        // this site now does too: the report goes out as a plain assertion
+        // (no `changed`), the baseline and `localPending` stay as they are,
+        // and it is said once. An ABSENT file is still an erase, as in TS.
+        let blind = match &read {
+            Err(r @ (SettingsReadFailure::Unreadable | SettingsReadFailure::Invalid)) => Some(*r),
+            _ => None,
+        }
+        .filter(|_| origin == ReportOrigin::Local);
+        if let Some(reason) = blind {
+            let first = !std::mem::replace(&mut self.lock().unreadable_settings, true);
+            if first {
+                let file = opts.settings_file.display().to_string();
+                self.event(
+                    ActivityLevel::Warn,
+                    &rules::settings_paused_event(reason, &file),
+                );
+            }
+        }
+        let settings: AgentSettings = read.unwrap_or_default();
         let modem = match (opts.modem)(now).await {
             Ok(m) => m,
             Err(msg) => {
@@ -523,7 +549,16 @@ impl ConfigSync {
         if core.stopped {
             return;
         }
-        let res = rules::resolve_report_origin(origin, core.state.namespaces.as_ref(), &settings);
+        let res = match blind {
+            // Nothing to diff against: no `changed`, nothing cleared.
+            Some(_) => rules::ReportOriginResolution {
+                origin: ReportOrigin::Boot,
+                changed: None,
+                current: xorgate_core::config_report::namespaces_of(&settings),
+                clear_local_pending: false,
+            },
+            None => rules::resolve_report_origin(origin, core.state.namespaces.as_ref(), &settings),
+        };
         if res.clear_local_pending {
             self.persist(&mut core, vec![SyncPatch::LocalPending(false)]);
         }

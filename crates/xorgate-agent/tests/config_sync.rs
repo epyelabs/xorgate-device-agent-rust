@@ -720,6 +720,96 @@ async fn watcher_never_reports_off_an_unreadable_file() {
     );
 }
 
+/// RUST-ONLY (D116, review S4): a `local` report built while settings.json
+/// exists but cannot be read or parsed must NOT say "every namespace was
+/// removed". Before the fix it carried `changed: {<each baselined
+/// namespace>: null}` and the cloud erased them. Now: no `changed`, the
+/// baseline and `localPending` untouched, one warning; and the real change
+/// is reported once the file can be read again.
+#[tokio::test(start_paused = true)]
+async fn a_local_report_off_an_unreadable_file_erases_nothing() {
+    for reason in [SettingsReadFailure::Unreadable, SettingsReadFailure::Invalid] {
+        let (h, cap) = (Home::new("s4"), Arc::new(Cap::default()));
+        h.save_settings(
+            r#"{"gnssAntBias":true,"timeSync":{"offlineSources":true},"cameraMount":{"cameras":{"cam0":{"rotationDeg":180}}},"cameraSensors":{"cameras":{"cam0":{"sensor":"imx708"}}}}"#,
+        );
+        h.baseline();
+        let baseline_file = h.state_file();
+        // The file as the reader sees it: failing, then readable again with
+        // one namespace really changed.
+        let broken = Arc::new(AtomicBool::new(true));
+        let mut o = base(&h, &cap, |_| Ok(no_modem()));
+        o.debounce_ms = 1;
+        let (b, later) = (
+            broken.clone(),
+            parse_settings_object(
+                json!({"gnssAntBias": true, "timeSync": {"offlineSources": false},
+                       "cameraMount": {"cameras": {"cam0": {"rotationDeg": 180}}},
+                       "cameraSensors": {"cameras": {"cam0": {"sensor": "imx708"}}}})
+                .as_object()
+                .unwrap(),
+            ),
+        );
+        o.read_settings = Some(Arc::new(move || {
+            if b.load(Ordering::SeqCst) {
+                Err(reason)
+            } else {
+                Ok(later.clone())
+            }
+        }));
+        let sync = ConfigSync::new(o);
+
+        // Two local reports while the file cannot be read.
+        for _ in 0..2 {
+            sync.request(ReportOrigin::Local);
+            delay(20).await;
+        }
+        let sent: Vec<Value> = cap
+            .sent()
+            .iter()
+            .map(|s| serde_json::from_str(s).unwrap())
+            .collect();
+        assert_eq!(sent.len(), 2, "{reason:?}");
+        for r in &sent {
+            assert!(r.get("changed").is_none(), "{reason:?}: {r}");
+            assert_eq!(r["origin"], "boot", "{reason:?}");
+        }
+        // Nothing was advanced or cleared on disk but the report time.
+        let strip = |v: &Value| {
+            let mut m: Value = serde_json::from_str(v.as_str().unwrap()).unwrap();
+            m.as_object_mut().unwrap().remove("lastReportTs");
+            m
+        };
+        assert_eq!(strip(&h.state_file()), strip(&baseline_file), "{reason:?}");
+        // Said once, not once per report.
+        let word = if reason == SettingsReadFailure::Unreadable {
+            "unreadable"
+        } else {
+            "invalid"
+        };
+        assert_eq!(
+            cap.events.lock().unwrap().clone(),
+            [format!(
+                "warn: settings.json is {word} — local-change sync paused (check owner/permissions on <home>/settings.json)"
+            )],
+            "{reason:?}"
+        );
+
+        // Readable again: the one real change is reported, and only it.
+        broken.store(false, Ordering::SeqCst);
+        sync.request(ReportOrigin::Local);
+        delay(20).await;
+        sync.stop();
+        let last: Value = serde_json::from_str(cap.sent().last().unwrap()).unwrap();
+        assert_eq!(last["origin"], "local", "{reason:?}");
+        assert_eq!(
+            last["changed"],
+            json!({"timeSync": {"offlineSources": false}}),
+            "{reason:?}"
+        );
+    }
+}
+
 /// config-sync.test.ts:1010 "says so once, not every tick, while settings.json stays unreadable".
 #[tokio::test(start_paused = true)]
 async fn watcher_warns_once_while_unreadable() {
