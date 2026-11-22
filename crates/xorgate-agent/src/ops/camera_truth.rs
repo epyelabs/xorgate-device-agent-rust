@@ -461,7 +461,12 @@ impl CameraTruth {
         // A port whose line differs from the one this boot started with.
         let changed: HashMap<String, LineChange> = match (&boot_text, &o.setting.boot_lines) {
             (Some(text), Some(store)) => {
-                let booted = store.booted(text, board, catalog());
+                let ports: Vec<CamPort> = block
+                    .video
+                    .iter()
+                    .filter_map(|v| CamPort::from_connector(&v.connector))
+                    .collect();
+                let booted = store.booted(text, board, catalog(), &ports);
                 block
                     .video
                     .iter()
@@ -1319,6 +1324,7 @@ mod tests {
                                 .map(|(n, v)| (n.to_string(), v.to_string()))
                                 .collect(),
                         ),
+                        interrupted: None,
                     }
                 }),
                 preset: Box::new(move || Some(pr.lock().unwrap().clone())),
@@ -1363,7 +1369,7 @@ mod tests {
             (
                 "config".into(),
                 "requirements-missing".into(),
-                "csi0 is set to imx335, which needs extra packages that are not installed in the required versions: libcamera0.5 0.5.2+rpt20250909-1 (not installed), libcamera-ipa 0.5.2+rpt20250909-1 (not installed). The camera will not appear until they are installed.".into()
+                "csi0 is set to imx335, which needs extra packages that are not installed in the required versions: libcamera0.5 0.5.2+rpt20250909-1 (not installed), libcamera-ipa 0.5.2+rpt20250909-1 (not installed). The camera will not appear until they are installed: run `sudo xorgate-rs update` on the device (the console's Update button does the same), or `sudo xorgate-rs camera requirements --install`.".into()
             )
         );
         assert_eq!(

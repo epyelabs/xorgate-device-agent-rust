@@ -63,6 +63,49 @@ pub const CAMROTATE_BIN: &str = "/usr/local/bin/xorgate-camrotate";
 /// checked `dist/worker.js` + the unit, `update.ts:271-277`).
 pub const REQUIRED_MEMBERS: &[&str] = &[BIN_SRC, UNIT_SRC, "build-info.json"];
 
+/// `TimeoutStartSec` of `systemd/xorgate-updater-rs.service`, in seconds
+/// (a test ties the two). The JS unit has 20 min; the Rust unit has 45
+/// since the update is followed by the camera-packages step, which at its
+/// worst takes `camera_packages::STEP_LIMIT` (22 min) after an update that
+/// itself may take many minutes over LTE.
+pub const UPDATER_UNIT_BUDGET_SECS: u64 = 45 * 60;
+
+/// Kept free at the end of the unit's budget: the step's backstop
+/// (`camera_packages::STEP_GRACE` and a few seconds to stop) and the
+/// updater's own exit.
+pub const UPDATER_UNIT_MARGIN_SECS: u64 = 120;
+
+// Checked at compile time: the step's backstop (its grace and a few
+// seconds to stop) fits the margin, and the unit's budget holds the step's
+// whole limit after an update of twenty minutes.
+const _: () = assert!(crate::camera_packages::STEP_GRACE + 15 <= UPDATER_UNIT_MARGIN_SECS);
+const _: () = assert!(
+    20 * 60 + crate::camera_packages::STEP_LIMIT + UPDATER_UNIT_MARGIN_SECS
+        <= UPDATER_UNIT_BUDGET_SECS
+);
+
+/// The time limit `xorgate-rs update` gives the camera-packages step, in
+/// seconds, `elapsed` seconds into the run.
+/// - By hand (`under_unit` false): the step's own limit. Nothing else
+///   bounds the run.
+/// - Under the updater unit: no more than what is left of the unit's
+///   budget less the margin, so that systemd's own timeout (which SIGTERMs
+///   every process of the unit, apt and dpkg included) cannot fall into
+///   the step. The step starts the real `apt-get install` only when it can
+///   finish inside its limit; with too little left it says so and installs
+///   nothing.
+pub fn camera_packages_limit(under_unit: bool, elapsed: u64) -> u64 {
+    let own = crate::camera_packages::STEP_LIMIT;
+    if !under_unit {
+        return own;
+    }
+    own.min(UPDATER_UNIT_BUDGET_SECS.saturating_sub(elapsed + UPDATER_UNIT_MARGIN_SECS))
+}
+
+/// The agent's home where neither the environment nor `agent.env` names
+/// one: the wrapper's default below (the unit's `StateDirectory`).
+pub const DEFAULT_HOME: &str = "/var/lib/xorgate";
+
 /// `WRAPPER_BODY` (`update.ts:38-40`) with `node dist/cli.js` → the Rust
 /// binary (§5 step 6). The `XORGATE_HOME` default is the shipped one
 /// (`/var/lib/xorgate`, the unit's `StateDirectory`), as the TS.

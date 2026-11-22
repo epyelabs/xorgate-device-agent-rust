@@ -15,7 +15,7 @@ use xorgate_core::config_report::{self, parse_config_sync_state, ConfigSyncState
 
 use crate::atomic_write::atomic_write_bytes;
 use crate::read_lossy::{read_text, FileText};
-use crate::settings_io::{load_settings, sha256_file};
+use crate::settings_io::sha256_file;
 
 /// `configSyncPath()` (`config-sync.ts:192-194`): `<XORGATE_HOME>/config-sync.json`.
 pub fn config_sync_path(home: &Path) -> PathBuf {
@@ -51,9 +51,24 @@ pub fn ensure_config_sync_baseline(state_path: &Path, settings_file: &Path) -> C
     if state.namespaces.is_some() {
         return state;
     }
+    // RUST-ONLY guard (D118): no baseline is made from a settings.json that
+    // EXISTS but cannot be read or parsed. The TS reads it as `{}` here
+    // (CF15), so when the file reads again every namespace it holds looks
+    // like a local change and is pushed over the cloud's values. Without a
+    // baseline nothing is reported as changed; the watcher adopts the file
+    // silently at the first tick on which it reads
+    // (`config_sync_rules::check_local_change`, "never baselined").
+    let read = crate::settings_io::read_settings_file(settings_file);
+    if matches!(
+        read,
+        Err(xorgate_core::settings::SettingsReadFailure::Unreadable
+            | xorgate_core::settings::SettingsReadFailure::Invalid)
+    ) {
+        return state;
+    }
     let (next, save) = config_report::ensure_config_sync_baseline(
         state,
-        &load_settings(settings_file),
+        &read.unwrap_or_default(),
         &sha256_file(settings_file),
     );
     if save {
@@ -72,6 +87,43 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// D118 (RUST-ONLY): no baseline is made from a settings.json that
+    /// exists but cannot be read or parsed (the TS makes an empty one, and
+    /// every namespace then looks locally changed once the file reads). It
+    /// waits: made at the next call on which the file reads, or by the
+    /// watcher's first readable tick. An absent file still baselines `{}`.
+    #[test]
+    fn no_baseline_from_a_file_that_cannot_be_read_or_parsed() {
+        let h = home("d118");
+        let (state, settings) = (config_sync_path(&h), h.join("settings.json"));
+        for bad in ["{not json", "[1]", ""] {
+            std::fs::write(&settings, bad).unwrap();
+            let s = ensure_config_sync_baseline(&state, &settings);
+            assert!(s.namespaces.is_none(), "{bad:?}");
+            assert!(!state.exists(), "{bad:?}: nothing was persisted");
+        }
+        // Unreadable: a directory in its place.
+        std::fs::remove_file(&settings).unwrap();
+        std::fs::create_dir(&settings).unwrap();
+        assert!(ensure_config_sync_baseline(&state, &settings)
+            .namespaces
+            .is_none());
+        assert!(!state.exists());
+        std::fs::remove_dir(&settings).unwrap();
+        // The file reads: the baseline is what it holds.
+        std::fs::write(&settings, r#"{"gnssAntBias":true,"mode":"real"}"#).unwrap();
+        let s = ensure_config_sync_baseline(&state, &settings);
+        assert_eq!(
+            serde_json::to_string(&s.namespaces).unwrap(),
+            r#"{"gnssAntBias":true}"#
+        );
+        assert!(state.exists());
+        // Absent, on a device that never had one: an empty baseline, as before.
+        let h2 = home("d118-absent");
+        let s = ensure_config_sync_baseline(&config_sync_path(&h2), &h2.join("settings.json"));
+        assert_eq!(serde_json::to_string(&s.namespaces).unwrap(), "{}");
     }
 
     /// config-sync.test.ts:47 "round-trips and defaults to zeros when absent"

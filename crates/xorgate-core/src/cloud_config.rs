@@ -264,6 +264,25 @@ pub fn unreadable_refusal(path: &str) -> String {
     )
 }
 
+/// Why a LOCAL WRITER (`xorgate-rs set …`, the manage TUI) must not write
+/// settings.json: the file EXISTS and cannot be read or parsed, so the
+/// document the writer would save is not "the current settings plus one
+/// key" but that one key alone, and every other namespace would be lost
+/// (and then reported to the cloud as removed). `None` = it may write: the
+/// file was read, or is ABSENT (a fresh start). RUST-ONLY (D118): the TS
+/// writers save `{...loadSettings(), key}` whatever the read gave.
+pub fn local_write_refusal(read: &SettingsReadResult, path: &str) -> Option<String> {
+    match read {
+        Ok(_) | Err(SettingsReadFailure::Absent) => None,
+        Err(SettingsReadFailure::Unreadable) => Some(format!(
+            "settings.json exists but cannot be read — refusing to overwrite it (check owner/permissions on {path}); nothing was changed"
+        )),
+        Err(SettingsReadFailure::Invalid) => Some(format!(
+            "settings.json is not a valid JSON object — refusing to overwrite it (fix or remove {path}); nothing was changed"
+        )),
+    }
+}
+
 /// What the merge decided (the pure half of `applyCloudConfig`'s
 /// `{ changed }` + the document it would have saved).
 #[derive(Debug, Clone, PartialEq, Default)]

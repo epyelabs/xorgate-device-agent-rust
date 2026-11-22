@@ -87,6 +87,7 @@ fn opts(dir: &Path, listing: RunResult, logs: &Logs, boot_config: Option<&str>) 
         })),
         boot_config: boot_config.map(str::to_string),
         board: Default::default(),
+        declared_empty: Vec::new(),
     }
 }
 
@@ -468,4 +469,35 @@ async fn the_hold_line_names_the_declared_sensor() {
             "{boot:?}"
         );
     }
+    // The port is declared EMPTY by the sensor setting (`none`): it has no
+    // line on purpose. No warning, and nothing about the model's sensor
+    // (bench finding, Phase 2 run): one info line that says so.
+    let root = common::scratch("cam-truth-declared-empty");
+    let logs: Logs = Arc::default();
+    let mut o = opts(&root.join("pipelines"), none(), &logs, Some(""));
+    o.declared_empty = vec!["cam0".to_string()];
+    reconcile_hardware(&cm4_block(), o).await.unwrap();
+    let _ = std::fs::remove_dir_all(&root);
+    assert_eq!(
+        *logs.lock().unwrap(),
+        [(
+            "info".to_string(),
+            "cam0: csi0 is declared empty by the camera sensor setting — stream held down"
+                .to_string()
+        )]
+    );
+    assert_eq!(
+        xorgate_agent::recording::policy_sources::capture_declared_empty_line("cam0"),
+        "[video-capture] cam0: its port is declared empty by the camera sensor setting — capture not started"
+    );
+    // The keys the setting declares empty.
+    let held: xorgate_core::settings::AgentSettings = serde_json::from_str(
+        r#"{"cameraSensors":{"cameras":{"cam0":{"sensor":"none"},"cam1":{"sensor":"imx219"},"cam2":7}}}"#,
+    )
+    .unwrap();
+    assert_eq!(
+        xorgate_core::camera_sensors::declared_empty_keys(held.camera_sensors.as_ref()),
+        ["cam0"]
+    );
+    assert!(xorgate_core::camera_sensors::declared_empty_keys(None).is_empty());
 }

@@ -591,6 +591,7 @@ impl CameraMountVerdict {
             CameraMountVerdict::NoOverlay => "no-overlay",
             CameraMountVerdict::Unsupported => "unsupported",
             CameraMountVerdict::WriteFailed => "write-failed",
+            CameraMountVerdict::NoCamera => "no-camera",
         }
     }
 }

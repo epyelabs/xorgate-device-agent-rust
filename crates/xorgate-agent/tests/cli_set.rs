@@ -44,7 +44,14 @@ struct Expected {
     elapsed_ms: i64,
 }
 
-#[derive(Deserialize, Debug, PartialEq)]
+/// The golden cases in which the TS `set` rewrites a settings.json that is
+/// not valid JSON, and the Rust CLI refuses (D118).
+const D118_REFUSED: [&str; 2] = [
+    "corrupt settings.json is rewritten",
+    "array settings.json is rewritten",
+];
+
+#[derive(Deserialize, Debug, PartialEq, Clone)]
 struct ExpLine {
     stream: String,
     text: String,
@@ -201,6 +208,7 @@ fn run_fixture(file: &str, min_cases: usize) {
     let fx: Fixture = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     assert!(fx.cases.len() >= min_cases);
     let mut failures = Vec::new();
+    let mut d118 = 0;
     for (i, c) in fx.cases.iter().enumerate() {
         let home = scratch(&format!("fx-{file}-{i}"));
         if let Some(s) = &c.input.settings {
@@ -225,6 +233,35 @@ fn run_fixture(file: &str, min_cases: usize) {
             })
             .collect();
         let after = std::fs::read_to_string(settings_path(&home)).ok();
+        // D118 (RUST-ONLY): a settings.json that exists but is not valid
+        // JSON is never rewritten by `set`. The TS rewrites it from `{}`
+        // (these two golden cases); the Rust CLI refuses, exits 1 and
+        // leaves the file as it was.
+        if D118_REFUSED.contains(&c.name.as_str()) {
+            d118 += 1;
+            assert_eq!(c.expected.exit_code, 0, "{}: the TS wrote", c.name);
+            assert_ne!(c.expected.settings_after, c.input.settings, "{}", c.name);
+            let refusal = format!(
+                "settings.json is not a valid JSON object — refusing to overwrite it (fix or remove {}); nothing was changed",
+                settings_path(&home).display()
+            );
+            let last = got.last().cloned();
+            if code != 1
+                || last
+                    != Some(ExpLine {
+                        stream: "err".into(),
+                        text: refusal,
+                    })
+                || after != c.input.settings
+            {
+                failures.push(format!(
+                    "{}: D118 refusal: exit {code}, {got:?}, {after:?}",
+                    c.name
+                ));
+            }
+            let _ = std::fs::remove_dir_all(&home);
+            continue;
+        }
         if got != c.expected.lines {
             failures.push(format!(
                 "{}: lines\n  got  {got:?}\n  want {:?}",
@@ -259,6 +296,117 @@ fn run_fixture(file: &str, min_cases: usize) {
         failures.len(),
         failures.join("\n")
     );
+    if file == "set-command.json" {
+        assert_eq!(d118, D118_REFUSED.len(), "D118: both golden cases met");
+    }
+}
+
+/// D118 (RUST-ONLY): a settings.json that EXISTS but cannot be read or
+/// parsed is never treated as empty by a writer. `set` (any key, `apn`
+/// included) refuses, exits 1 and leaves the file untouched; an ABSENT
+/// file is still a fresh start. The TS writes `{...loadSettings(), key}`,
+/// which is that one key alone: every other namespace is lost, and the
+/// watcher then reports them to the cloud as removed.
+#[test]
+fn set_refuses_a_settings_file_it_cannot_read_or_parse() {
+    // Not valid JSON, and JSON that is not an object.
+    for bad in ["{not json", "[1,2]", "null", "", "7"] {
+        for args in [
+            vec!["timeSync.maxStepsPerBoot", "3"],
+            vec!["cameraSensors.cam0.sensor", "imx708"],
+            vec!["mode", "real", "--no-restart"],
+            vec!["apn", "new.apn", "--no-wait"],
+        ] {
+            let home = scratch("d118-invalid");
+            std::fs::write(settings_path(&home), bad).unwrap();
+            let io = FakeIo::new(&home, vec![None]);
+            let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+            let code = run(&args, &io);
+            assert_eq!(code, 1, "{bad:?} {args:?}");
+            let lines = io.lines.borrow();
+            let last = lines.last().expect("a refusal line");
+            assert_eq!(last.stream, Stream::Err, "{bad:?} {args:?}");
+            assert_eq!(
+                last.text,
+                format!(
+                    "settings.json is not a valid JSON object — refusing to overwrite it (fix or remove {}); nothing was changed",
+                    settings_path(&home).display()
+                ),
+                "{bad:?} {args:?}"
+            );
+            assert_eq!(
+                std::fs::read_to_string(settings_path(&home)).unwrap(),
+                bad,
+                "untouched"
+            );
+            let _ = std::fs::remove_dir_all(&home);
+        }
+    }
+    // Exists but cannot be read (a directory in its place reads as an
+    // error for any user, root included).
+    let home = scratch("d118-unreadable");
+    std::fs::create_dir(settings_path(&home)).unwrap();
+    let io = FakeIo::new(&home, vec![None]);
+    let code = run(
+        &["timeSync.maxStepsPerBoot".to_string(), "3".to_string()],
+        &io,
+    );
+    assert_eq!(code, 1);
+    assert_eq!(
+        io.lines.borrow().last().unwrap().text,
+        format!(
+            "settings.json exists but cannot be read — refusing to overwrite it (check owner/permissions on {}); nothing was changed",
+            settings_path(&home).display()
+        )
+    );
+    assert!(settings_path(&home).is_dir(), "untouched");
+    let _ = std::fs::remove_dir_all(&home);
+    // ABSENT: a fresh start, written as before.
+    let home = scratch("d118-absent");
+    let io = FakeIo::new(&home, vec![None]);
+    let code = run(
+        &["timeSync.maxStepsPerBoot".to_string(), "3".to_string()],
+        &io,
+    );
+    assert_eq!(code, 0);
+    assert_eq!(
+        std::fs::read_to_string(settings_path(&home)).unwrap(),
+        r#"{"timeSync":{"maxStepsPerBoot":3}}"#
+    );
+    let _ = std::fs::remove_dir_all(&home);
+    // The TUI's mode switch: the same rule.
+    use xorgate_agent::cli::manage::save_mode_in;
+    let home = scratch("d118-tui");
+    std::fs::write(settings_path(&home), "{not json").unwrap();
+    assert_eq!(
+        save_mode_in(&home, "real"),
+        Err(format!(
+            "settings.json is not a valid JSON object — refusing to overwrite it (fix or remove {}); nothing was changed",
+            settings_path(&home).display()
+        ))
+    );
+    assert_eq!(
+        std::fs::read_to_string(settings_path(&home)).unwrap(),
+        "{not json"
+    );
+    std::fs::remove_file(settings_path(&home)).unwrap();
+    std::fs::create_dir(settings_path(&home)).unwrap();
+    assert!(save_mode_in(&home, "real")
+        .unwrap_err()
+        .starts_with("settings.json exists but cannot be read — refusing to overwrite it"));
+    std::fs::remove_dir(settings_path(&home)).unwrap();
+    assert_eq!(save_mode_in(&home, "real"), Ok(()));
+    assert_eq!(
+        std::fs::read_to_string(settings_path(&home)).unwrap(),
+        r#"{"mode":"real"}"#
+    );
+    std::fs::write(settings_path(&home), r#"{"gnssAntBias":true,"mode":"sim"}"#).unwrap();
+    assert_eq!(save_mode_in(&home, "real"), Ok(()));
+    assert_eq!(
+        std::fs::read_to_string(settings_path(&home)).unwrap(),
+        r#"{"mode":"real","gnssAntBias":true}"#
+    );
+    let _ = std::fs::remove_dir_all(&home);
 }
 
 // --- test/set-command.test.ts (11 it()s) -------------------------------------

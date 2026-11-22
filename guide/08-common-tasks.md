@@ -188,10 +188,14 @@ xorgate-rs set cameraSensors.cam1.sensor none            # the port has no camer
 xorgate-rs set cameraSensors.cam1.sensor unmanaged       # hands the port back: its line is left as it is
 ```
 
-Within about a minute the agent rewrites that port's `dtoverlay=` line in `config.txt` (one write,
-through `xorgate-camcfg`), reports "REBOOT REQUIRED", and the change is folded back to the cloud. It
-never reboots: reboot the device, then `xorgate-rs status` shows the port's verdict. A port without
-an entry is unmanaged and is never rewritten for its sensor.
+Within about a minute the agent makes that port's `dtoverlay=` line in `config.txt` match (one
+write through `xorgate-camcfg`, or none when the line already says it), and the change is folded
+back to the cloud. When the line now differs from the one the device booted with, the agent
+reports "REBOOT REQUIRED" and `xorgate-rs status` shows the port as `reboot-required`; it never
+reboots itself. The command cannot know that in advance, so it says "a REBOOT may then be
+required" and points at `xorgate-rs status`. A port without an entry is unmanaged and is never
+rewritten for its sensor. In the journal these lines carry the tag `[camera-sensors]`
+(`journalctl -u xorgate-agent-rs | grep camera-sensors`); the rotation keeps `[camera-mount]`.
 
 A line that already names the chosen sensor keeps what the setting does not name: a hand-set
 option stays "as found", and a parameter the catalog does not list (`4lane`, …) is never dropped
@@ -206,7 +210,7 @@ What to expect when it does not work, as `xorgate-rs status` and the console sho
 | `reboot-required` | the line was changed since this boot: reboot |
 | `not-detected` | no camera of that sensor answered: the cable, or the wrong sensor was chosen |
 | `no-frames` | a camera is listed but delivers no picture (an `imx290` line lists a camera for anything) |
-| `requirements-missing` | the sensor needs packages or an OS release this device does not have (IMX335: Arducam's libcamera packages) |
+| `requirements-missing` | the sensor needs packages or an OS release this device does not have (IMX335: Arducam's libcamera packages). Install them with `sudo xorgate-rs update` (or the console's Update button), or `sudo xorgate-rs camera requirements --install`; the camera then appears without a reboot. `xorgate-rs camera requirements` lists what is needed and installed (`guide/07`) |
 | `unknown-sensor` | the setting names a sensor this agent build does not know: update the agent |
 | `mismatch` | the setting is not written to `config.txt` (the status of the setting says why), or another sensor is listed than the declared one |
 

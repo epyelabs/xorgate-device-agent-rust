@@ -199,8 +199,17 @@ fn save(io: &dyn SetIo, doc: &Map<String, Value>) -> Result<(), String> {
         .map_err(|e| e.node_message())
 }
 
-fn load(io: &dyn SetIo) -> AgentSettings {
-    xorgate_hal::settings_io::load_settings(&xorgate_hal::settings_io::settings_path(&io.home()))
+/// `loadSettings()` for a writer, RUST-ONLY guarded (D118): a
+/// settings.json that EXISTS but cannot be read or parsed is never taken
+/// for an empty one. `Err` = the refusal line; the caller prints it and
+/// exits 1 with the file untouched. An absent file is a fresh start.
+fn load(io: &dyn SetIo) -> Result<AgentSettings, String> {
+    let path = xorgate_hal::settings_io::settings_path(&io.home());
+    let read = xorgate_hal::settings_io::read_settings_file(&path);
+    match xorgate_core::cloud_config::local_write_refusal(&read, &path.display().to_string()) {
+        Some(refusal) => Err(refusal),
+        None => Ok(read.unwrap_or_default()),
+    }
 }
 
 fn emit_all(io: &dyn SetIo, lines: impl IntoIterator<Item = Line>) {
@@ -230,7 +239,14 @@ pub fn run(rest: &[String], io: &dyn SetIo) -> i32 {
         return set_apn(args.value.as_deref(), args.no_wait, io);
     }
 
-    match cli_set::apply(&args, &load(io)) {
+    let loaded = match load(io) {
+        Ok(s) => s,
+        Err(refusal) => {
+            io.emit(&Line::err(refusal));
+            return 1;
+        }
+    };
+    match cli_set::apply(&args, &loaded) {
         KeyOutcome::Fail(lines) => {
             emit_all(io, lines.into_iter().map(Line::err));
             1
@@ -338,7 +354,14 @@ fn set_apn(value: Option<&str>, no_wait: bool, io: &dyn SetIo) -> i32 {
         }
     };
     let before = read_apn_block(io);
-    if let Err(msg) = save(io, &apn_document(&load(io), value)) {
+    let loaded = match load(io) {
+        Ok(s) => s,
+        Err(refusal) => {
+            io.emit(&Line::err(refusal));
+            return 1;
+        }
+    };
+    if let Err(msg) = save(io, &apn_document(&loaded, value)) {
         io.emit(&Line::err(msg));
         return 1;
     }

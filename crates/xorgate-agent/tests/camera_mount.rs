@@ -452,6 +452,7 @@ async fn the_ts_golden_pass_by_pass_with_the_named_divergences() {
                 }
             });
             let state = reconcile_camera_mount(ReconcileCameraMountOptions {
+                log_sensors: Arc::new(|_, _| {}),
                 settings: settings.clone(),
                 sensors: None,
                 boot_lines: boot_lines.clone(),
@@ -531,6 +532,9 @@ struct Rig {
     probe: Arc<FakeProbe>,
     installed: Arc<AtomicBool>,
     logs: Arc<Mutex<Vec<String>>>,
+    /// The lines of `logs` that went through the SENSOR setting's sink
+    /// (`[camera-sensors]`), in order; the others are `[camera-mount]`'s.
+    sensor_logs: Arc<Mutex<Vec<String>>>,
     memo: Arc<Mutex<WriteMemo>>,
     hardware: Option<DeviceHardwareBlock>,
     evidence: PortEvidence,
@@ -594,6 +598,7 @@ impl Rig {
             probe: FakeProbe::new(PROBE_OK),
             installed: Arc::new(AtomicBool::new(true)),
             logs: Arc::default(),
+            sensor_logs: Arc::default(),
             memo: Arc::default(),
             hardware: Some(two_camera_block()),
             evidence: PortEvidence::default(),
@@ -639,7 +644,13 @@ impl Rig {
         sensors: Option<xorgate_core::settings::CameraSensorsSettings>,
     ) -> ReconcileCameraMountOptions {
         let (logs, dir) = (self.logs.clone(), self.d.dir.display().to_string());
+        let (all, tagged, dir2) = (self.logs.clone(), self.sensor_logs.clone(), dir.clone());
         ReconcileCameraMountOptions {
+            log_sensors: Arc::new(move |level, msg| {
+                let line = format!("{} {}", level_str(level), msg.replace(&dir2, "<dir>"));
+                all.lock().unwrap().push(line.clone());
+                tagged.lock().unwrap().push(line);
+            }),
             settings,
             sensors,
             boot_lines: self.boot_lines.clone(),
@@ -1912,6 +1923,7 @@ async fn reconciler_requests_a_report_only_when_the_summary_moves() {
             catalog: catalog(),
             evidence: Box::new(|_| PortEvidence::default()),
             log: Arc::new(|_, _| {}),
+            log_sensors: Arc::new(|_, _| {}),
             clock,
         },
         Box::new(move || {
@@ -2157,17 +2169,20 @@ async fn a_sensor_change_is_one_write_then_a_reboot() {
     assert_eq!(sens(&s, "cam1"), (SV::Applied, String::new()));
     let st = s.sensors.as_ref().unwrap();
     assert!(st.wrote && st.reboot_required);
-    // `cameraMount` does not claim the new sensor's rotation as in force:
-    // the camera running on the port is still the IMX290.
+    // `cameraMount` reports the rotation of the camera that RUNS on the
+    // port (still the IMX290, mount 0). The new line gives mount 0 too, so
+    // nothing of the mount waits for the reboot: it is the sensor setting
+    // that does (bench finding: "REBOOT REQUIRED to apply: cam0 0°
+    // (running ?°)" with no rotation reported).
     assert_eq!(
         mnt(&s, "cam0"),
-        (PendingReboot, None, Some(0.0), String::new())
+        (Applied, Some(0.0), Some(0.0), String::new())
     );
     assert_eq!(
         mnt(&s, "cam1"),
         (Applied, Some(0.0), Some(0.0), String::new())
     );
-    assert!(s.mount.as_ref().unwrap().reboot_required);
+    assert!(!s.mount.as_ref().unwrap().reboot_required);
     // Exactly one line of the file changed.
     let after = rig.d.read();
     let diff: Vec<(&str, &str)> = config
@@ -2255,7 +2270,15 @@ async fn a_wrong_declaration_is_applied_after_its_reboot() {
         .await;
     assert_eq!(rig.runner.asked(), ["set cam0 imx219 rotation=180"]);
     assert_eq!(sens(&s, "cam0").0, SV::PendingReboot);
-    assert_eq!(mnt(&s, "cam0").0, PendingReboot);
+    // `cameraMount`: the camera that RUNS (the imx708) shows mount 0, and
+    // the new line gives mount 0 too. Nothing of the mount waits for the
+    // reboot: `applied`, with the rotation in force (bench finding: it
+    // read "REBOOT REQUIRED to apply: cam0 0° (running ?°)").
+    assert_eq!(
+        mnt(&s, "cam0"),
+        (Applied, Some(0.0), Some(0.0), String::new())
+    );
+    assert!(!s.mount.as_ref().unwrap().reboot_required);
 
     // Rebooted: the imx219 overlay is loaded, its driver did not bind (no
     // such chip), libcamera lists nothing. The cache still says imx708.
@@ -2272,11 +2295,34 @@ async fn a_wrong_declaration_is_applied_after_its_reboot() {
             .await;
         assert_eq!(sens(&s, "cam0"), (SV::Applied, String::new()));
         assert!(!s.sensors.as_ref().unwrap().reboot_required);
-        // `cameraMount`: no camera to read a rotation from, as on any port
-        // without a camera; it is not "reboot required" either.
-        let (verdict, in_force, boot, _) = mnt(&s, "cam0");
-        assert_eq!((verdict, in_force, boot), (Unconfirmed, None, Some(0.0)));
+        // `cameraMount`: no camera answers on the port, so there is no
+        // rotation to read. Said as that (`no-camera`): not a write, not
+        // "reboot to apply" (bench finding), and nothing is pending.
+        let (verdict, in_force, boot, detail) = mnt(&s, "cam0");
+        assert_eq!(
+            (verdict, in_force, boot, detail.as_str()),
+            (CameraMountVerdict::NoCamera, None, Some(0.0), "")
+        );
         assert!(!s.mount.as_ref().unwrap().reboot_required);
+        let st = xorgate_core::config_report::camera_mount_status(s.mount.as_ref(), 1);
+        assert_eq!(
+            (st.state, st.detail.as_deref()),
+            (
+                xorgate_core::config_report::NamespaceState::Adjusted,
+                Some("no camera answers on cam0, so the rotation in force cannot be read — look at the camera sensor setting (cameraSensors) and the camera report of the port; nothing here waits for a reboot")
+            )
+        );
+        let eff = xorgate_core::config_report::effective_camera_mount(
+            Some(
+                &serde_json::from_value(json!({"cameras": {"cam0": {"rotationDeg": 0}}})).unwrap(),
+            ),
+            s.mount.as_ref(),
+        )
+        .unwrap();
+        assert_eq!(
+            serde_json::Value::Object(eff),
+            json!({"cameras": {}, "rebootRequired": false})
+        );
     }
     assert_eq!(rig.runner.calls().len(), 1);
 
@@ -2328,16 +2374,41 @@ async fn rotation_and_sensor_changed_together_are_one_write() {
         ["set cam0 imx219 rotation=0", "rotate cam1 imx290 180"]
     );
     assert_eq!(sens(&s, "cam0").0, SV::PendingReboot);
-    // cam1: the same sensor with another rotation: the line changed since
-    // boot, and the rotation in force is still the old one.
-    assert_eq!(sens(&s, "cam1").0, SV::PendingReboot);
+    // cam1: the same sensor with another rotation. The SENSOR setting did
+    // not change: it stays `applied`, and the pending reboot is
+    // `cameraMount`'s alone (bench finding: both said REBOOT REQUIRED).
+    assert_eq!(sens(&s, "cam1"), (SV::Applied, String::new()));
     assert_eq!(
         mnt(&s, "cam1"),
         (PendingReboot, Some(0.0), Some(180.0), String::new())
     );
+    // cam0: the camera that runs (the imx290, mount 0) is not at the mount
+    // asked; the new line gives it after the reboot.
     assert_eq!(
         mnt(&s, "cam0"),
-        (PendingReboot, None, Some(180.0), String::new())
+        (PendingReboot, Some(0.0), Some(180.0), String::new())
+    );
+    let sensors = s.sensors.as_ref().unwrap();
+    assert!(sensors.reboot_required, "cam0's sensor change");
+    let st = xorgate_core::config_report::camera_sensors_status(
+        Some(sensors),
+        serde_json::from_str::<Option<xorgate_core::settings::CameraSensorsSettings>>(
+            &sensors.settings,
+        )
+        .unwrap()
+        .as_ref(),
+        1,
+    );
+    assert_eq!(
+        st.detail.as_deref(),
+        Some("written to the boot config — REBOOT REQUIRED to apply: cam0 imx219")
+    );
+    // The journal: the sensor's line under the sensor setting's tag, the
+    // rotation under `cameraMount`'s.
+    assert_eq!(
+        *rig.sensor_logs.lock().unwrap(),
+        [rig.logs()[0].clone()],
+        "only the `set` is the sensor setting's"
     );
     assert!(rig
         .d
@@ -2345,7 +2416,7 @@ async fn rotation_and_sensor_changed_together_are_one_write() {
         .contains("\ndtoverlay=imx219,cam0,rotation=0\ndtoverlay=imx290,cam1,rotation=180\n"));
     assert_eq!(
         rig.logs()[1],
-        "info cam1: camera line for cam1 in <dir>/config.txt: rotation=180 set on the imx290 line, the rest of the line kept — REBOOT required before the camera changes (the agent never reboots itself)"
+        "info cam1: camera line for cam1 in <dir>/config.txt: rotation=180 set on the imx290 line, the rest of the line kept — REBOOT required before the image changes (the agent never reboots itself)"
     );
     // After the reboot.
     rig.reboot();
@@ -2497,7 +2568,13 @@ async fn a_hand_set_parameter_is_never_dropped_silently() {
         rig.d.read(),
         "camera_auto_detect=0\ndtoverlay=imx290,cam0,4lane,rotation=180\ndtoverlay=imx290,cam1,clock-frequency=74250000,rotation=180\n"
     );
-    assert_eq!(sens(&s, "cam0").0, SV::PendingReboot);
+    // Only the rotation moved: the sensor setting is `applied`, the
+    // pending reboot is `cameraMount`'s.
+    assert_eq!(sens(&s, "cam0"), (SV::Applied, String::new()));
+    assert_eq!(mnt(&s, "cam0").0, PendingReboot);
+    assert!(!s.sensors.as_ref().unwrap().reboot_required);
+    assert!(s.mount.as_ref().unwrap().reboot_required);
+    assert!(rig.sensor_logs.lock().unwrap().is_empty(), "rotations only");
     // A named option on the line with the unlisted token: NOT written.
     let before = rig.d.read();
     let named = json!({
@@ -2509,9 +2586,11 @@ async fn a_hand_set_parameter_is_never_dropped_silently() {
         .await;
     let refusal = "the camera line for cam0 holds \"4lane\", which the sensor catalog does not list for imx290: rewriting the line would drop it, so the line is left as it is. Edit the line by hand, or remove \"4lane\" from it";
     assert_eq!(sens(&s, "cam0"), (SV::Rejected, refusal.to_string()));
+    // `cameraMount` does not repeat the SENSOR's sentence (bench finding):
+    // the line already gives the mount asked, and that waits for a reboot.
     assert_eq!(
         mnt(&s, "cam0"),
-        (Unsupported, None, None, refusal.to_string())
+        (PendingReboot, Some(0.0), Some(180.0), String::new())
     );
     // ... while cam1, whose line holds only catalog tokens, gets the named
     // option in one `set` that keeps its rotation.
@@ -2623,7 +2702,7 @@ async fn a_port_that_cannot_be_applied_is_refused_and_the_others_are_applied() {
             (
                 Unsupported,
                 None,
-                None,
+                Some(0.0),
                 "the camera sensor setting of this port is not applied (see cameraSensors), so its camera line is left as it is".to_string()
             ),
             "{entry}"
@@ -3036,4 +3115,266 @@ async fn a_write_back_to_what_runs_says_no_reboot_is_needed() {
             "info cam0: camera line for cam0 in <dir>/config.txt is now the imx290 line (imx290,rotation=0) — no reboot needed: this is the line the device booted with",
         ]
     );
+}
+
+/// The status texts of both namespaces for a pass (the namespace `held`
+/// is the value the pass looked at).
+fn statuses(s: &CameraStates) -> (String, String) {
+    use xorgate_core::config_report::{camera_mount_status, camera_sensors_status};
+    let text = |st: xorgate_core::config_report::NamespaceStatus| {
+        st.detail.or(st.reason).unwrap_or_else(|| "applied".into())
+    };
+    let sensors = s.sensors.as_ref();
+    let held: Option<xorgate_core::settings::CameraSensorsSettings> = sensors
+        .and_then(|st| serde_json::from_str(&st.settings).ok())
+        .flatten();
+    (
+        text(camera_sensors_status(sensors, held.as_ref(), 1)),
+        text(camera_mount_status(s.mount.as_ref(), 1)),
+    )
+}
+
+/// Bench findings of the Phase 2 run (2026-11-22), items 3 to 6: what the
+/// two namespaces say must be TRUE for each of them.
+#[tokio::test]
+async fn each_namespace_says_only_what_is_its_own() {
+    // A refused sensor entry beside a mount that is NOT being changed: the
+    // mount keeps `applied` and its values (it read `rejected`, with the
+    // sensor's sentence, and lost its effective value).
+    let config = "camera_auto_detect=0\ndtoverlay=imx708,cam0,rotation=180\n";
+    let d = Device::bench("own1", config, MODEL_CM4);
+    d.overlays(&ALL_OVERLAYS);
+    d.camera("cam0", &cm5_path("cam0", "imx708@1a"), Some(180));
+    let mut rig = Rig::new(d);
+    rig.live(&[("cam0", "imx708_wide", "imx708@1a")]);
+    let s = rig
+        .pass_both(
+            Some(&[("cam0", 0)]),
+            Some(json!({"cam0": {"sensor": "imx999"}})),
+        )
+        .await;
+    assert_eq!(sens(&s, "cam0").0, SV::Rejected);
+    assert_eq!(
+        mnt(&s, "cam0"),
+        (Applied, Some(0.0), Some(0.0), String::new())
+    );
+    let (sensors, mount) = statuses(&s);
+    assert!(
+        sensors.starts_with("cam0: this agent build does not know"),
+        "{sensors}"
+    );
+    assert_eq!(mount, "applied");
+    assert_eq!(rig.runner.calls().len(), 0);
+    // The rejection is the sensor setting's, under its own journal tag.
+    assert_eq!(rig.logs().len(), 1);
+    assert_eq!(*rig.sensor_logs.lock().unwrap(), rig.logs());
+    assert!(
+        rig.logs()[0].starts_with("warn cam0: camera sensor setting not applied — "),
+        "{:?}",
+        rig.logs()
+    );
+    // ... and with a mount change that IS pending on that line, the mount
+    // says why it cannot be made, in its own words.
+    let s = rig
+        .pass_both(
+            Some(&[("cam0", 180)]),
+            Some(json!({"cam0": {"sensor": "imx999"}})),
+        )
+        .await;
+    assert_eq!(
+        mnt(&s, "cam0"),
+        (
+            Unsupported,
+            Some(0.0),
+            Some(0.0),
+            "the camera sensor setting of this port is not applied (see cameraSensors), so its camera line is left as it is".to_string()
+        )
+    );
+    assert_eq!(rig.runner.calls().len(), 0);
+
+    // A HAND EDIT of a managed line (an unlisted token added, the sensor's
+    // overlay kept): the line waits for a reboot, and the status does not
+    // claim the agent wrote it.
+    let config = "camera_auto_detect=0\ndtoverlay=imx335,cam0\n";
+    let d = Device::bench("own2", config, MODEL_CM5);
+    d.overlays(&ALL_OVERLAYS);
+    d.camera("cam0", &cm5_path("cam0", "imx335@1a"), Some(180));
+    let mut rig = Rig::new(d);
+    rig.live(&[("cam0", "imx335", "imx335@1a")]);
+    let setting = json!({"cam0": {"sensor": "imx335"}});
+    let s = rig.pass_both(None, Some(setting.clone())).await;
+    assert_eq!(sens(&s, "cam0"), (SV::Applied, String::new()));
+    std::fs::write(
+        &rig.d.boot_config,
+        "camera_auto_detect=0\ndtoverlay=imx335,cam0,hand-token\n",
+    )
+    .unwrap();
+    let s = rig.pass_both(None, Some(setting.clone())).await;
+    assert_eq!(rig.runner.calls().len(), 0, "as found: not rewritten");
+    assert_eq!(sens(&s, "cam0"), (SV::ChangedOutside, String::new()));
+    assert!(s.sensors.as_ref().unwrap().reboot_required);
+    assert_eq!(
+        statuses(&s).0,
+        "the camera line was changed outside the agent since this boot (not written by this setting) — REBOOT REQUIRED to apply: cam0 imx335"
+    );
+    // The agent's own write is still "written to the boot config".
+    let s = rig
+        .pass_both(None, Some(json!({"cam0": {"sensor": "none"}})))
+        .await;
+    assert_eq!(rig.runner.asked(), ["remove cam0"]);
+    assert_eq!(sens(&s, "cam0"), (SV::PendingReboot, String::new()));
+    assert_eq!(
+        statuses(&s).0,
+        "written to the boot config — REBOOT REQUIRED to apply: cam0 none"
+    );
+
+    // A sensor line written for a port where NOTHING runs (the wrong
+    // declaration put right): the mount waits for the same reboot, and
+    // says that no camera runs there instead of "running ?°".
+    let config = "camera_auto_detect=0\ndtoverlay=imx219,cam0,rotation=180\n";
+    let d = Device::bench("own3", config, MODEL_CM4);
+    d.overlays(&ALL_OVERLAYS);
+    let mut rig = Rig::new(d);
+    rig.evidence = PortEvidence {
+        cameras: Some(vec![]),
+        relisted: true,
+        nodes: Some(vec![node("cam0", "imx219@10", None)]),
+    };
+    let s = rig
+        .pass_both(
+            Some(&[("cam0", 0)]),
+            Some(json!({"cam0": {"sensor": "imx708"}})),
+        )
+        .await;
+    assert_eq!(rig.runner.asked(), ["set cam0 imx708 rotation=180"]);
+    assert_eq!(sens(&s, "cam0").0, SV::PendingReboot);
+    assert_eq!(
+        mnt(&s, "cam0"),
+        (
+            PendingReboot,
+            None,
+            Some(0.0),
+            "no camera runs on the port until then".to_string()
+        )
+    );
+    assert_eq!(
+        statuses(&s),
+        (
+            "written to the boot config — REBOOT REQUIRED to apply: cam0 imx708".to_string(),
+            "written to the boot config — REBOOT REQUIRED to apply: cam0 0° (no camera runs on the port until then)".to_string()
+        )
+    );
+}
+
+/// Review N9: the agent is UPDATED in the boot in which the sensor was
+/// changed (console: change the sensor, press Update). The old build's
+/// boot-lines file has no record of its writes, so the new build cannot
+/// say who wrote the line: it must not read "changed outside the agent".
+/// Neutral wording, for the rest of that boot; a write the new build makes
+/// itself is its own again.
+#[tokio::test]
+async fn a_boot_lines_file_of_the_previous_build_blames_nobody() {
+    // The device booted with imx290; the OLD agent then wrote the imx708
+    // line and kept the snapshot as it did then (no `written`, no marker).
+    let config = "camera_auto_detect=0\ndtoverlay=imx708,cam0,rotation=180\n";
+    let d = Device::bench("oldfile", config, MODEL_CM4);
+    d.overlays(&ALL_OVERLAYS);
+    d.camera("cam0", &cm5_path("cam0", "imx290@1a"), Some(0));
+    let mut rig = Rig::new(d);
+    rig.live(&[("cam0", "imx290", "imx290@1a")]);
+    let file = rig.d.dir.join("camera-boot-lines.json");
+    std::fs::write(
+        &file,
+        r#"{"bootId":"boot-1","ports":{"cam0":{"form":{"overlay":"imx290","params":[],"rotation":"0"},"text":"dtoverlay=imx290,cam0"},"cam1":null}}"#,
+    )
+    .unwrap();
+    let id = rig.boot_id.clone();
+    rig.boot_lines = Arc::new(BootLineStore::new(
+        Some(file.clone()),
+        Box::new(move || id.lock().unwrap().clone()),
+    ));
+    let setting = json!({"cam0": {"sensor": "imx708"}});
+    let s = rig.pass_both(None, Some(setting.clone())).await;
+    assert_eq!(
+        rig.runner.calls().len(),
+        0,
+        "the line is already the declared one"
+    );
+    assert_eq!(sens(&s, "cam0"), (SV::ChangedSinceBoot, String::new()));
+    assert!(s.sensors.as_ref().unwrap().reboot_required);
+    assert_eq!(
+        statuses(&s).0,
+        "the camera line was changed since this boot — REBOOT REQUIRED to apply: cam0 imx708"
+    );
+    // A write of THIS build in the same boot is known to be its own.
+    let s = rig
+        .pass_both(None, Some(json!({"cam0": {"sensor": "imx219"}})))
+        .await;
+    assert_eq!(rig.runner.asked(), ["set cam0 imx219 rotation=180"]);
+    assert_eq!(sens(&s, "cam0"), (SV::PendingReboot, String::new()));
+    assert_eq!(
+        statuses(&s).0,
+        "written to the boot config — REBOOT REQUIRED to apply: cam0 imx219"
+    );
+    // After the reboot the snapshot is this build's: a hand edit is then
+    // told from the agent's write again.
+    rig.reboot();
+    rig.live(&[("cam0", "imx219", "imx219@10")]);
+    rig.d
+        .camera("cam0", &cm5_path("cam0", "imx219@10"), Some(180));
+    let setting = json!({"cam0": {"sensor": "imx219"}});
+    let s = rig.pass_both(None, Some(setting.clone())).await;
+    assert_eq!(sens(&s, "cam0"), (SV::Applied, String::new()));
+    std::fs::write(
+        &rig.d.boot_config,
+        "camera_auto_detect=0\ndtoverlay=imx219,cam0,rotation=180,hand-token\n",
+    )
+    .unwrap();
+    let s = rig.pass_both(None, Some(setting)).await;
+    assert_eq!(sens(&s, "cam0"), (SV::ChangedOutside, String::new()));
+}
+
+/// Bench finding: the boot-lines file of a ONE-PORT model listed `cam1:
+/// null`. Only the model's ports are kept; a port the model gains later is
+/// added from the file as it is then.
+#[tokio::test]
+async fn the_boot_snapshot_holds_only_the_models_ports() {
+    let config = "camera_auto_detect=0\ndtoverlay=imx708,cam0,rotation=180\n";
+    let d = Device::bench("oneport", config, MODEL_CM4);
+    d.overlays(&ALL_OVERLAYS);
+    let mut rig = Rig::new(d);
+    rig.hardware = Some(
+        serde_json::from_value(json!({
+            "v": 2, "platform": "rpi-cm4", "encoder": "hw-h264", "rails": false,
+            "statusLed": null, "imu": "bno085",
+            "video": [{"key": "cam0", "connector": "csi0", "sensor": "imx290", "codec": "h264"}]
+        }))
+        .unwrap(),
+    );
+    let file = rig.d.dir.join("camera-boot-lines.json");
+    let id = rig.boot_id.clone();
+    rig.boot_lines = Arc::new(BootLineStore::new(
+        Some(file.clone()),
+        Box::new(move || id.lock().unwrap().clone()),
+    ));
+    rig.pass_both(None, Some(json!({"cam0": {"sensor": "imx708"}})))
+        .await;
+    let kept: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(
+        kept["ports"]
+            .as_object()
+            .unwrap()
+            .keys()
+            .collect::<Vec<_>>(),
+        ["cam0"],
+        "{kept}"
+    );
+    assert!(kept.get("written").is_none(), "nothing written: {kept}");
+    // The model gains a port: its line joins the snapshot as it is now.
+    rig.hardware = Some(two_camera_block());
+    rig.pass_both(None, Some(json!({"cam0": {"sensor": "imx708"}})))
+        .await;
+    let kept: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(kept["ports"]["cam1"], Value::Null);
+    assert_eq!(kept["ports"].as_object().unwrap().len(), 2);
 }

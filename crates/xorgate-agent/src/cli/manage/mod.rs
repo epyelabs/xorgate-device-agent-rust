@@ -605,7 +605,15 @@ impl ManageIo for SystemIo {
 /// `xorgate-rs set`); a failure is Node's `err.message`.
 pub fn save_mode_in(home: &std::path::Path, mode: &str) -> Result<(), String> {
     let path = xorgate_hal::settings_io::settings_path(home);
-    let loaded = xorgate_hal::settings_io::load_settings(&path);
+    // RUST-ONLY guard (D118): a file that exists but cannot be read or
+    // parsed is not an empty one; the mode switch refuses and leaves it.
+    let read = xorgate_hal::settings_io::read_settings_file(&path);
+    if let Some(refusal) =
+        xorgate_core::cloud_config::local_write_refusal(&read, &path.display().to_string())
+    {
+        return Err(refusal);
+    }
+    let loaded = read.unwrap_or_default();
     let mut doc = xorgate_core::cli_set::document(&loaded);
     doc.insert("mode".to_string(), Value::String(mode.to_string()));
     let text = xorgate_core::js::map_to_json_string(&doc);

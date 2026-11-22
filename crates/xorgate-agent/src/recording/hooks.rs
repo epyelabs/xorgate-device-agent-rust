@@ -257,6 +257,13 @@ impl MediaReconciler {
                 log: Some(log),
                 boot_config: self.boot_config.as_ref().and_then(|f| f()),
                 // Read only where a boot config is read at all (the worker).
+                declared_empty: self.boot_config.as_ref().map_or_else(Vec::new, |_| {
+                    xorgate_core::camera_sensors::declared_empty_keys(
+                        xorgate_hal::settings_io::load_settings(&self.ctx.paths.settings)
+                            .camera_sensors
+                            .as_ref(),
+                    )
+                }),
                 board: self
                     .boot_config
                     .as_ref()

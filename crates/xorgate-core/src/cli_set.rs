@@ -661,6 +661,12 @@ pub const CAMERA_SENSORS_USAGE: &str = "cameraSensors keys are dotted paths: xor
 /// The value that takes a port (or an option) out of the setting.
 pub const CAMERA_SENSORS_UNMANAGED: &str = "unmanaged";
 
+/// What follows a saved `cameraSensors` change (RUST-ONLY).
+pub const CAMERA_SENSORS_THEN: [&str; 2] = [
+    "  the agent makes the camera line in /boot/firmware/config.txt match within ~a minute;",
+    "  a REBOOT may then be required before the camera changes (the agent never reboots itself): `xorgate-rs status` says so.",
+];
+
 /// `xorgate-rs set cameraSensors.<streamKey>.sensor <id|none|unmanaged>` and
 /// `xorgate-rs set cameraSensors.<streamKey>.options.<option> <number|default>`
 /// (RUST-ONLY, support-other-camera-models Phase 2).
@@ -836,14 +842,10 @@ fn set_camera_sensors(
         "cameraSensors",
         Value::Object(one("cameras", Value::Object(cameras))),
     );
-    stdout.push(
-        "  the agent rewrites the camera line in /boot/firmware/config.txt within ~a minute,"
-            .to_string(),
-    );
-    stdout.push(
-        "  then a REBOOT is required before the camera changes (the agent never reboots itself)."
-            .to_string(),
-    );
+    // Whether the line will differ from the one the device booted with is
+    // the agent's to find out (config.txt, the board, the boot snapshot):
+    // this command does not claim a reboot it cannot know about.
+    stdout.extend(CAMERA_SENSORS_THEN.iter().map(|l| l.to_string()));
     KeyOutcome::Save {
         doc,
         stdout,
@@ -1318,8 +1320,8 @@ mod tests {
             out,
             [
                 "✓ cameraSensors.cam0.sensor = imx708 (persisted to settings.json)",
-                "  the agent rewrites the camera line in /boot/firmware/config.txt within ~a minute,",
-                "  then a REBOOT is required before the camera changes (the agent never reboots itself).",
+                CAMERA_SENSORS_THEN[0],
+                CAMERA_SENSORS_THEN[1],
             ]
         );
         // A second port keeps the first; `none` declares a port empty.

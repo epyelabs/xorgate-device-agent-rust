@@ -339,11 +339,25 @@ red. The resolved state is also published as `system.led_state` and `system.heal
   One pass, two statuses: `cameraSensors` (the line) and `cameraMount` (the rotation). Neither says
   `applied` for a line that is written and not booted. To know, the agent keeps each port's line as
   it first saw it in the current boot (`<home>/camera-boot-lines.json`, keyed by the kernel's boot
-  id): a line that differs now waits for a reboot. The per-port camera report uses the same record
-  for its `reboot-required` verdict.
+  id; only the ports of the device model): a line that differs now waits for a reboot. The same
+  file remembers which lines THE AGENT wrote in this boot (`written`, with `tracksWrites` saying
+  the snapshot was taken by a build that keeps that record), so a line someone else changed is
+  not reported as the agent's write, and a file from a build without the record blames nobody. The per-port camera report uses the same record
+  for its `reboot-required` verdict. A change of the rotation alone belongs to `cameraMount`; the
+  sensor setting stays `applied` (`guide/06` has the sentences).
+
+  In the journal the two speak under their own tags: `[camera-sensors]` (activity feed: `camera
+  sensors: …`) for a camera line set or removed and for a sensor entry that is not applied,
+  `[camera-mount]` (`camera mount: …`) for the rotation.
 
   The installer writes the first lines with the same code: `xorgate-rs camera apply --from-claim
   <file>` (`cli/camera.rs`), run as root by `scripts/provision-rs.sh` step 8b.
+
+  A sensor may need OS packages the stock image lacks (the IMX335: Arducam's libcamera build). The
+  agent only REPORTS that (`requirements-missing`, with what to run): it is unprivileged and
+  installs nothing. `xorgate-rs camera requirements --install` does, as root, from the catalog's
+  pinned files; the installer (step 8c) and `xorgate-rs update` run it. See `guide/07`, "The extra
+  packages of a sensor".
 - **SMS reader** (`sms.rs`): reads stored SMS over the modem's spare AT port without marking them
   read, for the `read_sms` command and `xorgate-rs sms`.
 

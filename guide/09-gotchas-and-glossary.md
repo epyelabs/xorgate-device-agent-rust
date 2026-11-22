@@ -168,6 +168,16 @@ drop-in: pass `--tag latest`.
   only an option or the rotation (the snapshot of the lines as booted is taken at the agent's
   first pass). An overlay swapped that way is still found, from the live device tree.
 
+### The packages of a sensor are held, and held packages read `hi`
+
+The IMX335's two libcamera packages are installed from pinned files and put on hold
+(`guide/07`, "The extra packages of a sensor"). Two things follow. An `apt upgrade` on such a
+device keeps them, and whatever depends on a newer libcamera, back: that is intended, and it
+means no stock libcamera fixes there until the catalog pins a newer build. And `dpkg-query`
+shows a held package as `hi`, not `ii`: code that asks "is it installed" must read the second
+letter (`camera_sensors::parse_dpkg_query`), or every held package looks missing and is
+reinstalled on every update.
+
 ### Reproduced quirks
 
 Some behaviour of the reference is kept on purpose even though it is not ideal, because the cloud

@@ -11,7 +11,10 @@ use std::path::Path;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime};
 
-use xorgate_core::camera_sensors::{os_codename, parse_dpkg_query, HostFacts};
+use xorgate_core::camera_packages::{
+    installed_versions, interrupted, parse_dpkg_snapshot, DpkgSnapshot,
+};
+use xorgate_core::camera_sensors::{os_codename, HostFacts};
 
 /// The dpkg database: its mtime moves whenever a package is installed,
 /// upgraded or removed.
@@ -34,27 +37,69 @@ pub fn package_arch() -> Option<String> {
     Some(arch.to_string())
 }
 
-/// `dpkg-query -W -f='${Package}\t${Version}\t${db:Status-Abbrev}\n' <names…>`:
-/// the installed versions, or `None` when it could not be run (not found,
-/// killed after [`DPKG_QUERY_TIMEOUT`]). A package dpkg does not know makes
-/// it exit 1 and still print the others: that is an answer.
-pub fn query_packages(names: &[String]) -> Option<BTreeMap<String, String>> {
-    if names.is_empty() {
-        return Some(BTreeMap::new());
+/// dpkg's journal of a run that did not finish. apt refuses to work while
+/// it holds an entry ("dpkg was interrupted, you must manually run 'dpkg
+/// --configure -a'").
+pub const DPKG_UPDATES: &str = "/var/lib/dpkg/updates";
+
+/// Does dpkg's journal hold an entry (a file whose name is all digits, the
+/// ones apt looks for)? An unreadable or absent directory is "no".
+pub fn dpkg_journal_pending(dir: &Path) -> bool {
+    std::fs::read_dir(dir)
+        .map(|entries| {
+            entries.flatten().any(|e| {
+                let name = e.file_name();
+                let name = name.to_string_lossy();
+                !name.is_empty() && name.chars().all(|c| c.is_ascii_digit())
+            })
+        })
+        .unwrap_or(false)
+}
+
+/// `dpkg-query -W -f='${binary:Package}\t${Version}\t${db:Status-Abbrev}\n' [names…]`:
+/// the database's word on `names`, or on EVERY package when `names` is
+/// `None`. `None` = it could not be run (not found, or killed after
+/// `timeout`). A package dpkg does not know makes it exit 1 and still
+/// print the others: that is an answer.
+///
+/// `program` and `env` are named by the caller: a ROOT caller (`xorgate-rs
+/// camera requirements --install`) runs `/usr/bin/dpkg-query`, not whatever
+/// `PATH` finds, with `env` as its WHOLE environment (`None` = inherited,
+/// as the unprivileged agent does).
+pub fn dpkg_snapshot(
+    program: &Path,
+    env: Option<&[(String, String)]>,
+    timeout: Duration,
+    names: Option<&[String]>,
+) -> Option<DpkgSnapshot> {
+    if names.is_some_and(<[String]>::is_empty) {
+        return Some(DpkgSnapshot::new());
     }
-    let mut child = crate::child::std_command("dpkg-query")
+    let mut cmd = crate::child::std_command(program);
+    if let Some(env) = env {
+        cmd.env_clear()
+            .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    }
+    let mut child = cmd
         .arg("-W")
-        .arg("-f=${Package}\\t${Version}\\t${db:Status-Abbrev}\\n")
-        .args(names)
+        .arg("-f=${binary:Package}\\t${Version}\\t${db:Status-Abbrev}\\n")
+        .args(names.unwrap_or(&[]))
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
         .spawn()
         .ok()?;
-    let deadline = Instant::now() + DPKG_QUERY_TIMEOUT;
-    loop {
+    // Read while it runs: the whole database is more than a pipe holds.
+    let mut stdout = child.stdout.take()?;
+    let reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = std::io::Read::read_to_end(&mut stdout, &mut buf);
+        buf
+    });
+    let deadline = Instant::now() + timeout;
+    let status = loop {
         match child.try_wait() {
-            Ok(Some(_)) => break,
+            Ok(Some(status)) => break status,
             Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(10)),
             _ => {
                 let _ = child.kill();
@@ -62,9 +107,27 @@ pub fn query_packages(names: &[String]) -> Option<BTreeMap<String, String>> {
                 return None;
             }
         }
+    };
+    let out = reader.join().ok()?;
+    // Asked about EVERYTHING, dpkg-query has no reason to fail: a failure
+    // is "could not be read". (Asked about names, exit 1 means only that
+    // it does not know one of them.)
+    if names.is_none() && !status.success() {
+        return None;
     }
-    let out = child.wait_with_output().ok()?;
-    Some(parse_dpkg_query(&String::from_utf8_lossy(&out.stdout)))
+    Some(parse_dpkg_snapshot(&String::from_utf8_lossy(&out)))
+}
+
+/// The installed versions of `names`, as the unprivileged agent asks
+/// (`dpkg-query` from `PATH`, [`DPKG_QUERY_TIMEOUT`]).
+pub fn query_packages(names: &[String]) -> Option<BTreeMap<String, String>> {
+    dpkg_snapshot(
+        Path::new("dpkg-query"),
+        None,
+        DPKG_QUERY_TIMEOUT,
+        Some(names),
+    )
+    .map(|s| installed_versions(&s))
 }
 
 /// The last answer, with what it was asked about and the dpkg database's
@@ -86,13 +149,24 @@ pub fn host_facts(packages: &[String]) -> HostFacts {
             return facts.clone();
         }
     }
+    let snapshot = dpkg_snapshot(
+        Path::new("dpkg-query"),
+        None,
+        DPKG_QUERY_TIMEOUT,
+        Some(packages),
+    );
     let facts = HostFacts {
         os: crate::read_lossy::read_text(Path::new("/etc/os-release"))
             .ok()
             .as_deref()
             .and_then(os_codename),
         arch: package_arch(),
-        packages: query_packages(packages),
+        packages: snapshot.as_ref().map(installed_versions),
+        // A package asked about that dpkg left half-installed, or dpkg's
+        // own journal of an unfinished run.
+        interrupted: snapshot
+            .as_ref()
+            .and_then(|s| interrupted(s, dpkg_journal_pending(Path::new(DPKG_UPDATES)))),
     };
     *cache = Some((packages.to_vec(), stamp, facts.clone()));
     facts
