@@ -1129,9 +1129,21 @@ fn verdict_of(r: &Resolved<'_>) -> (CameraVerdict, String) {
                 CameraVerdict::Ok,
                 format!("{listed} on {port} is detected and streaming.{unknown}"),
             ),
+            // The "only weakly checks" caveat is left out here: the camera
+            // is listed under the declared sensor's own name (libcamera
+            // accepted it), and the caveat would read as a fault on a
+            // correct camera that is merely starting. A driver with NO
+            // identity check keeps its note (it lists a camera for anything).
             CaptureTruth::Starting => (
                 CameraVerdict::Ok,
-                format!("{listed} on {port} is detected; capture is starting.{note}{unknown}"),
+                format!(
+                    "{listed} on {port} is detected; capture is starting.{}{unknown}",
+                    if r.identity == Some(Identity::Weak) {
+                        ""
+                    } else {
+                        note.as_str()
+                    }
+                ),
             ),
             // `Absent` cannot go with a listed camera; worded like `Off`.
             // The one reason the agent knows, and no identity caveat beside
@@ -1290,7 +1302,11 @@ pub fn rotation_write_block(f: &PortFacts<'_>) -> Option<String> {
         CameraVerdict::Mismatch
         | CameraVerdict::RebootRequired
         | CameraVerdict::NotDetected
-        | CameraVerdict::Empty => {
+        | CameraVerdict::Empty
+        // Not reached for an unmanaged port (they come from the sensor
+        // setting, and a managed port's line is not gated here).
+        | CameraVerdict::RequirementsMissing
+        | CameraVerdict::UnknownSensor => {
             return Some(port.detail);
         }
         CameraVerdict::Ok | CameraVerdict::NoFrames | CameraVerdict::Unchecked => {}

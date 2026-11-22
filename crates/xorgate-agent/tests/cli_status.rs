@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use serde::Deserialize;
 use serde_json::Value;
 use xorgate_agent::cli::process_inspect::{ProcRun, ProcRunner};
-use xorgate_agent::cli::status::{inspect, render, DaemonStatus, RenderCtx};
+use xorgate_agent::cli::status::{inspect, render, DaemonStatus, RenderCtx, STOPPED_HINT};
 
 #[derive(Deserialize)]
 struct Fixture {
@@ -64,6 +64,7 @@ fn status_render_fixture() {
     let fx: Fixture = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
     let me = std::process::id();
     let mut failures = Vec::new();
+    let mut stopped_hints = 0;
     for (i, c) in fx.cases.iter().enumerate() {
         let home: PathBuf =
             std::env::temp_dir().join(format!("xg-cli-status-{i}-{}", std::process::id()));
@@ -107,6 +108,17 @@ fn status_render_fixture() {
                 l.replace(&home_s, "<HOME>")
                     .replace(&format!("pid {me}"), "pid <PID>")
             })
+            // D113: the stopped hint names the Rust unit; the TS line names
+            // the self-managed daemon this binary does not have. Everything
+            // else is still compared with the TS word for word.
+            .map(|l| {
+                if l == STOPPED_HINT {
+                    stopped_hints += 1;
+                    "  start it with: xorgate start".to_string()
+                } else {
+                    l
+                }
+            })
             .collect();
         let code = if matches!(st, DaemonStatus::Running { .. }) {
             0
@@ -122,6 +134,7 @@ fn status_render_fixture() {
         let _ = std::fs::remove_dir_all(&home);
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+    assert_eq!(stopped_hints, 1, "D113: the one stopped case of the fixture");
 }
 
 /// ANSI colours as the TS `c(code, s)` (`status.ts:11-16`).
@@ -137,7 +150,7 @@ fn colours_wrap_like_the_ts() {
         render(&DaemonStatus::Stopped, 0.0, &ctx),
         vec![
             "\x1b[90m○\x1b[0m stopped \x1b[2m— daemon not running\x1b[0m".to_string(),
-            "\x1b[2m  start it with: xorgate start\x1b[0m".to_string(),
+            "\x1b[2m  start it with: sudo systemctl start xorgate-agent-rs\x1b[0m".to_string(),
         ]
     );
 }

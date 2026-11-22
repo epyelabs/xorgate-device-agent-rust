@@ -564,23 +564,26 @@ fn port_of(key: &str, connector: Option<&str>) -> Result<CamPort, String> {
 /// 2. else `hardware.video[]`: each camera's `sensor`, as the model names it.
 /// 3. else the two `imx290` lines on `cam0` and `cam1`.
 pub fn apply_plan(claim: &Value) -> Vec<ApplyPort> {
-    let video: Vec<(&str, &str, Option<&str>)> = claim
+    // `(stream key, connector, sensor)`. An entry without a `key` is named
+    // by its port (`cam0` for `csi0`), as every installer named it before.
+    let video: Vec<(String, &str, Option<&str>)> = claim
         .get("hardware")
         .and_then(|h| h.get("video"))
         .and_then(Value::as_array)
         .map(|v| {
             v.iter()
                 .filter_map(|e| {
-                    Some((
-                        e.get("key")?.as_str()?,
-                        e.get("connector")?.as_str()?,
-                        e.get("sensor").and_then(Value::as_str),
-                    ))
+                    let connector = e.get("connector")?.as_str()?;
+                    let key = match e.get("key").and_then(Value::as_str) {
+                        Some(k) => k.to_string(),
+                        None => crate::boot_config::overlay_cam_token(connector)?,
+                    };
+                    Some((key, connector, e.get("sensor").and_then(Value::as_str)))
                 })
                 .collect()
         })
         .unwrap_or_default();
-    let has_hardware = claim.get("hardware").is_some_and(Value::is_object);
+    let has_hardware = !video.is_empty();
     if let Some(cameras) = claim
         .get("cameraSensors")
         .and_then(|c| c.get("cameras"))
@@ -609,7 +612,7 @@ pub fn apply_plan(claim: &Value) -> Vec<ApplyPort> {
         .filter_map(|(key, connector, sensor)| {
             let sensor = sensor.filter(|s| !s.is_empty())?;
             Some(ApplyPort {
-                stream_key: (*key).to_string(),
+                stream_key: key.clone(),
                 source: ChoiceSource::Model,
                 port: port_of(key, Some(connector)),
                 entry: serde_json::json!({ "sensor": sensor }),

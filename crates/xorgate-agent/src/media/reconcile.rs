@@ -216,6 +216,20 @@ pub async fn reconcile_hardware(
                 .map(|t| boot_config_port_on(t, &video.connector, &[], opts.board));
             let expected = declared_for(boot.as_ref(), &video.sensor)
                 .map_or_else(|| video.sensor.clone(), |d| d.sensor);
+            // Rust-only (D112): config.txt was read and has NO camera line
+            // for the port. Nothing is configured there (the report says
+            // `empty`), so "check the ribbon" would send the reader to a
+            // cable that may not exist.
+            if boot.as_ref().is_some_and(|b| b.lines == 0) {
+                log(
+                    ReconcileLevel::Warn,
+                    &format!(
+                        "{}: no camera is configured on {} (config.txt has no camera line for it; the device model expects {}) — stream held down",
+                        video.key, video.connector, video.sensor
+                    ),
+                );
+                continue;
+            }
             log(
                 ReconcileLevel::Warn,
                 &format!(

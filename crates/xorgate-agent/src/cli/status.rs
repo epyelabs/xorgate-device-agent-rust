@@ -20,6 +20,11 @@ use serde_json::Value;
 use xorgate_core::js::{number_to_string, to_fixed};
 use xorgate_core::round::js_math_round;
 
+/// The hint under `○ stopped` (D113): the command that starts the Rust
+/// agent. The TS line names its self-managed daemon, `  start it with:
+/// xorgate start`, which this binary does not have.
+pub const STOPPED_HINT: &str = "  start it with: sudo systemctl start xorgate-agent-rs";
+
 use super::process_inspect::{
     classify_identity, inspect_process, is_alive, Identity, ProcRunner, SystemRunner,
     IDENTITY_TOLERANCE_SEC,
@@ -282,7 +287,10 @@ pub fn render(st: &DaemonStatus, now: f64, ctx: &RenderCtx) -> Vec<String> {
                 p.gray("○"),
                 p.dim("— daemon not running")
             ));
-            out.push(p.dim("  start it with: xorgate start"));
+            // The TS line is `  start it with: xorgate start`; this binary
+            // has no `start` (systemd runs the Rust agent), and a Rust-only
+            // device has no `xorgate` command at all (D113).
+            out.push(p.dim(STOPPED_HINT));
             out
         }
         DaemonStatus::Stale { record, reason } => {

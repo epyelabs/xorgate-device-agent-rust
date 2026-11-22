@@ -373,8 +373,10 @@ pub fn heal_line(key: &str, restarted: &[&str]) -> String {
     if restarted.is_empty() {
         format!("{key}: a camera is enumerated now — starting the stream")
     } else {
+        // The healed stream is started first; the others come back a few
+        // seconds later (measured on the bench: about 4 s).
         format!(
-            "{key}: a camera is enumerated now — restarting the capture of {} so the new camera can be acquired, then starting the stream",
+            "{key}: a camera is enumerated now — starting the stream; the capture of {} is restarted so the new camera can be acquired",
             restarted.join(", ")
         )
     }

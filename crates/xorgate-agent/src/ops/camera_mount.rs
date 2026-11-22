@@ -1198,6 +1198,9 @@ fn write_block(
         stalled_preset: None,
         unsupervised: false,
         off_reason: CaptureOff::NotBegun,
+        // The gate is for an UNMANAGED port: no sensor setting. A line that
+        // changed since boot does not bear on which sensor is attached.
+        setting: Default::default(),
     })
 }
 

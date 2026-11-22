@@ -1833,6 +1833,85 @@ mod tests {
         assert!(!deep_equal(&Value::Null, &Value::Bool(false)));
     }
 
+    /// THE CAPABILITY PIN (support-other-camera-models Phase 2). The cloud
+    /// withdraws a stored `cameraSensors` value on the first report whose
+    /// capability list lacks `camera.sensors`, so the list must be the same
+    /// in every report that has an `agent` block: one compile-time
+    /// constant, emitted whole, built nowhere else and never conditionally.
+    #[test]
+    fn the_capability_list_is_one_constant_in_every_agent_block() {
+        let build = BuildInfo {
+            version: "abc1234".into(),
+            channel: "dev".into(),
+            built_at: None,
+            package_version: "0.1.0".into(),
+        };
+        let caps: Vec<Value> = AGENT_CAPABILITIES
+            .iter()
+            .map(|c| Value::String((*c).to_string()))
+            .collect();
+        assert!(AGENT_CAPABILITIES.contains(&CAPABILITY_CAMERA_SENSORS));
+        // Whatever else the report holds: every origin, every mode, with
+        // and without the namespace, a reconciler state, a hardware report.
+        let held: AgentSettings = serde_json::from_str(
+            r#"{"cameraSensors":{"cameras":{"cam0":{"sensor":"imx999"}}},"cameraMount":{"cameras":{"cam0":{"rotationDeg":180}}}}"#,
+        )
+        .unwrap();
+        let mut reports = 0;
+        for origin in [ReportOrigin::Boot, ReportOrigin::Cloud, ReportOrigin::Local] {
+            for mode in ["real", "sim", "replay"] {
+                for settings in [AgentSettings::default(), held.clone()] {
+                    for sensors in [
+                        None,
+                        Some(CameraSensorsState {
+                            at: 1,
+                            cameras: vec![],
+                            reboot_required: true,
+                            wrote: false,
+                        }),
+                    ] {
+                        let report = build_config_report(
+                            &ReportInput {
+                                device_id: "d".into(),
+                                ts: 1,
+                                origin,
+                                last_applied_rev: 3,
+                                settings: settings.clone(),
+                                modem: ModemBiasSample::default(),
+                                desired: None,
+                                hints: None,
+                                mode: Some(mode.into()),
+                                camera_mount: None,
+                                telemetry_scope: None,
+                                changed: None,
+                                obd: None,
+                                cameras: None,
+                                camera_sensors: sensors,
+                            },
+                            &build,
+                        );
+                        assert_eq!(
+                            report.effective["agent"]["capabilities"],
+                            Value::Array(caps.clone()),
+                            "{origin:?} {mode}"
+                        );
+                        reports += 1;
+                    }
+                }
+            }
+        }
+        assert_eq!(reports, 36);
+        // The list is built in exactly one place, from the constant, and no
+        // other code names the capability string.
+        let code = include_str!("config_report.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .unwrap();
+        assert_eq!(code.matches("\"capabilities\".into()").count(), 1);
+        assert_eq!(code.matches("AGENT_CAPABILITIES\n").count(), 1, "one use: the agent block");
+        assert_eq!(code.matches("\"camera.sensors\"").count(), 1, "one definition");
+    }
+
     #[test]
     fn rank_and_rev_guard() {
         assert!(ReportOrigin::Local.rank() > ReportOrigin::Cloud.rank());
@@ -1885,6 +1964,7 @@ mod tests {
                 None,
                 None,
                 None,
+                None,
                 &build,
             );
             let agent = eff["agent"].as_object().expect("agent block");
@@ -1901,7 +1981,9 @@ mod tests {
                 )
             );
         }
-        let eff = build_effective(&settings, &modem, None, None, None, None, None, &build);
+        let eff = build_effective(
+            &settings, &modem, None, None, None, None, None, None, &build,
+        );
         assert!(!eff.contains_key("agent"));
         assert!(!js::map_to_json_string(&eff).contains("runtime"));
         // ...and on the wire, inside the whole report.

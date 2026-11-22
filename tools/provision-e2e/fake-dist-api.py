@@ -14,7 +14,10 @@ trusts). Stdlib only.
       POST /v1/device-registrations/<code>/claim
           The claim ASSERTION point: every claim is appended to
           <state>/claims.log as one JSON line {code, body}. The reply follows
-          <state>/claim-mode (default ok): ok | ok-nohw | 409 | 404 | 500 | slow
+          <state>/claim-mode (default ok): ok | ok-nohw | ok-sensors | 409 | 404 | 500 | slow
+          (ok-sensors: the reply also carries `cameraSensors`, as the backend
+          seeds it, but only for a claim whose body declares the capability
+          `camera.sensors`)
           (a 504 after 30 s, the code left unclaimed).
           A code may be claimed once (a second claim of it is 404, as the
           backend's pending -> claimed flip).
@@ -142,6 +145,9 @@ class H(http.server.BaseHTTPRequestHandler):
             "needsModel": False,
             "hardware": None if mode == "ok-nohw" else HARDWARE,
         }
+        caps = body.get("capabilities") if isinstance(body, dict) else None
+        if mode == "ok-sensors" and isinstance(caps, list) and "camera.sensors" in caps:
+            resp["cameraSensors"] = {"cameras": {"cam0": {"sensor": "imx708"}, "cam1": {"sensor": "none"}}}
         self.send(200, json.dumps(resp))
 
 
