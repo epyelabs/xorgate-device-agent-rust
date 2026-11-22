@@ -171,6 +171,8 @@ env > "$D/apt.env"
 [ "$mode" = install-fail ] && { echo "E: Sub-process /usr/bin/dpkg returned an error code (1)" >&2; exit 100; }
 [ "$mode" = install-noop ] && exit 0
 [ "$mode" = install-slow ] && sleep 2
+# Something the package's script leaves running, with apt's output still open.
+[ "$mode" = install-lingers ] && { sleep 20 & }
 # Another package changes with the transaction.
 [ "$mode" = install-extra ] && sed -i 's/^bash\t5.2/bash\t5.3/' "$D/installed.tsv"
 count=0
@@ -1204,6 +1206,26 @@ async fn the_time_limit_never_cuts_a_transaction() {
         "the real install never ran"
     );
     assert!(dev.kept().is_empty());
+}
+
+/// A finished install is finished when apt-get has exited, whatever a
+/// package's script left running with apt's output still open: it must not
+/// be taken for an install that hangs (and then be "stopped" at its bound).
+#[tokio::test]
+async fn a_process_left_behind_by_the_install_does_not_hold_it_up() {
+    let dev = Dev::new("lingers").await;
+    dev.set("apt.mode", "install-lingers");
+    let t0 = std::time::Instant::now();
+    let (code, lines) = dev.run(&["--install", "--quiet", "--no-restart"]).await;
+    assert_eq!(code, 0, "{lines:?}");
+    assert!(t0.elapsed() < Duration::from_secs(12), "{:?}", t0.elapsed());
+    assert_eq!(dev.read("held"), "libcamera0.5\nlibcamera-ipa\n");
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains(": installed libcamera0.5 ")),
+        "{lines:?}"
+    );
 }
 
 /// Review S1: a stop request (SIGTERM, Ctrl-C) ends a killable step at

@@ -382,22 +382,37 @@ async fn tool(
         }
     };
     let (mut out, mut err) = (child.stdout.take(), child.stderr.take());
-    // Done when both pipes are closed (the tool and everything it started
-    // are gone) and the tool is reaped.
+    // Done when the TOOL has exited. Its output is read until then, and
+    // for a moment after (what is still in the pipes). Not "until the pipes
+    // close": something a package's script left running with the pipe open
+    // must not make a finished install look like one that hangs.
     let done = async {
         let (mut o, mut e) = (Vec::new(), Vec::new());
-        let read_out = async {
-            if let Some(p) = out.as_mut() {
-                let _ = p.read_to_end(&mut o).await;
+        let status = {
+            let reads = async {
+                let read_out = async {
+                    if let Some(p) = out.as_mut() {
+                        let _ = p.read_to_end(&mut o).await;
+                    }
+                };
+                let read_err = async {
+                    if let Some(p) = err.as_mut() {
+                        let _ = p.read_to_end(&mut e).await;
+                    }
+                };
+                tokio::join!(read_out, read_err);
+            };
+            tokio::pin!(reads);
+            tokio::select! {
+                // Both pipes closed: the tool is going or gone.
+                _ = &mut reads => child.wait().await,
+                status = child.wait() => {
+                    let _ = tokio::time::timeout(Duration::from_secs(2), &mut reads).await;
+                    status
+                }
             }
         };
-        let read_err = async {
-            if let Some(p) = err.as_mut() {
-                let _ = p.read_to_end(&mut e).await;
-            }
-        };
-        tokio::join!(read_out, read_err);
-        (child.wait().await, o, e)
+        (status, o, e)
     };
     tokio::pin!(done);
     let timer = tokio::time::sleep(bound);
