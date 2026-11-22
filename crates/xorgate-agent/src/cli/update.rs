@@ -102,7 +102,9 @@ pub struct Stdout;
 
 impl UpdateLog for Stdout {
     fn log(&mut self, line: &str) {
-        println!("{}{line}", plan::LOG_PREFIX);
+        // Never a panic (`cli::out`): the run may be past "updated to …"
+        // and inside the camera-packages step when its reader goes away.
+        super::out::out(&format!("{}{line}", plan::LOG_PREFIX));
     }
 }
 
@@ -115,7 +117,7 @@ impl UpdateLog for Vec<String> {
 /// `xorgate-rs update …` → exit code. The uid check is first (`update.ts:225`).
 pub fn main(argv: &[String]) -> i32 {
     if !nix::unistd::getuid().is_root() {
-        eprintln!("{}{}", plan::FAIL_PREFIX, plan::NOT_ROOT_MESSAGE);
+        super::out::err(&format!("{}{}", plan::FAIL_PREFIX, plan::NOT_ROOT_MESSAGE));
         return 1;
     }
     let rt = match tokio::runtime::Builder::new_current_thread()
@@ -124,7 +126,7 @@ pub fn main(argv: &[String]) -> i32 {
     {
         Ok(rt) => rt,
         Err(e) => {
-            eprintln!("{}{e}", plan::FAIL_PREFIX);
+            super::out::err(&format!("{}{e}", plan::FAIL_PREFIX));
             return 1;
         }
     };
@@ -132,7 +134,7 @@ pub fn main(argv: &[String]) -> i32 {
     match rt.block_on(update(argv, &env, &UpdatePaths::system(), &mut Stdout)) {
         Ok(()) => 0,
         Err(msg) => {
-            eprintln!("{}{msg}", plan::FAIL_PREFIX);
+            super::out::err(&format!("{}{msg}", plan::FAIL_PREFIX));
             1
         }
     }
@@ -388,8 +390,17 @@ pub async fn update(
     p: &UpdatePaths,
     out: &mut dyn UpdateLog,
 ) -> Result<(), String> {
-    // For step 9: how much of the updater unit's budget this run has used.
+    // For step 9: how much of the updater unit's budget this run has used,
+    // and (under the unit: systemd sets INVOCATION_ID) what budget the
+    // LOADED unit gives it. Asked now, before this run changes the unit
+    // file, and again after its `daemon-reload`: the smaller answer counts.
     let started = std::time::Instant::now();
+    let under_unit = env("INVOCATION_ID").is_some_and(|v| !v.is_empty());
+    let budget_at_start = if under_unit {
+        Some(loaded_unit_budget(p).await)
+    } else {
+        None
+    };
     // Step 1: resolution (`update.ts:229-245`).
     let file = plan::parse_env_file(&read_lossy(&p.abs(plan::AGENT_ENV)).unwrap_or_default());
     let src = plan::resolve_source(
@@ -559,23 +570,65 @@ pub async fn update(
         .filter(|h| !h.is_empty())
         .or_else(|| file.get("XORGATE_HOME").cloned().filter(|h| !h.is_empty()))
         .unwrap_or_else(|| plan::DEFAULT_HOME.to_string());
-    // Under the updater unit (systemd sets INVOCATION_ID) the step may use
-    // what is left of the unit's start budget, less a margin; by hand, its
-    // own worst case.
-    let limit = plan::camera_packages_limit(
-        env("INVOCATION_ID").is_some_and(|v| !v.is_empty()),
-        started.elapsed().as_secs(),
-    );
+    // Under the updater unit the step may use what is left of the unit's
+    // start budget, less a margin; by hand, its own worst case. The budget
+    // is what systemd says of the unit it has LOADED (before and after the
+    // reload above, whose result is not taken on trust), never more than
+    // this build's unit file gives, and the conservative floor when
+    // systemd cannot be asked.
+    let unit_budget = match budget_at_start {
+        Some(at_start) => {
+            let now = loaded_unit_budget(p).await;
+            Some(plan::updater_unit_budget(&[
+                at_start.as_deref(),
+                now.as_deref(),
+            ]))
+        }
+        None => None,
+    };
+    let limit = plan::camera_packages_limit(unit_budget, started.elapsed().as_secs());
+    // SIGTERM from here on (systemd stopping the unit: its start timeout, a
+    // `systemctl stop`, a shutdown) is passed on to the step and waited
+    // out, instead of ending this process. See `camera_packages_step`.
+    let stop = terminate_signal();
     camera_packages_step(
         p,
         &home,
         limit,
         Duration::from_secs(pk::STEP_GRACE),
         Duration::from_secs(pk::T_INSTALL + pk::T_AFTER + pk::STEP_GRACE),
+        stop,
         out,
     )
     .await;
     Ok(())
+}
+
+/// What systemd says the LOADED updater unit's `TimeoutStartSec` is
+/// (`45min`); `None` when it could not be asked.
+async fn loaded_unit_budget(p: &UpdatePaths) -> Option<String> {
+    let args: Vec<String> = plan::updater_budget_argv()
+        .iter()
+        .map(|a| a.to_string())
+        .collect();
+    let r = run_s(&p.tools.systemctl, &args, SYSTEMCTL_TIMEOUT).await;
+    (!r.failed).then_some(r.stdout)
+}
+
+/// Resolves at the first SIGTERM. Once this is called SIGTERM no longer
+/// ends the process by itself; it is called only where the camera-packages
+/// step is about to run, the last thing an update does.
+fn terminate_signal() -> impl std::future::Future<Output = ()> {
+    let stream = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate());
+    async move {
+        match stream {
+            Ok(mut s) => {
+                s.recv().await;
+            }
+            // It could not be caught: the default disposition stays.
+            Err(_) => std::future::pending::<()>().await,
+        }
+    }
 }
 
 /// Q14 (§5 step 3): fetch `<tarball>.sha256`, find the tarball's entry and
@@ -650,6 +703,7 @@ async fn camera_packages_step(
     limit: u64,
     grace: Duration,
     last_resort: Duration,
+    stop: impl std::future::Future<Output = ()>,
     out: &mut dyn UpdateLog,
 ) {
     use tokio::io::AsyncBufReadExt;
@@ -684,16 +738,45 @@ async fn camera_packages_step(
     tokio::pin!(cap);
     let end = tokio::time::sleep(Duration::from_secs(limit) + grace + last_resort);
     tokio::pin!(end);
-    let (mut asked, mut killed) = (false, false);
+    tokio::pin!(stop);
+    // Armed when the command has exited: what is still in its pipe is read
+    // for a moment, no longer. (Not "until the pipe closes": a process the
+    // command left behind with the pipe open must not hold the update.)
+    let drained = tokio::time::sleep(Duration::from_secs(365 * 86_400));
+    tokio::pin!(drained);
+    let (mut asked, mut killed, mut passed_on, mut exited) = (false, false, false, false);
     loop {
         tokio::select! {
+            _ = child.wait(), if !exited => {
+                exited = true;
+                drained
+                    .as_mut()
+                    .reset(tokio::time::Instant::now() + Duration::from_secs(2));
+            }
+            _ = &mut drained, if exited => break,
+            // This run was asked to stop (SIGTERM: systemd stopping the
+            // unit). The request is passed on and WAITED OUT: the command
+            // ends a killable step at once and finishes an apt transaction
+            // first. This process must outlive it: with `KillMode=mixed`
+            // systemd SIGKILLs whatever is left of the unit the moment its
+            // main process is gone.
+            _ = &mut stop, if !passed_on && !exited => {
+                passed_on = true;
+                if let Some(pid) = pid {
+                    let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM);
+                }
+                out.log(&format!(
+                    "{prefix}this run was asked to stop: the step is asked to stop too, and is waited for (an apt transaction that is running finishes first)"
+                ));
+            }
             line = lines.next_line() => match line {
                 Ok(Some(l)) if l.starts_with(prefix) => out.log(&l),
                 Ok(Some(_)) => {}
-                // End of its output: the command is gone.
+                // End of its output: the command and whatever held its
+                // pipe are gone.
                 _ => break,
             },
-            _ = &mut cap, if !asked => {
+            _ = &mut cap, if !asked && !exited => {
                 asked = true;
                 if let Some(pid) = pid {
                     let _ = nix::sys::signal::kill(pid, nix::sys::signal::Signal::SIGTERM);
@@ -702,7 +785,7 @@ async fn camera_packages_step(
                     "{prefix}WARN the step did not keep to its time limit and was asked to stop (an apt transaction that is running is left to finish); the update itself is complete"
                 ));
             }
-            _ = &mut end, if asked && !killed => {
+            _ = &mut end, if asked && !killed && !exited => {
                 killed = true;
                 if let Some(pid) = pid {
                     let _ = nix::sys::signal::killpg(pid, nix::sys::signal::Signal::SIGKILL);
@@ -919,6 +1002,13 @@ mod tests {
             &format!("TimeoutStartSec={}min", plan::UPDATER_UNIT_BUDGET_SECS / 60).as_str()
         ));
         assert_eq!(plan::UPDATER_UNIT_BUDGET_SECS, 45 * 60);
+        // A stop of the unit reaches the updater only, and systemd waits
+        // long enough for an install that had begun (unit-ordering.sh G
+        // proves what these two lines do under a real systemd).
+        assert!(directives.contains(&"KillMode=mixed"));
+        assert!(directives.contains(
+            &format!("TimeoutStopSec={}min", plan::UPDATER_UNIT_STOP_SECS / 60).as_str()
+        ));
         assert!(!directives.iter().any(|l| l.starts_with("[Install]")));
         assert!(!unit.contains("ExecStart=/usr/local/bin/xorgate update"));
     }
@@ -1542,12 +1632,10 @@ mod tests {
             rm_rf(&r.dir);
         }
         // The environment's XORGATE_HOME wins; with neither, the wrapper's
-        // default. Under the updater unit (INVOCATION_ID) the limit is what
-        // is left of the unit's budget: here, right after the start, still
-        // the step's own.
-        for (env_home, unit, want) in [
-            (Some("/env/home"), false, "/env/home|1320"),
-            (None, true, "/var/lib/xorgate|1320"),
+        // default. By hand the limit is the step's own.
+        for (env_home, want) in [
+            (Some("/env/home"), "/env/home|1320"),
+            (None, "/var/lib/xorgate|1320"),
         ] {
             let r = rig("campkg-home");
             let args = r.dir.join("camera.args");
@@ -1563,7 +1651,6 @@ mod tests {
             .unwrap();
             let env = move |k: &str| match k {
                 "XORGATE_HOME" => env_home.map(str::to_string),
-                "INVOCATION_ID" => unit.then(|| "0123456789abcdef".to_string()),
                 _ => None,
             };
             let mut log: Vec<String> = Vec::new();
@@ -1571,6 +1658,66 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(fs::read_to_string(&args).unwrap(), format!("{want}\n"));
+            rm_rf(&r.dir);
+        }
+    }
+
+    /// Under the updater unit (systemd sets INVOCATION_ID) the step's limit
+    /// comes from the budget of the unit systemd has LOADED, asked before
+    /// this run touches the unit file and again after its daemon-reload:
+    /// the smaller answer counts, never more than this build's own unit
+    /// gives, and the 20-minute floor when systemd cannot be asked.
+    #[tokio::test]
+    async fn under_the_unit_the_limit_follows_the_loaded_units_budget() {
+        // (what `systemctl show` answers the 1st and the 2nd time, the limit)
+        let cases: [(&str, &str, &str, std::ops::RangeInclusive<u64>); 6] = [
+            // This build's unit: the step's whole limit.
+            ("ok", "echo 45min", "echo 45min", 1320..=1320),
+            // The loaded unit still has the old 20 minutes (a drop-in, or
+            // a daemon-reload that failed earlier): what is left of THOSE.
+            ("old", "echo 20min", "echo 20min", 1070..=1080),
+            // 20 at the start, 45 after this run's reload: the smaller.
+            ("grew", "echo 20min", "echo 45min", 1070..=1080),
+            // A longer one than this build's unit file: not trusted beyond it.
+            ("long", "echo 2h", "echo infinity", 1320..=1320),
+            // systemd cannot be asked, or answers something unreadable.
+            ("fails", "exit 1", "echo 45min", 1070..=1080),
+            ("odd", "echo 45min", "echo soon", 1070..=1080),
+        ];
+        for (name, first, second, want) in cases {
+            let r = rig(&format!("campkg-unit-{name}"));
+            let args = r.dir.join("camera.args");
+            let banner = format!(
+                "' >/dev/null; [ \"$1\" = camera ] && {{ echo \"$6\" > {}; exit 0; }}; echo 'xorgate-rs 0.0.1 (v1, dev)",
+                args.display()
+            );
+            publish(&r, "v1", &banner, true);
+            fs::write(
+                r.p.abs(plan::AGENT_ENV),
+                "DEVICE_DIST_BUCKET_URL=https://bucket.example/dist/\n",
+            )
+            .unwrap();
+            // systemctl: `show` answers by turn; the rest as the rig's.
+            sh(
+                Path::new(&r.p.tools.systemctl),
+                &format!(
+                    "echo \"$*\" >> {d}/systemctl.log; if [ \"$1\" = show ]; then if [ -f {d}/asked ]; then {second}; else : > {d}/asked; {first}; fi; exit $?; fi; [ \"$1\" = is-active ] && exit 3; exit 0",
+                    d = r.dir.display()
+                ),
+            );
+            let env = |k: &str| (k == "INVOCATION_ID").then(|| "0123456789abcdef".to_string());
+            let mut log: Vec<String> = Vec::new();
+            update(&argv(&["--tag", "v1"]), &env, &r.p, &mut log)
+                .await
+                .unwrap();
+            let limit: u64 = fs::read_to_string(&args).unwrap().trim().parse().unwrap();
+            assert!(want.contains(&limit), "{name}: --time-limit {limit}");
+            // Asked before anything else, and again after the reload.
+            assert_eq!(
+                fs::read_to_string(r.dir.join("systemctl.log")).unwrap(),
+                "show -p TimeoutStartUSec --value xorgate-updater-rs.service\nis-active --quiet xorgate-agent-rs\ndaemon-reload\nshow -p TimeoutStartUSec --value xorgate-updater-rs.service\n",
+                "{name}"
+            );
             rm_rf(&r.dir);
         }
     }
@@ -1584,39 +1731,91 @@ mod tests {
             plan::UPDATER_UNIT_BUDGET_SECS,
             plan::UPDATER_UNIT_MARGIN_SECS,
         );
+        let unit = Some(budget);
         assert_eq!(pk::STEP_LIMIT, 1320);
         // By hand: nothing else bounds the run.
-        assert_eq!(plan::camera_packages_limit(false, 0), 1320);
-        assert_eq!(plan::camera_packages_limit(false, 100_000), 1320);
+        assert_eq!(plan::camera_packages_limit(None, 0), 1320);
+        assert_eq!(plan::camera_packages_limit(None, 100_000), 1320);
         // Under the unit: the whole limit while it fits…
-        assert_eq!(plan::camera_packages_limit(true, 0), 1320);
+        assert_eq!(plan::camera_packages_limit(unit, 0), 1320);
         assert_eq!(
-            plan::camera_packages_limit(true, budget - margin - 1320),
+            plan::camera_packages_limit(unit, budget - margin - 1320),
             1320
         );
         // …then what is left, down to nothing.
         assert_eq!(
-            plan::camera_packages_limit(true, budget - margin - 1000),
+            plan::camera_packages_limit(unit, budget - margin - 1000),
             1000
         );
-        assert_eq!(plan::camera_packages_limit(true, budget - margin), 0);
-        assert_eq!(plan::camera_packages_limit(true, budget + 500), 0);
+        assert_eq!(plan::camera_packages_limit(unit, budget - margin), 0);
+        assert_eq!(plan::camera_packages_limit(unit, budget + 500), 0);
         // The backstop (the limit, the grace, a few seconds to stop) ends
-        // inside the unit's budget for every start time…
-        for elapsed in [0, 60, 600, 1260, 1261, 2000, 2579, 2580, 2700] {
-            let limit = plan::camera_packages_limit(true, elapsed);
-            if limit > 0 {
-                assert!(
-                    elapsed + limit + pk::STEP_GRACE + 15 <= budget,
-                    "{elapsed}: {limit}"
-                );
+        // inside the unit's budget for every start time and every budget…
+        for b in [1200, 1800, budget] {
+            for elapsed in [0, 60, 600, 1260, 1261, 2000, 2579, 2580, 2700] {
+                let limit = plan::camera_packages_limit(Some(b), elapsed);
+                if limit > 0 {
+                    assert!(
+                        elapsed + limit + pk::STEP_GRACE + 15 <= b,
+                        "{b} {elapsed}: {limit}"
+                    );
+                }
             }
         }
         // (That the command's own bounds fit its limit, and its backstop
         // the margin, is asserted at compile time beside the constants.)
         // An ordinary update (a few minutes) leaves the step its whole
         // limit; that is what the 45 minutes are for.
-        assert_eq!(plan::camera_packages_limit(true, 20 * 60), 1320);
+        assert_eq!(plan::camera_packages_limit(unit, 20 * 60), 1320);
+
+        // The budget itself: what systemd says of the loaded unit.
+        assert_eq!(plan::parse_timespan("45min"), Some(Some(2700)));
+        assert_eq!(plan::parse_timespan("20min\n"), Some(Some(1200)));
+        assert_eq!(plan::parse_timespan("1h 30min"), Some(Some(5400)));
+        assert_eq!(plan::parse_timespan("1min 30s"), Some(Some(90)));
+        assert_eq!(plan::parse_timespan("2min 30s 500ms"), Some(Some(150)));
+        assert_eq!(plan::parse_timespan("90s"), Some(Some(90)));
+        assert_eq!(plan::parse_timespan("infinity"), Some(None));
+        for odd in [
+            "",
+            "soon",
+            "45",
+            "min",
+            "45 min",
+            "-5min",
+            "1e3s",
+            "45minutes",
+        ] {
+            assert_eq!(plan::parse_timespan(odd), None, "{odd:?}");
+        }
+        let floor = plan::UPDATER_UNIT_BUDGET_FLOOR_SECS;
+        assert_eq!(floor, 1200);
+        assert_eq!(
+            plan::updater_unit_budget(&[Some("45min"), Some("45min")]),
+            budget
+        );
+        assert_eq!(
+            plan::updater_unit_budget(&[Some("20min"), Some("45min")]),
+            1200
+        );
+        assert_eq!(
+            plan::updater_unit_budget(&[Some("45min"), Some("10min")]),
+            600
+        );
+        assert_eq!(
+            plan::updater_unit_budget(&[Some("2h"), Some("infinity")]),
+            budget
+        );
+        assert_eq!(plan::updater_unit_budget(&[None, Some("45min")]), floor);
+        assert_eq!(
+            plan::updater_unit_budget(&[Some("45min"), Some("soon")]),
+            floor
+        );
+        assert_eq!(plan::updater_unit_budget(&[Some("5min"), None]), 300);
+        assert_eq!(
+            plan::updater_budget_argv().join(" "),
+            "show -p TimeoutStartUSec --value xorgate-updater-rs.service"
+        );
     }
 
     /// The backstop for a command that does not keep to its limit: asked
@@ -1637,6 +1836,7 @@ mod tests {
                 0,
                 Duration::from_millis(300),
                 Duration::from_secs(last_resort),
+                std::future::pending(),
                 &mut log,
             )
             .await;
@@ -1676,5 +1876,85 @@ mod tests {
             "camera packages: WARN the step did not stop and was killed; check with `xorgate-rs camera requirements`"
         );
         assert!(took < Duration::from_secs(10), "{took:?}");
+    }
+
+    /// When the RUN is asked to stop (SIGTERM: systemd stopping the unit at
+    /// its start timeout, a `systemctl stop`, a shutdown), the request is
+    /// passed on to the command and the run WAITS for it. It must: with
+    /// `KillMode=mixed` systemd SIGKILLs what is left of the unit as soon
+    /// as the main process is gone (scripts/tests/unit-ordering.sh, G).
+    #[tokio::test]
+    async fn a_stop_of_the_run_is_passed_on_and_waited_out() {
+        async fn step(tag: &str, script: &str) -> (Vec<String>, Duration) {
+            let r = rig(tag);
+            let bin = r.p.live().join(plan::BIN_SRC);
+            fs::create_dir_all(bin.parent().unwrap()).unwrap();
+            sh(&bin, script);
+            let mut log: Vec<String> = Vec::new();
+            let t0 = std::time::Instant::now();
+            camera_packages_step(
+                &r.p,
+                "/h",
+                100,
+                Duration::from_secs(60),
+                Duration::from_secs(60),
+                tokio::time::sleep(Duration::from_millis(400)),
+                &mut log,
+            )
+            .await;
+            rm_rf(&r.dir);
+            (log, t0.elapsed())
+        }
+        const PASSED: &str = "camera packages: this run was asked to stop: the step is asked to stop too, and is waited for (an apt transaction that is running finishes first)";
+        // The command is in a step it may end: it stops at once.
+        let (log, took) = step(
+            "campkg-stop1",
+            "trap 'echo \"camera packages: x: stopped on request\"; exit 1' TERM; echo 'camera packages: x: downloading y'; sleep 30 & wait",
+        )
+        .await;
+        assert_eq!(
+            log,
+            [
+                "camera packages: x: downloading y",
+                PASSED,
+                "camera packages: x: stopped on request",
+            ]
+        );
+        assert!(took < Duration::from_secs(10), "{took:?}");
+        // The command is inside its transaction: it notes the request and
+        // finishes; the run waits for it and does not signal again.
+        let (log, took) = step(
+            "campkg-stop2",
+            "trap 'echo \"camera packages: a stop was requested: waiting\"' TERM; echo 'camera packages: x: installing y'; sleep 3; echo 'camera packages: x: installed y'",
+        )
+        .await;
+        assert_eq!(
+            log,
+            [
+                "camera packages: x: installing y",
+                PASSED,
+                "camera packages: a stop was requested: waiting",
+                "camera packages: x: installed y",
+            ]
+        );
+        assert!(took >= Duration::from_secs(3), "{took:?}");
+        // No stop request: nothing is said, nothing is signalled.
+        let r = rig("campkg-stop3");
+        let bin = r.p.live().join(plan::BIN_SRC);
+        fs::create_dir_all(bin.parent().unwrap()).unwrap();
+        sh(&bin, "echo 'camera packages: x: installed y'");
+        let mut log: Vec<String> = Vec::new();
+        camera_packages_step(
+            &r.p,
+            "/h",
+            100,
+            Duration::from_secs(60),
+            Duration::from_secs(60),
+            std::future::pending(),
+            &mut log,
+        )
+        .await;
+        assert_eq!(log, ["camera packages: x: installed y"]);
+        rm_rf(&r.dir);
     }
 }

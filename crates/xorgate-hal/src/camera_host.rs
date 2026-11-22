@@ -56,6 +56,43 @@ pub fn dpkg_journal_pending(dir: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// The locks a package operation holds while it runs: apt's front-end lock
+/// (for the whole of an `apt-get install` / `upgrade`) and dpkg's own.
+pub const DPKG_LOCKS: &[&str] = &["/var/lib/dpkg/lock-frontend", "/var/lib/dpkg/lock"];
+
+/// Is a package operation running right now, i.e. does ANOTHER process
+/// hold one of `locks`? Asked with `fcntl(F_GETLK)`: a question only, the
+/// lock is never taken (taking it, even for a moment, could make a
+/// starting apt fail). `None` = it cannot be told: no lock file could be
+/// opened (they are root's, mode 0640: the unprivileged agent cannot ask).
+///
+/// While one runs, dpkg's journal is not empty and packages sit
+/// half-installed: the signs of an INTERRUPTED dpkg, but passing ones.
+pub fn dpkg_lock_held(locks: &[std::path::PathBuf]) -> Option<bool> {
+    use nix::fcntl::{fcntl, FcntlArg};
+    let mut asked = false;
+    for path in locks {
+        let Ok(file) = std::fs::File::open(path) else {
+            continue;
+        };
+        let mut query = nix::libc::flock {
+            l_type: nix::libc::F_WRLCK as nix::libc::c_short,
+            l_whence: nix::libc::SEEK_SET as nix::libc::c_short,
+            l_start: 0,
+            l_len: 0,
+            l_pid: 0,
+        };
+        if fcntl(&file, FcntlArg::F_GETLK(&mut query)).is_err() {
+            continue;
+        }
+        asked = true;
+        if query.l_type != nix::libc::F_UNLCK as nix::libc::c_short {
+            return Some(true);
+        }
+    }
+    asked.then_some(false)
+}
+
 /// `dpkg-query -W -f='${binary:Package}\t${Version}\t${db:Status-Abbrev}\n' [names…]`:
 /// the database's word on `names`, or on EVERY package when `names` is
 /// `None`. `None` = it could not be run (not found, or killed after

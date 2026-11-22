@@ -36,14 +36,33 @@ ExecStart=/usr/local/bin/xorgate-rs update
 # complete, `xorgate-rs update` installs the extra OS packages a declared
 # camera sensor needs (`xorgate-rs camera requirements --install`), which at
 # its worst takes 22 min (two downloads, an apt simulation, and an `apt-get
-# install` that is given 10 min and is NEVER cut short). When this timeout
-# fires, systemd SIGTERMs every process of the unit, apt and dpkg included, so
-# it must not be able to fall into that install: the update gives the step only
-# what is left of these 45 min less a margin
-# (xorgate_core::update_plan::{UPDATER_UNIT_BUDGET_SECS, camera_packages_limit};
-# a test ties the number to this line), and the step starts the install only
-# when it can finish inside that.
+# install` that is given 10 min and is NEVER cut short). The update gives the
+# step only what is left of these 45 min less a margin, and that is what
+# systemd says the LOADED unit's budget is, not what this file says
+# (xorgate_core::update_plan::{updater_unit_budget, camera_packages_limit}; a
+# test ties the number to this line); the step starts the install only when it
+# can finish inside that.
 TimeoutStartSec=45min
+# What a stop of this unit does to a running `apt-get install` (also two
+# deliberate differences from the JS unit, which has neither line). A stop is
+# the start timeout above, a `systemctl stop`, or a shutdown / reboot.
+#
+# KillMode=mixed: the stop's SIGTERM goes to the MAIN process only (the
+# updater), not to the whole control group as the default would: apt and dpkg
+# are not signalled. But systemd SIGKILLs whatever is left of the unit the
+# moment the main process is gone, so the updater must not die of that SIGTERM
+# while the step runs: it passes the stop on to the step and waits for it. The
+# step ends a download or a simulation at once, and finishes an `apt-get
+# install` that has begun, with what follows it (hold, restart).
+#
+# TimeoutStopSec=15min: how long systemd waits for that before it kills what is
+# left. An install and what follows it take at most 12.5 min (600 + 150 s;
+# xorgate_core::update_plan::UPDATER_UNIT_STOP_SECS, a test ties it to this
+# line). With nothing to protect the unit stops at once.
+#
+# Proven with a real systemd 252: scripts/tests/unit-ordering.sh, section G.
+KillMode=mixed
+TimeoutStopSec=15min
 # `xorgate-rs update` reads /etc/xorgate/agent.env itself (for the dist bucket
 # URL and version), so no EnvironmentFile is needed here. A runtime drop-in
 # (`Environment=DEVICE_DIST_BUCKET_URL=…`) overrides it without editing the JS

@@ -70,6 +70,17 @@ pub const REQUIRED_MEMBERS: &[&str] = &[BIN_SRC, UNIT_SRC, "build-info.json"];
 /// itself may take many minutes over LTE.
 pub const UPDATER_UNIT_BUDGET_SECS: u64 = 45 * 60;
 
+/// `TimeoutStopSec` of `systemd/xorgate-updater-rs.service`, in seconds (a
+/// test ties the two): how long systemd waits, after it asked the updater
+/// to stop, before it kills what is left of the unit. It must outlast an
+/// `apt-get install` that had just begun and what follows it.
+pub const UPDATER_UNIT_STOP_SECS: u64 = 15 * 60;
+
+const _: () = assert!(
+    crate::camera_packages::T_INSTALL + crate::camera_packages::T_AFTER + 120
+        <= UPDATER_UNIT_STOP_SECS
+);
+
 /// Kept free at the end of the unit's budget: the step's backstop
 /// (`camera_packages::STEP_GRACE` and a few seconds to stop) and the
 /// updater's own exit.
@@ -84,22 +95,88 @@ const _: () = assert!(
         <= UPDATER_UNIT_BUDGET_SECS
 );
 
+/// The smallest start budget an updater unit of ours has had (the JS
+/// unit's 20 min, which the Rust unit had until it gained the
+/// camera-packages step). Assumed when the LOADED unit's budget cannot be
+/// read: the conservative answer.
+pub const UPDATER_UNIT_BUDGET_FLOOR_SECS: u64 = 20 * 60;
+
+/// The updater's own unit, for `systemctl show`.
+pub const UPDATER_UNIT_NAME: &str = "xorgate-updater-rs.service";
+
+/// `systemctl show -p TimeoutStartUSec --value <unit>`.
+pub fn updater_budget_argv() -> [&'static str; 5] {
+    [
+        "show",
+        "-p",
+        "TimeoutStartUSec",
+        "--value",
+        UPDATER_UNIT_NAME,
+    ]
+}
+
+/// A systemd time span as `systemctl show` prints it (`45min`, `1h 30min`,
+/// `1min 30s`, `infinity`), in whole seconds. `Some(None)` = `infinity`;
+/// `None` = not a span this reads.
+pub fn parse_timespan(shown: &str) -> Option<Option<u64>> {
+    let shown = shown.trim();
+    if shown == "infinity" {
+        return Some(None);
+    }
+    let mut total: u64 = 0;
+    let mut any = false;
+    for word in shown.split_whitespace() {
+        let digits = word.chars().take_while(char::is_ascii_digit).count();
+        let (n, unit) = word.split_at(digits);
+        let n: u64 = n.parse().ok()?;
+        let secs = match unit {
+            "us" | "ms" => 0,
+            "s" => n,
+            "min" => n.checked_mul(60)?,
+            "h" => n.checked_mul(3600)?,
+            "d" => n.checked_mul(86_400)?,
+            "w" => n.checked_mul(604_800)?,
+            _ => return None,
+        };
+        total = total.checked_add(secs)?;
+        any = true;
+    }
+    any.then_some(Some(total))
+}
+
+/// The start budget this run of the updater unit may count on, from what
+/// `systemctl show` said of the LOADED unit (`shown`: one answer per time
+/// it was asked; `None` = the question failed): the smallest of the
+/// answers and of this build's own unit file, and the FLOOR as soon as one
+/// answer is missing or unreadable. The unit file on disk is not the
+/// authority: a `daemon-reload` may have failed, a drop-in may shorten it.
+pub fn updater_unit_budget(shown: &[Option<&str>]) -> u64 {
+    let mut budget = UPDATER_UNIT_BUDGET_SECS;
+    for answer in shown {
+        match answer.and_then(parse_timespan) {
+            Some(Some(secs)) => budget = budget.min(secs),
+            Some(None) => {}
+            None => budget = budget.min(UPDATER_UNIT_BUDGET_FLOOR_SECS),
+        }
+    }
+    budget
+}
+
 /// The time limit `xorgate-rs update` gives the camera-packages step, in
 /// seconds, `elapsed` seconds into the run.
-/// - By hand (`under_unit` false): the step's own limit. Nothing else
+/// - By hand (`unit_budget` `None`): the step's own limit. Nothing else
 ///   bounds the run.
-/// - Under the updater unit: no more than what is left of the unit's
-///   budget less the margin, so that systemd's own timeout (which SIGTERMs
-///   every process of the unit, apt and dpkg included) cannot fall into
-///   the step. The step starts the real `apt-get install` only when it can
-///   finish inside its limit; with too little left it says so and installs
-///   nothing.
-pub fn camera_packages_limit(under_unit: bool, elapsed: u64) -> u64 {
+/// - Under the updater unit (`unit_budget` = [`updater_unit_budget`]): no
+///   more than what is left of the unit's budget less the margin, so that
+///   systemd's own timeout cannot fall into the step. The step starts the
+///   real `apt-get install` only when it can finish inside its limit; with
+///   too little left it says so and installs nothing.
+pub fn camera_packages_limit(unit_budget: Option<u64>, elapsed: u64) -> u64 {
     let own = crate::camera_packages::STEP_LIMIT;
-    if !under_unit {
-        return own;
+    match unit_budget {
+        None => own,
+        Some(budget) => own.min(budget.saturating_sub(elapsed + UPDATER_UNIT_MARGIN_SECS)),
     }
-    own.min(UPDATER_UNIT_BUDGET_SECS.saturating_sub(elapsed + UPDATER_UNIT_MARGIN_SECS))
 }
 
 /// The agent's home where neither the environment nor `agent.env` names

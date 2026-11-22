@@ -16,6 +16,7 @@ pub mod led;
 pub mod logs;
 pub mod manage;
 pub mod obd;
+pub mod out;
 pub mod pipeline;
 pub mod process_inspect;
 pub mod recording;
