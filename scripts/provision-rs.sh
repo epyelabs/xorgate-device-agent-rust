@@ -20,7 +20,8 @@
 # ModemManager off + stale usb0 default routes -> 1 apt -> 1b IMU -> 1c GStreamer ->
 # P2 stage + smoke-exec -> 2 claim -> 3 /etc/xorgate -> 4 swap -> 5b wrapper
 # -> 6 units, sudoers, helpers, updater, logind -> 7 modem -> 7b uplink ->
-# 8 kvs.json, hardware.json, pipelines -> 8b camera lines -> P9 enable + start +
+# 8 kvs.json, hardware.json, pipelines -> 8b camera lines -> 8c camera packages ->
+# P9 enable + start +
 # wait <= 90 s for active.
 #
 # Every system file is written cmp-before-write (identical bytes + mode +
@@ -1048,6 +1049,30 @@ provision_main() {
   else
     log "WARN: no config.txt found; skipping camera overlays"
   fi
+
+  # 8c. The extra OS packages the declared sensors need (Rust-only; today the
+  #     IMX335, which needs Arducam's libcamera build). The installed binary
+  #     does it all: `camera requirements --install` downloads what the
+  #     compiled-in sensor catalog pins, checks size and sha256 BEFORE anything
+  #     is installed, installs exactly those files with apt in one transaction
+  #     and holds them. It prints nothing when no sensor of the claim needs a
+  #     set. A failure never fails the provisioning: it is a WARN, the system
+  #     is as it was, and `sudo xorgate-rs update` (or the console's Update)
+  #     tries again. --no-restart: the agent is started below.
+  local pkg_out pkg_rc=0 pkg_line
+  pkg_out=$(timeout 1500 "$RS_PREFIX/bin/xorgate-rs" camera requirements --install --no-restart --quiet --from-claim "$RESP" 2>/dev/null) || pkg_rc=$?
+  printf '%s\n' "$pkg_out" | while IFS= read -r pkg_line; do
+    case $pkg_line in
+      'camera packages: WARN '*) log "WARN: camera packages: ${pkg_line#camera packages: WARN }" ;;
+      'camera packages: '*) log "  $pkg_line" ;;
+    esac
+  done
+  case $pkg_rc in
+    0) ;;
+    124|137) log "WARN: camera packages: the install did not finish within 25 min and was stopped; run \`sudo xorgate-rs camera requirements --install\` once the device is online" ;;
+    *) printf '%s\n' "$pkg_out" | grep -q '^camera packages: WARN ' \
+         || log "WARN: camera packages: xorgate-rs camera requirements failed (exit $pkg_rc); the extra packages of the camera sensors were not installed. Run \`sudo xorgate-rs camera requirements --install\`" ;;
+  esac
 
   # P9. Enable + start; wait for READY (Type=notify) <= START_WAIT_SECS.
   log "starting $RS_SVC"

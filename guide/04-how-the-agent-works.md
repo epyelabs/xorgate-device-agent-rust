@@ -351,6 +351,12 @@ red. The resolved state is also published as `system.led_state` and `system.heal
 
   The installer writes the first lines with the same code: `xorgate-rs camera apply --from-claim
   <file>` (`cli/camera.rs`), run as root by `scripts/provision-rs.sh` step 8b.
+
+  A sensor may need OS packages the stock image lacks (the IMX335: Arducam's libcamera build). The
+  agent only REPORTS that (`requirements-missing`, with what to run): it is unprivileged and
+  installs nothing. `xorgate-rs camera requirements --install` does, as root, from the catalog's
+  pinned files; the installer (step 8c) and `xorgate-rs update` run it. See `guide/07`, "The extra
+  packages of a sensor".
 - **SMS reader** (`sms.rs`): reads stored SMS over the modem's spare AT port without marking them
   read, for the `read_sms` command and `xorgate-rs sms`.
 

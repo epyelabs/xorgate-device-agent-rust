@@ -11,6 +11,7 @@
 //! `restart` are systemd's job.
 
 pub mod camera;
+pub mod camera_packages;
 pub mod led;
 pub mod logs;
 pub mod manage;
@@ -91,6 +92,9 @@ Commands:
              devices (never pairs); 'obd status' prints the obd line + last vehicle profile.
              Settings: 'set obd.enabled on', 'set obd.adapter <MAC>', 'set obd.pin <digits>',
              'set obd.poll-hz <0.2-2>', 'set obd.power-source <switched|constant>'.
+  camera     Extra OS packages of a camera sensor: 'camera requirements' lists what the
+             declared sensors need (required and installed versions);
+             'sudo xorgate-rs camera requirements --install' installs and holds them
   logs       Print the daemon log   (-f follow, -n N lines, --clear truncate;
              the journal of xorgate-agent-rs when there is no agent.log)
   update     Fetch the latest agent build, install it, and restart the service

@@ -8,6 +8,7 @@
 //! the uploader that consumes them is Phase 3.
 
 pub mod backoff;
+pub mod fetch;
 pub mod iot_creds;
 pub mod mqtt;
 pub mod s3;

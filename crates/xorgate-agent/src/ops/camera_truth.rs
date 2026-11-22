@@ -1368,7 +1368,7 @@ mod tests {
             (
                 "config".into(),
                 "requirements-missing".into(),
-                "csi0 is set to imx335, which needs extra packages that are not installed in the required versions: libcamera0.5 0.5.2+rpt20250909-1 (not installed), libcamera-ipa 0.5.2+rpt20250909-1 (not installed). The camera will not appear until they are installed.".into()
+                "csi0 is set to imx335, which needs extra packages that are not installed in the required versions: libcamera0.5 0.5.2+rpt20250909-1 (not installed), libcamera-ipa 0.5.2+rpt20250909-1 (not installed). The camera will not appear until they are installed: run `sudo xorgate-rs update` on the device (the console's Update button does the same), or `sudo xorgate-rs camera requirements --install`.".into()
             )
         );
         assert_eq!(

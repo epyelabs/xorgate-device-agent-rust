@@ -34,7 +34,7 @@ use xorgate_core::camera_sensors::{apply_plan, line_op, port_boot_line, wanted, 
 use xorgate_core::js;
 use xorgate_core::settings::clip;
 
-pub const USAGE: &str = "usage: xorgate-rs camera apply --from-claim <claim.json>\n  Writes the camera dtoverlay lines of /boot/firmware/config.txt for the ports the claim\n  response declares (its cameraSensors, else hardware.video[].sensor, else two imx290 lines).\n  Run as root. Never reboots.";
+pub const USAGE: &str = "usage: xorgate-rs camera apply --from-claim <claim.json>\n  Writes the camera dtoverlay lines of /boot/firmware/config.txt for the ports the claim\n  response declares (its cameraSensors, else hardware.video[].sensor, else two imx290 lines).\n  Run as root. Never reboots.\n\n       xorgate-rs camera requirements [--install] [--from-claim <claim.json>] [--no-restart] [--quiet]\n  Lists (or, as root with --install, installs) the extra OS packages the declared sensors need.";
 
 /// Marks the line that says a port was left with no camera line at all
 /// (the installer turns it into its own WARN).
@@ -94,6 +94,10 @@ impl CameraEnv {
 
 /// `main()` → exit code. `rest` excludes `camera`.
 pub fn main(rest: &[String]) -> i32 {
+    // `camera requirements …`: the extra OS packages of a sensor.
+    if rest.first().map(String::as_str) == Some("requirements") {
+        return super::camera_packages::main(&rest[1..]);
+    }
     run(rest, &CameraEnv::from_process())
 }
 

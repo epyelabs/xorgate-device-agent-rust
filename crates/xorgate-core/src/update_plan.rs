@@ -63,6 +63,10 @@ pub const CAMROTATE_BIN: &str = "/usr/local/bin/xorgate-camrotate";
 /// checked `dist/worker.js` + the unit, `update.ts:271-277`).
 pub const REQUIRED_MEMBERS: &[&str] = &[BIN_SRC, UNIT_SRC, "build-info.json"];
 
+/// The agent's home where neither the environment nor `agent.env` names
+/// one: the wrapper's default below (the unit's `StateDirectory`).
+pub const DEFAULT_HOME: &str = "/var/lib/xorgate";
+
 /// `WRAPPER_BODY` (`update.ts:38-40`) with `node dist/cli.js` → the Rust
 /// binary (§5 step 6). The `XORGATE_HOME` default is the shipped one
 /// (`/var/lib/xorgate`, the unit's `StateDirectory`), as the TS.

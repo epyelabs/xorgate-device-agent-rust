@@ -116,6 +116,7 @@ What gets uploaded, and the guard rails:
 | `/usr/local/bin/xorgate-camcfg` (+ `xorgate-camcfg.overlays`) | the camera-line owner: the root helper through which the agent changes the camera `dtoverlay=` lines of `config.txt`, and its allow-list: the overlay names it may write and, per overlay, the parameter names (generated from the sensor catalog). It builds every line itself from checked parts and never reboots |
 | `/etc/sudoers.d/025_xorgate-camcfg` | lets the agent run that helper, nothing else |
 | `/var/lib/xorgate/camera-boot-lines.json` | each camera port's `dtoverlay=` line as the agent first saw it in the current boot (keyed by the kernel's boot id). A line that differs now waits for a reboot. Rust-only; rewritten once per boot; safe to delete |
+| `/var/lib/xorgate-packages/camera-packages.json` | root-owned: which extra OS packages `xorgate-rs camera requirements --install` put there for a camera sensor, and the versions it replaced (for a rollback by hand). Its download directories (`download-XXXXXX`, mode 0700) exist only while a download runs |
 | `/etc/xorgate/` | identity, `agent.env`, manifests: shared with the reference agent, read-only for the converter |
 | `/var/lib/xorgate/` | settings and state: shared with the reference agent |
 
@@ -164,7 +165,10 @@ The cloud's `update` command (or the console's update button) makes the agent ru
    automatically** if any later step fails;
 4. reinstalls the units, the wrapper, the updater unit and the sudoers grant (and the shared modem
    and system assets only on a device that no longer has the reference agent);
-5. reloads systemd and restarts the agent, only if it was running.
+5. runs the NEW build's `xorgate-rs camera requirements --install --no-restart --quiet`: the
+   extra OS packages a declared camera sensor needs (next section). It prints nothing when
+   nothing is to do, and it never fails the update;
+6. reloads systemd and restarts the agent, only if it was running.
 
 All the decisions and every file body are in `xorgate_core::update_plan`; `update.rs` is only the
 I/O, with a timeout on every tool it runs. It requires root. By hand:
@@ -175,6 +179,95 @@ The updater unit's drop-in `10-dist.conf` overrides it to `latest`. A hand-run
 `sudo xorgate-rs update` does not see that drop-in, so pass `--tag latest`.
 
 Test it with `tools/update-e2e/run.sh`, which uses a local fake bucket.
+
+### The extra packages of a sensor
+
+Some sensors need OS packages the stock image does not have. Today that is one case: the IMX335
+needs Arducam's libcamera build (two packages, `libcamera0.5` and `libcamera-ipa`, that replace
+the stock ones of the same name). Which packages, in which version, from which URL, with which
+sha256 and size is pinned in the sensor catalog (`crates/xorgate-core/data/camera-catalog.json`,
+`packageSets`), per OS release and architecture. The catalog is compiled into the binary.
+
+```sh
+xorgate-rs camera requirements                 # anyone: what the declared sensors need, required and installed versions
+sudo xorgate-rs camera requirements --install  # root: install what is missing, hold it, restart the agent
+#   --from-claim <claim.json>   the sensors of a claim response instead of the held cameraSensors setting
+#   --no-restart                do not restart the agent afterwards
+#   --quiet                     print only what was changed or what failed
+```
+
+Exit codes: 0 nothing is needed or everything is in place; 1 something is missing (listing) or
+an install did not succeed; 2 usage or an unreadable claim; 3 refused for this device (the
+catalog lists no packages for its OS release and architecture, or an entry is not usable).
+
+**The unprivileged agent never installs anything.** It reports `requirements-missing` with the
+package names and "run `sudo xorgate-rs update` on the device (the console's Update button does
+the same), or `sudo xorgate-rs camera requirements --install`". Three things run the install, all
+as root: the provisioner (step 8c, with the claim, before the agent starts), `xorgate-rs update`
+(step 5 above, so the console's Update button installs them), and a person at a shell. In the
+first two a failure is a `WARN` line and nothing more: the device is as it was, and the next
+update tries again.
+
+What `--install` does (`cli/camera_packages.rs`; the plan and every check are in
+`xorgate_core::camera_packages`, the download in `xorgate_cloud::fetch`):
+
+1. **Refuses** in one sentence when the catalog has no packages for this OS release and
+   architecture, or a pinned entry is not plain. Nothing is changed.
+2. **Downloads** each missing package over HTTPS from the catalog's URL into a new directory under
+   `/var/lib/xorgate-packages` that only root can read. The URL's host must be `github.com` (the
+   backend's `CAMERA_PACKAGE_HOSTS`). GitHub answers a release-asset download with a redirect to
+   its asset store, so a redirect is followed only to `github.com`,
+   `release-assets.githubusercontent.com` or `objects.githubusercontent.com` (the store's earlier
+   name), over HTTPS, at most four times; the HTTP library itself follows none. No credentials,
+   no proxy. Bounds: 20 s to connect, 30 s between reads, 5 minutes in all, and never more bytes
+   than the catalog's `bytes`.
+3. **Verifies** size and sha256 against the pin BEFORE anything is installed. A file that is not
+   the pinned one is refused. The directory is removed on every path, so no partial file stays.
+4. **Asks apt first**: `apt-get -s install <those files>` (a simulation) and reads the plan. Apt
+   may install the pinned packages in the pinned versions and nothing else, and remove nothing;
+   otherwise the install is refused before the system is touched.
+5. **Installs** exactly those files with `apt-get install` in one transaction, checks with
+   `dpkg-query` that the versions are now the pinned ones, and writes what it replaced to
+   `/var/lib/xorgate-packages/camera-packages.json`.
+6. **Holds** the packages (`apt-mark hold`) when the set says so.
+7. **Restarts the agent** (`systemctl try-restart`, so only if it runs) unless `--no-restart`:
+   the camera is then listed within seconds. Without the restart it appears at the agent's next
+   camera re-listing, at most five minutes later. No reboot is needed either way.
+
+It is idempotent: a set that is installed and held costs no download and no apt call. It never
+runs a script of the package's vendor (Arducam's install script pulls in about 200 packages and
+runs remote shell code), never adds an apt source, and passes no catalog string to a shell:
+every tool is run with an argument vector and a fixed environment
+(`PATH=/usr/sbin:/usr/bin:/sbin:/bin`, `DEBIAN_FRONTEND=noninteractive`, `LC_ALL=C`), by absolute
+path (`/usr/bin/apt-get`, `/usr/bin/apt-mark`, `/usr/bin/dpkg-query`).
+
+**The hold and a later `apt upgrade`.** The stock `libcamera0.5` and `libcamera-ipa` come from the
+Raspberry Pi apt repository, and a newer stock version would replace Arducam's build on the next
+`apt upgrade` and take the IMX335 helper with it. The hold prevents that: apt keeps the two
+packages back and says so ("The following packages have been kept back"), and it also keeps
+back whatever needs the newer libcamera (`gstreamer1.0-libcamera`, as seen on bench 2). The rest
+of the upgrade goes through. The cost: that device gets no stock libcamera fixes until the
+catalog pins a newer build and the agent is updated (the update then installs over the hold,
+`--allow-change-held-packages`, and holds again). Someone who runs `apt-mark unhold` or
+`apt full-upgrade` by hand and loses the packages sees the port turn `requirements-missing`
+again; the next `xorgate-rs update` puts them back.
+
+**Going back to the stock packages** is done by hand (there is no `--remove`): the listing prints
+the two commands, from the record of what it replaced.
+
+```sh
+xorgate-rs camera requirements        # ends with "to go back: …"
+sudo apt-mark unhold libcamera0.5 libcamera-ipa
+sudo apt-get install --allow-downgrades libcamera0.5=<replaced version> libcamera-ipa=<replaced version>
+```
+
+If apt no longer offers the replaced version, take the one `apt-cache policy libcamera0.5` shows
+as the candidate of the Raspberry Pi repository and install that with the same command. Then
+choose another sensor for the port, or the next update installs the set again.
+
+**A first update INTO this build does not install them yet.** `xorgate-rs update` is run by the
+build that is being replaced, and a build before this one has no such step. The port then reads
+`requirements-missing` with the advice above; a second update (or the command by hand) installs.
 
 ### Before releasing a build that brings the camera-line owner
 

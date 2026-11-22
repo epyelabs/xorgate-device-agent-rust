@@ -210,7 +210,7 @@ What to expect when it does not work, as `xorgate-rs status` and the console sho
 | `reboot-required` | the line was changed since this boot: reboot |
 | `not-detected` | no camera of that sensor answered: the cable, or the wrong sensor was chosen |
 | `no-frames` | a camera is listed but delivers no picture (an `imx290` line lists a camera for anything) |
-| `requirements-missing` | the sensor needs packages or an OS release this device does not have (IMX335: Arducam's libcamera packages) |
+| `requirements-missing` | the sensor needs packages or an OS release this device does not have (IMX335: Arducam's libcamera packages). Install them with `sudo xorgate-rs update` (or the console's Update button), or `sudo xorgate-rs camera requirements --install`; the camera then appears without a reboot. `xorgate-rs camera requirements` lists what is needed and installed (`guide/07`) |
 | `unknown-sensor` | the setting names a sensor this agent build does not know: update the agent |
 | `mismatch` | the setting is not written to `config.txt` (the status of the setting says why), or another sensor is listed than the declared one |
 

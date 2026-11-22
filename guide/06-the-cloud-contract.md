@@ -164,7 +164,11 @@ Value rules:
   - `unknown-sensor`: the setting names a sensor this build's catalog lacks. Nothing is written.
   - `requirements-missing`: the declared sensor needs an OS release the device does not run, or
     packages that `dpkg-query` does not show installed in the catalog's versions, and the camera is
-    not listed. The agent installs nothing; the sentence names the packages.
+    not listed. The agent itself installs nothing (it is unprivileged); the sentence names the
+    packages and says what does: "run `sudo xorgate-rs update` on the device (the console's Update
+    button does the same), or `sudo xorgate-rs camera requirements --install`" (see "The extra
+    packages of a sensor" in `guide/07`). A package on hold counts as installed (dpkg shows it
+    as `hi`).
   - `reboot-required` also covers a camera line that differs from the one the device booted with
     (an option, the rotation, a line removed or added), on a managed and on an unmanaged port.
     A real fault outranks it: when the capture is failing or nothing answers and the pending

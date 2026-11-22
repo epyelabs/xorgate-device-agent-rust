@@ -39,10 +39,27 @@ pub fn package_arch() -> Option<String> {
 /// killed after [`DPKG_QUERY_TIMEOUT`]). A package dpkg does not know makes
 /// it exit 1 and still print the others: that is an answer.
 pub fn query_packages(names: &[String]) -> Option<BTreeMap<String, String>> {
+    query_packages_with(Path::new("dpkg-query"), None, names)
+}
+
+/// [`query_packages`] with the program and its environment named: a ROOT
+/// caller (`xorgate-rs camera requirements --install`) runs
+/// `/usr/bin/dpkg-query`, not whatever `PATH` finds, with `env` as its
+/// WHOLE environment (`None` = inherited, as the unprivileged agent does).
+pub fn query_packages_with(
+    program: &Path,
+    env: Option<&[(String, String)]>,
+    names: &[String],
+) -> Option<BTreeMap<String, String>> {
     if names.is_empty() {
         return Some(BTreeMap::new());
     }
-    let mut child = crate::child::std_command("dpkg-query")
+    let mut cmd = crate::child::std_command(program);
+    if let Some(env) = env {
+        cmd.env_clear()
+            .envs(env.iter().map(|(k, v)| (k.as_str(), v.as_str())));
+    }
+    let mut child = cmd
         .arg("-W")
         .arg("-f=${Package}\\t${Version}\\t${db:Status-Abbrev}\\n")
         .args(names)

@@ -576,14 +576,24 @@ pub struct HostFacts {
 }
 
 /// `dpkg-query -W -f='${Package}\t${Version}\t${db:Status-Abbrev}\n'`
-/// output → the packages that are installed (`ii`), with their versions.
+/// output → the packages that are INSTALLED, with their versions.
+///
+/// The status abbreviation is `<wanted><status><error>`. Installed is the
+/// STATUS `i`, whatever is wanted: `ii` normally, and `hi` for a package ON
+/// HOLD (`apt-mark hold` sets the wanted state to `h`), which is exactly
+/// what the packages of a sensor's set are once they are installed and
+/// held. (Reading only `ii` took every held package for "not installed".)
+/// A package that is half-installed or has only its config files left
+/// (`iU`, `iF`, `rc`, …) is not installed.
 pub fn parse_dpkg_query(stdout: &str) -> BTreeMap<String, String> {
     stdout
         .lines()
         .filter_map(|l| {
             let mut f = l.split('\t');
             let (name, version, status) = (f.next()?, f.next()?, f.next()?);
-            (status.trim_start().starts_with("ii") && !version.is_empty())
+            let mut st = status.chars();
+            let (wanted, state) = (st.next()?, st.next()?);
+            (matches!(wanted, 'i' | 'h') && state == 'i' && !version.is_empty())
                 .then(|| (name.to_string(), version.to_string()))
         })
         .collect()
@@ -613,6 +623,12 @@ pub fn required_package_names(sensor: &Sensor, catalog: &Catalog) -> Vec<String>
     out.dedup();
     out
 }
+
+/// What installs a sensor's missing packages. The agent cannot (it is
+/// unprivileged): `xorgate-rs update` runs as root and installs them after
+/// the build (`cli::update`, step 7b), and the console's Update button
+/// starts that same command (`xorgate-updater-rs.service`).
+pub const INSTALL_ADVICE: &str = "run `sudo xorgate-rs update` on the device (the console's Update button does the same), or `sudo xorgate-rs camera requirements --install`";
 
 /// What `sensor` needs that the device does not have, as the tail of a
 /// sentence ("<port> is set to <sensor>, which ….", without the final full
@@ -652,7 +668,7 @@ pub fn missing_requirements(
         .collect();
     (!missing.is_empty()).then(|| {
         format!(
-            "needs extra packages that are not installed in the required versions: {}. The camera will not appear until they are installed",
+            "needs extra packages that are not installed in the required versions: {}. The camera will not appear until they are installed: {INSTALL_ADVICE}",
             missing.join(", ")
         )
     })
@@ -1334,7 +1350,7 @@ mod tests {
         assert_eq!(missing_requirements(imx290, c, &host(&[])), None);
         assert_eq!(
             missing_requirements(imx335, c, &host(&[("libcamera0.5", "0.5.0+rpt20250429-1")])).as_deref(),
-            Some("needs extra packages that are not installed in the required versions: libcamera0.5 0.5.2+rpt20250909-1 (installed: 0.5.0+rpt20250429-1), libcamera-ipa 0.5.2+rpt20250909-1 (not installed). The camera will not appear until they are installed")
+            Some("needs extra packages that are not installed in the required versions: libcamera0.5 0.5.2+rpt20250909-1 (installed: 0.5.0+rpt20250429-1), libcamera-ipa 0.5.2+rpt20250909-1 (not installed). The camera will not appear until they are installed: run `sudo xorgate-rs update` on the device (the console's Update button does the same), or `sudo xorgate-rs camera requirements --install`")
         );
         // What could not be found out is not a missing requirement.
         assert_eq!(missing_requirements(imx335, c, &HostFacts::default()), None);
@@ -1384,6 +1400,18 @@ mod tests {
                 "0.5.2+rpt20250909-1".to_string()
             )]
             .into()
+        );
+        // A package ON HOLD reads `hi` (wanted: hold, status: installed):
+        // it IS installed. Found with the real dpkg (`apt-mark hold` is what
+        // the installer does to a sensor's packages). Half-installed,
+        // unpacked and config-files states are not.
+        assert_eq!(
+            parse_dpkg_query(
+                "a\t1\thi \nb\t2\tii \nc\t3\tiU \nd\t4\tiF \ne\t5\trc \nf\t6\tpn \ng\t7\tiHR\nh\t8\tri \n"
+            )
+            .into_iter()
+            .collect::<Vec<_>>(),
+            [("a".to_string(), "1".to_string()), ("b".to_string(), "2".to_string())]
         );
         assert_eq!(
             os_codename("PRETTY_NAME=\"Debian GNU/Linux 12 (bookworm)\"\nVERSION_CODENAME=bookworm\nID=debian\n").as_deref(),

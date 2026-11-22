@@ -189,6 +189,25 @@ elif a[:1] == ["update"]:
     sys.exit(3)
 elif a[:1] == ["led"]:
     log("rs led " + " ".join(a[1:]))
+elif a[:2] == ["camera", "requirements"]:
+    # The stand-in for `xorgate-rs camera requirements --install` (step 8c).
+    # The REAL command is tested by crates/xorgate-agent/tests/camera_packages.rs
+    # (the real download against a local server, fake and real apt). This
+    # models what the provisioner sees of it: its arguments, its
+    # `camera packages: ` lines, other output it must not pass on, its exit code.
+    log("rs " + " ".join(a))
+    mode = setting("campkg-mode", "none")
+    if mode == "installed":
+        print("camera packages: arducam-libcamera: installed libcamera0.5 0.5.2+rpt20250909-1 (was 0.5.2+rpt20250903-1), libcamera-ipa 0.5.2+rpt20250909-1 (was 0.5.2+rpt20250903-1)")
+        print("not a camera-packages line")
+        print("camera packages: arducam-libcamera: apt hold set on libcamera0.5, libcamera-ipa")
+    elif mode == "failed":
+        print("camera packages: arducam-libcamera: downloading libcamera0.5 0.5.2+rpt20250909-1 (527340 bytes)")
+        print("camera packages: WARN arducam-libcamera NOT installed: libcamera0.5_0.5.2+rpt20250909-1_arm64.deb was not accepted: sha256 mismatch: the file is 00, the catalog pins 85; nothing was changed. imx335 (cam0) will not appear until this succeeds: run `sudo xorgate-rs camera requirements --install` again")
+        sys.exit(1)
+    elif mode == "crash":
+        sys.stderr.write("thread 'main' panicked\n")
+        sys.exit(9)
 elif a[:3] == ["camera", "apply", "--from-claim"] and len(a) == 4:
     # The stand-in for `xorgate-rs camera apply` (step 8b). The REAL command
     # is tested against the REAL helper on fixture files by

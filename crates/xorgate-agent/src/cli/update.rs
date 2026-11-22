@@ -34,6 +34,8 @@ const TAR_TIMEOUT: Duration = Duration::from_secs(2 * 60);
 const SMOKE_TIMEOUT: Duration = Duration::from_secs(5);
 const VISUDO_TIMEOUT: Duration = Duration::from_secs(10);
 const SYSTEMCTL_TIMEOUT: Duration = Duration::from_secs(90);
+/// The camera-packages step: two downloads and one apt transaction.
+const CAMERA_PACKAGES_TIMEOUT: Duration = Duration::from_secs(20 * 60);
 
 /// The external tools, by `PATH` name in production.
 #[derive(Debug, Clone)]
@@ -520,6 +522,16 @@ pub async fn update(
         return Err(format!("install step failed, rolled back: {e}"));
     }
 
+    // Step 7b (RUST-ONLY, support-other-camera-models Phase 4): the extra
+    // OS packages the declared camera sensors need, by the NEW build (its
+    // catalog holds the pins). Before the restart below, so the restarted
+    // agent finds them. Never fails the update.
+    let home = env("XORGATE_HOME")
+        .filter(|h| !h.is_empty())
+        .or_else(|| file.get("XORGATE_HOME").cloned().filter(|h| !h.is_empty()))
+        .unwrap_or_else(|| plan::DEFAULT_HOME.to_string());
+    camera_packages_step(p, &home, out).await;
+
     // Step 8: reload + restart (`update.ts:358-364`), Q5.
     run_s(
         &p.tools.systemctl,
@@ -586,6 +598,49 @@ async fn verify_checksum(
     }
     out.log(&plan::checksum_ok_log(&have));
     Ok(())
+}
+
+/// Step 7b: `<live>/bin/xorgate-rs camera requirements --install
+/// --no-restart --quiet`, the installed build's own command
+/// (`cli::camera_packages`): it installs the extra OS packages a declared
+/// camera sensor needs when they are missing, and prints nothing when
+/// there is nothing to do. Only its lines that begin with
+/// `camera packages: ` are passed on (a `WARN` among them when a download
+/// or a checksum failed: the system is then as it was). Whatever happens
+/// here, the update goes on: a build without the command (an older `--tag`)
+/// prints its usage, which is not passed on.
+async fn camera_packages_step(p: &UpdatePaths, home: &str, out: &mut dyn UpdateLog) {
+    let bin = p.live().join(plan::BIN_SRC);
+    let mut cmd = xorgate_hal::child::command(&bin);
+    cmd.args([
+        "camera",
+        "requirements",
+        "--install",
+        "--no-restart",
+        "--quiet",
+    ])
+    .env("XORGATE_HOME", home)
+    .stdin(std::process::Stdio::null())
+    .stdout(std::process::Stdio::piped())
+    .stderr(std::process::Stdio::null())
+    .kill_on_drop(true);
+    match tokio::time::timeout(CAMERA_PACKAGES_TIMEOUT, cmd.output()).await {
+        Err(_) => out.log(&format!(
+            "{}WARN the step did not finish within {} min and was stopped; the update itself is complete",
+            xorgate_core::camera_packages::LINE_PREFIX,
+            CAMERA_PACKAGES_TIMEOUT.as_secs() / 60
+        )),
+        // It could not be run at all: the smoke-exec ran this very binary
+        // a moment ago, so there is nothing useful to add.
+        Ok(Err(_)) => {}
+        Ok(Ok(o)) => {
+            for line in String::from_utf8_lossy(&o.stdout).lines() {
+                if line.starts_with(xorgate_core::camera_packages::LINE_PREFIX) {
+                    out.log(line);
+                }
+            }
+        }
+    }
 }
 
 /// Q13 (§5 step 4): `<staging>/bin/xorgate-rs -v` must exit 0 within 5 s and
@@ -1319,5 +1374,96 @@ mod tests {
         );
         assert!(!r.p.backup().exists() && !r.p.staging().exists());
         rm_rf(&r.dir);
+    }
+
+    /// Step 7b: after the install, the NEW build's `camera requirements
+    /// --install --no-restart --quiet` runs with the agent's home, before
+    /// the restart. Only its `camera packages: ` lines reach the log; a
+    /// WARN among them (a failed download) does not fail the update; a
+    /// build without the command says nothing here.
+    #[tokio::test]
+    async fn the_camera_packages_step_runs_the_new_build_and_never_fails_the_update() {
+        // (the build's answer to `camera …`, the lines expected in the log)
+        let cases: [(&str, &str, &[&str]); 3] = [
+            (
+                "installed",
+                "echo 'camera packages: arducam-libcamera: installed libcamera0.5 2 (was 1)'; echo 'not for the log'; exit 0",
+                &["camera packages: arducam-libcamera: installed libcamera0.5 2 (was 1)"],
+            ),
+            (
+                "failed",
+                "echo 'camera packages: WARN arducam-libcamera NOT installed: x was not accepted: sha256 mismatch; nothing was changed'; exit 1",
+                &["camera packages: WARN arducam-libcamera NOT installed: x was not accepted: sha256 mismatch; nothing was changed"],
+            ),
+            // An older build: usage on stderr, exit 2.
+            ("older", "echo 'usage: xorgate-rs camera apply' >&2; exit 2", &[]),
+        ];
+        for (name, answer, expected) in cases {
+            let r = rig(&format!("campkg-{name}"));
+            let args = r.dir.join("camera.args");
+            let banner = format!(
+                "' >/dev/null; [ \"$1\" = camera ] && {{ echo \"$XORGATE_HOME|$*\" > {}; {answer}; }}; echo 'xorgate-rs 0.0.1 (v1, dev)",
+                args.display()
+            );
+            publish(&r, "v1", &banner, true);
+            fs::write(
+                r.p.abs(plan::AGENT_ENV),
+                "DEVICE_DIST_BUCKET_URL=https://bucket.example/dist/\nXORGATE_HOME=/srv/agent-home\n",
+            )
+            .unwrap();
+            let mut log: Vec<String> = Vec::new();
+            update(&argv(&["--tag", "v1"]), &|_| None, &r.p, &mut log)
+                .await
+                .unwrap_or_else(|e| panic!("{name}: the update must not fail: {e}"));
+            // The new build was asked, with the home of agent.env.
+            assert_eq!(
+                fs::read_to_string(&args).unwrap(),
+                "/srv/agent-home|camera requirements --install --no-restart --quiet\n",
+                "{name}"
+            );
+            let got: Vec<&String> = log
+                .iter()
+                .filter(|l| {
+                    l.contains("camera packages")
+                        || l.contains("not for the log")
+                        || l.contains("usage")
+                })
+                .collect();
+            assert_eq!(got, expected.iter().collect::<Vec<_>>(), "{name}: {log:?}");
+            // ... after the install, before the reload.
+            let sc = fs::read_to_string(r.dir.join("systemctl.log")).unwrap();
+            assert_eq!(
+                sc, "is-active --quiet xorgate-agent-rs\ndaemon-reload\n",
+                "{name}"
+            );
+            assert!(r.p.live().join("bin/xorgate-rs").exists());
+            rm_rf(&r.dir);
+        }
+        // The environment's XORGATE_HOME wins; with neither, the wrapper's default.
+        for (env_home, want) in [(Some("/env/home"), "/env/home"), (None, "/var/lib/xorgate")] {
+            let r = rig("campkg-home");
+            let args = r.dir.join("camera.args");
+            let banner = format!(
+                "' >/dev/null; [ \"$1\" = camera ] && {{ echo \"$XORGATE_HOME\" > {}; exit 0; }}; echo 'xorgate-rs 0.0.1 (v1, dev)",
+                args.display()
+            );
+            publish(&r, "v1", &banner, true);
+            fs::write(
+                r.p.abs(plan::AGENT_ENV),
+                "DEVICE_DIST_BUCKET_URL=https://bucket.example/dist/\n",
+            )
+            .unwrap();
+            let env = move |k: &str| {
+                (k == "XORGATE_HOME")
+                    .then(|| env_home.map(str::to_string))
+                    .flatten()
+            };
+            let mut log: Vec<String> = Vec::new();
+            update(&argv(&["--tag", "v1"]), &env, &r.p, &mut log)
+                .await
+                .unwrap();
+            assert_eq!(fs::read_to_string(&args).unwrap(), format!("{want}\n"));
+            rm_rf(&r.dir);
+        }
     }
 }

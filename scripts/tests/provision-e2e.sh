@@ -160,6 +160,31 @@ grep -q "camera: cam0: FAILED: this agent build does not know the camera sensor"
   && ok "…its FAILED line is in the log and the agent runs" || bad "FAILED line / agent state"
 rm -f "$E/claim-mode"
 
+echo "== step 8c, the extra OS packages of a camera sensor: run by the installed binary on the claim, quiet when nothing is needed, never fatal"
+reset_device; run_boot
+expect_rc 0 "a claim whose sensors need no extra packages"
+grep -q "rs camera requirements --install --no-restart --quiet --from-claim .*/claim.json" "$E/agent.log" \
+  && ok "step 8c ran \`camera requirements --install --no-restart --quiet --from-claim\` on the claim response" || bad "8c call: $(grep 'camera' "$E/agent.log" | tail -3)"
+! grep -q 'camera packages' "$OUT" && ok "…and it says nothing when no sensor needs a set" || bad "8c noise: $(grep 'camera packages' "$OUT")"
+reset_device; echo installed > "$E/campkg-mode"; run_boot
+expect_rc 0 "the packages of a sensor were installed"
+grep -q '  camera packages: arducam-libcamera: installed libcamera0.5 0.5.2+rpt20250909-1 (was 0.5.2+rpt20250903-1)' "$OUT" && grep -q '  camera packages: arducam-libcamera: apt hold set on libcamera0.5, libcamera-ipa' "$OUT" \
+  && ok "the command's own lines are in the log" || bad "8c lines: $(grep -n 'camera packages' "$OUT")"
+! grep -q 'not a camera-packages line' "$OUT" && ok "…and nothing else of its output" || bad "8c passed on other output"
+[ "$(grep -n 'camera packages: arducam-libcamera: installed' "$OUT" | cut -d: -f1)" -gt "$(grep -n 'camera overlays' "$OUT" | head -1 | cut -d: -f1)" ] \
+  && [ "$(grep -n 'camera packages: arducam-libcamera: installed' "$OUT" | cut -d: -f1)" -lt "$(grep -n 'starting xorgate-agent-rs' "$OUT" | head -1 | cut -d: -f1)" ] \
+  && ok "…after the camera lines and BEFORE the agent is started (so no restart is needed)" || bad "8c order"
+reset_device; echo failed > "$E/campkg-mode"; run_boot
+expect_rc 0 "a failed package download does not fail the provisioning"
+grep -q 'WARN: camera packages: arducam-libcamera NOT installed: libcamera0.5_0.5.2+rpt20250909-1_arm64.deb was not accepted: sha256 mismatch' "$OUT" && grep -q 'nothing was changed' "$OUT" \
+  && ok "…it is a WARN in the command's words (what was refused, why, that nothing changed, what to run)" || bad "8c WARN: $(grep -n 'camera packages\|WARN' "$OUT" | tail -4)"
+[ "$(systemctl is-active xorgate-agent-rs)" = active ] && ok "…and the agent runs" || bad "agent state after a failed 8c"
+reset_device; echo crash > "$E/campkg-mode"; run_boot
+expect_rc 0 "a command that dies does not fail the provisioning"
+grep -q 'WARN: camera packages: xorgate-rs camera requirements failed (exit 9); the extra packages of the camera sensors were not installed' "$OUT" \
+  && ok "…and is a WARN with its exit code" || bad "8c crash WARN: $(grep -n 'camera packages' "$OUT")"
+rm -f "$E/campkg-mode"
+
 echo "== the bootstrap's pre-claim failures: no claim, nothing installed"
 reset_device; bucket_bad_sha; run_boot; expect_rc 1 "bad sha"; nothing_claimed "bad sha"
 grep -q 'checksum mismatch' "$OUT" && ok "bad sha: named" || bad "bad sha message"
