@@ -349,11 +349,7 @@ pub struct BootLines {
 }
 
 /// The port's line in force (the last that may apply), as a [`BootLine`].
-pub fn port_boot_line(
-    scoped: &[ScopedLine],
-    port: CamPort,
-    catalog: &Catalog,
-) -> Option<BootLine> {
+pub fn port_boot_line(scoped: &[ScopedLine], port: CamPort, catalog: &Catalog) -> Option<BootLine> {
     port_lines(scoped, port, catalog).last().map(|l| BootLine {
         form: line_form(&l.line, catalog),
         text: js::trim(&l.line.text).chars().take(200).collect(),
@@ -361,7 +357,12 @@ pub fn port_boot_line(
 }
 
 /// Take the snapshot of a config.txt.
-pub fn snapshot_boot_lines(boot_id: &str, text: &str, board: Board, catalog: &Catalog) -> BootLines {
+pub fn snapshot_boot_lines(
+    boot_id: &str,
+    text: &str,
+    board: Board,
+    catalog: &Catalog,
+) -> BootLines {
     let scoped = parse_scoped_lines(text, board);
     BootLines {
         boot_id: boot_id.to_string(),
@@ -465,7 +466,11 @@ pub fn required_package_names(sensor: &Sensor, catalog: &Catalog) -> Vec<String>
 /// stop), or `None` when nothing
 /// is known to be missing. A fact the agent could not find out (no
 /// `os-release`, no `dpkg-query`) is never taken for a missing requirement.
-pub fn missing_requirements(sensor: &Sensor, catalog: &Catalog, host: &HostFacts) -> Option<String> {
+pub fn missing_requirements(
+    sensor: &Sensor,
+    catalog: &Catalog,
+    host: &HostFacts,
+) -> Option<String> {
     if let Some(os) = host.os.as_deref() {
         if !sensor.requires_os.is_empty() && !sensor.requires_os.iter().any(|o| o == os) {
             return Some(format!(
@@ -549,8 +554,13 @@ fn port_of(key: &str, connector: Option<&str>) -> Result<CamPort, String> {
         .as_deref()
         .and_then(CamPort::from_token)
         .ok_or_else(|| match connector {
-            Some(c) => format!("its connector \"{}\" is not a camera port a camera line can name (csi0, csi1)", clip(c)),
-            None => "the claim carries no hardware block, and the key is not cam0 or cam1".to_string(),
+            Some(c) => format!(
+                "its connector \"{}\" is not a camera port a camera line can name (csi0, csi1)",
+                clip(c)
+            ),
+            None => {
+                "the claim carries no hardware block, and the key is not cam0 or cam1".to_string()
+            }
         })
 }
 
@@ -675,7 +685,8 @@ mod tests {
     use crate::camera_catalog::catalog;
     use serde_json::json;
 
-    const BENCH1: &str = "[all]\ncamera_auto_detect=0\ndtoverlay=imx290,cam0\ndtoverlay=imx290,cam1\n";
+    const BENCH1: &str =
+        "[all]\ncamera_auto_detect=0\ndtoverlay=imx290,cam0\ndtoverlay=imx290,cam1\n";
 
     fn op(text: &str, port: CamPort, entry: Value, mount: Option<u16>) -> Option<Vec<String>> {
         let c = catalog();
@@ -745,7 +756,10 @@ mod tests {
             "the camera sensor setting of this port has an option \"clockFrequency\" that is not a number; config.txt is left as it is"
         );
         // What the report shows as declared, however broken the entry.
-        assert_eq!(declared_id(&json!({"sensor": "imx999"})).as_deref(), Some("imx999"));
+        assert_eq!(
+            declared_id(&json!({"sensor": "imx999"})).as_deref(),
+            Some("imx999")
+        );
         assert_eq!(declared_id(&json!({"sensor": 5})), None);
         assert_eq!(declared_id(&json!(7)), None);
         assert_eq!(
@@ -772,15 +786,39 @@ mod tests {
             );
         }
         let cm4 = "camera_auto_detect=0\n[all]\ndtoverlay=imx708,cam0,rotation=180\n";
-        assert_eq!(op(cm4, CamPort::Cam0, json!({"sensor": "imx708"}), None), None);
-        assert_eq!(op(cm4, CamPort::Cam0, json!({"sensor": "imx708"}), Some(0)), None);
-        let bench2 = "camera_auto_detect=0\ndtoverlay=imx335,cam0\ndtoverlay=imx219,cam1,rotation=180\n";
-        assert_eq!(op(bench2, CamPort::Cam0, json!({"sensor": "imx335"}), None), None);
+        assert_eq!(
+            op(cm4, CamPort::Cam0, json!({"sensor": "imx708"}), None),
+            None
+        );
+        assert_eq!(
+            op(cm4, CamPort::Cam0, json!({"sensor": "imx708"}), Some(0)),
+            None
+        );
+        let bench2 =
+            "camera_auto_detect=0\ndtoverlay=imx335,cam0\ndtoverlay=imx219,cam1,rotation=180\n";
+        assert_eq!(
+            op(bench2, CamPort::Cam0, json!({"sensor": "imx335"}), None),
+            None
+        );
         // A sensor that cannot flip is not rewritten for a mount it cannot take.
-        assert_eq!(op(bench2, CamPort::Cam0, json!({"sensor": "imx335"}), Some(180)), None);
-        assert_eq!(op(bench2, CamPort::Cam1, json!({"sensor": "imx219"}), Some(0)), None);
+        assert_eq!(
+            op(
+                bench2,
+                CamPort::Cam0,
+                json!({"sensor": "imx335"}),
+                Some(180)
+            ),
+            None
+        );
+        assert_eq!(
+            op(bench2, CamPort::Cam1, json!({"sensor": "imx219"}), Some(0)),
+            None
+        );
         // A port declared empty that has no line.
-        assert_eq!(op(cm4, CamPort::Cam1, json!({"sensor": "none"}), None), None);
+        assert_eq!(
+            op(cm4, CamPort::Cam1, json!({"sensor": "none"}), None),
+            None
+        );
         // Token order and an explicit default rotation do not matter.
         let spelled = "dtoverlay=imx290,clock-frequency=74250000,cam0,rotation=0\n";
         assert_eq!(
@@ -803,7 +841,12 @@ mod tests {
         );
         // ... plus the mount, when cameraMount manages the port.
         assert_eq!(
-            op(BENCH1, CamPort::Cam0, json!({"sensor": "imx708"}), Some(180)),
+            op(
+                BENCH1,
+                CamPort::Cam0,
+                json!({"sensor": "imx708"}),
+                Some(180)
+            ),
             args(&["set", "cam0", "imx708", "rotation=0"])
         );
         // An option change keeps the rotation the line gives.
@@ -815,7 +858,13 @@ mod tests {
                 json!({"sensor": "imx708", "options": {"linkFrequency": 447000000}}),
                 None
             ),
-            args(&["set", "cam0", "imx708", "link-frequency=447000000", "rotation=0"])
+            args(&[
+                "set",
+                "cam0",
+                "imx708",
+                "link-frequency=447000000",
+                "rotation=0"
+            ])
         );
         // An option dropped from the setting is dropped from the line.
         assert_eq!(
@@ -829,22 +878,42 @@ mod tests {
         );
         // A parameter the catalog does not list is not the sensor's line.
         assert_eq!(
-            op("dtoverlay=imx290,cam0,4lane\n", CamPort::Cam0, json!({"sensor": "imx290"}), None),
+            op(
+                "dtoverlay=imx290,cam0,4lane\n",
+                CamPort::Cam0,
+                json!({"sensor": "imx290"}),
+                None
+            ),
             args(&["set", "cam0", "imx290", "rotation=0"])
         );
         // Rotation only.
         assert_eq!(
-            op(BENCH1, CamPort::Cam1, json!({"sensor": "imx290"}), Some(180)),
+            op(
+                BENCH1,
+                CamPort::Cam1,
+                json!({"sensor": "imx290"}),
+                Some(180)
+            ),
             args(&["set", "cam1", "imx290", "rotation=180"])
         );
         // A sensor that cannot flip gets its default whatever is asked.
         assert_eq!(
-            op(BENCH1, CamPort::Cam0, json!({"sensor": "imx335"}), Some(180)),
+            op(
+                BENCH1,
+                CamPort::Cam0,
+                json!({"sensor": "imx335"}),
+                Some(180)
+            ),
             args(&["set", "cam0", "imx335", "rotation=180"])
         );
         // No line yet; two lines; a port declared empty.
         assert_eq!(
-            op("dtparam=audio=on\n", CamPort::Cam1, json!({"sensor": "imx219"}), None),
+            op(
+                "dtparam=audio=on\n",
+                CamPort::Cam1,
+                json!({"sensor": "imx219"}),
+                None
+            ),
             args(&["set", "cam1", "imx219", "rotation=180"])
         );
         assert_eq!(
@@ -873,12 +942,22 @@ mod tests {
         // A line under a section the agent cannot evaluate is not "settled":
         // the helper is asked, and refuses.
         assert_eq!(
-            op("[pi3]\ndtoverlay=imx290,cam0\n", CamPort::Cam0, json!({"sensor": "imx290"}), None),
+            op(
+                "[pi3]\ndtoverlay=imx290,cam0\n",
+                CamPort::Cam0,
+                json!({"sensor": "imx290"}),
+                None
+            ),
             args(&["set", "cam0", "imx290", "rotation=0"])
         );
         // A line of the other board family is not this board's line.
         assert_eq!(
-            op("[cm4]\ndtoverlay=imx290,cam0\n[all]\n", CamPort::Cam0, json!({"sensor": "imx708"}), None),
+            op(
+                "[cm4]\ndtoverlay=imx290,cam0\n[all]\n",
+                CamPort::Cam0,
+                json!({"sensor": "imx708"}),
+                None
+            ),
             args(&["set", "cam0", "imx708", "rotation=180"])
         );
     }
@@ -916,11 +995,23 @@ mod tests {
         let ch = same("dtoverlay=imx290,cam0,rotation=180\n", CamPort::Cam0).unwrap();
         assert!(!ch.overlay);
         assert_eq!(ch.booted.as_deref(), Some("dtoverlay=imx290,cam0"));
-        assert_eq!(ch.now.as_deref(), Some("dtoverlay=imx290,cam0,rotation=180"));
-        assert!(!same("dtoverlay=imx290,cam0,clock-frequency=74250000\n", CamPort::Cam0)
+        assert_eq!(
+            ch.now.as_deref(),
+            Some("dtoverlay=imx290,cam0,rotation=180")
+        );
+        assert!(
+            !same(
+                "dtoverlay=imx290,cam0,clock-frequency=74250000\n",
+                CamPort::Cam0
+            )
             .unwrap()
-            .overlay);
-        assert!(same("dtoverlay=imx708,cam0\n", CamPort::Cam0).unwrap().overlay);
+            .overlay
+        );
+        assert!(
+            same("dtoverlay=imx708,cam0\n", CamPort::Cam0)
+                .unwrap()
+                .overlay
+        );
         let gone = same("dtoverlay=imx290,cam0\n", CamPort::Cam1).unwrap();
         assert!(gone.overlay);
         assert_eq!(gone.now, None);
@@ -999,8 +1090,14 @@ mod tests {
         );
         // The two readers.
         assert_eq!(
-            parse_dpkg_query("libcamera0.5\t0.5.2+rpt20250909-1\tii \nlibcamera-ipa\t0.5.2\trc \nfoo\t\tun \n"),
-            [("libcamera0.5".to_string(), "0.5.2+rpt20250909-1".to_string())].into()
+            parse_dpkg_query(
+                "libcamera0.5\t0.5.2+rpt20250909-1\tii \nlibcamera-ipa\t0.5.2\trc \nfoo\t\tun \n"
+            ),
+            [(
+                "libcamera0.5".to_string(),
+                "0.5.2+rpt20250909-1".to_string()
+            )]
+            .into()
         );
         assert_eq!(
             os_codename("PRETTY_NAME=\"Debian GNU/Linux 12 (bookworm)\"\nVERSION_CODENAME=bookworm\nID=debian\n").as_deref(),
@@ -1022,7 +1119,12 @@ mod tests {
         }));
         assert_eq!(
             plan.iter()
-                .map(|p| (p.stream_key.as_str(), p.source, p.port.clone().ok(), p.entry["sensor"].as_str().unwrap()))
+                .map(|p| (
+                    p.stream_key.as_str(),
+                    p.source,
+                    p.port.clone().ok(),
+                    p.entry["sensor"].as_str().unwrap()
+                ))
                 .collect::<Vec<_>>(),
             [
                 ("cam1", ChoiceSource::Setting, Some(CamPort::Cam1), "none"),
@@ -1040,7 +1142,11 @@ mod tests {
         assert!(plan.iter().all(|p| p.source == ChoiceSource::Model));
         assert_eq!(plan[1].port, Ok(CamPort::Cam1));
         // 3. Neither: the two imx290 lines.
-        for claim in [json!({}), json!({"hardware": {"video": []}}), json!({"hardware": null})] {
+        for claim in [
+            json!({}),
+            json!({"hardware": {"video": []}}),
+            json!({"hardware": null}),
+        ] {
             let plan = apply_plan(&claim);
             assert_eq!(
                 plan.iter()
@@ -1060,7 +1166,9 @@ mod tests {
         let w = wanted_for_apply(model, CamPort::Cam0, kept, Board::Cm5, c).unwrap();
         assert_eq!(line_op(kept, Board::Cm5, CamPort::Cam0, &w, None, c), None);
         // ... while the setting's own choice is the whole line.
-        let setting = &apply_plan(&json!({"hardware": hw, "cameraSensors": {"cameras": {"cam0": {"sensor": "imx290"}}}}))[0];
+        let setting = &apply_plan(
+            &json!({"hardware": hw, "cameraSensors": {"cameras": {"cam0": {"sensor": "imx290"}}}}),
+        )[0];
         let w = wanted_for_apply(setting, CamPort::Cam0, kept, Board::Cm5, c).unwrap();
         assert_eq!(
             line_op(kept, Board::Cm5, CamPort::Cam0, &w, None, c).map(|o| o.args()),

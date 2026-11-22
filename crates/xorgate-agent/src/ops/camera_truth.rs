@@ -77,8 +77,8 @@ use xorgate_core::camera_truth::{
     node_for_port, port_needs_relist, settle_capture, summarise_port, CaptureLive, CaptureOff,
     CaptureTruth, PortFacts, PortNode, PortSetting, RELIST_AFTER_START_MS, REPORT_HOLD_RESET_MS,
 };
-use xorgate_core::settings::CameraSensorsSettings;
 use xorgate_core::hardware_block::{DeviceHardwareBlock, Platform};
+use xorgate_core::settings::CameraSensorsSettings;
 use xorgate_core::telemetry::RunMode;
 use xorgate_core::video_capture::{is_bridged_pipeline, pipeline_file_for};
 
@@ -168,6 +168,9 @@ pub struct CameraTruthOptions {
     pub setting: SettingSources,
 }
 
+/// Reads [`HostFacts`] for the packages named.
+pub type HostFactsFn = Box<dyn Fn(&[String]) -> HostFacts + Send + Sync>;
+
 /// The Phase 2 inputs of the report: the sensor setting, the lines as
 /// booted, what the device has, and the video preset in use.
 pub struct SettingSources {
@@ -179,7 +182,7 @@ pub struct SettingSources {
     /// The device's OS release, architecture and the installed versions of
     /// the packages named (`xorgate_hal::camera_host::host_facts`). Asked
     /// only while a managed port names a sensor.
-    pub host: Box<dyn Fn(&[String]) -> HostFacts + Send + Sync>,
+    pub host: HostFactsFn,
     /// The video preset capture runs (`recording.video.preset`).
     pub preset: Box<dyn Fn() -> Option<String> + Send + Sync>,
 }
@@ -487,7 +490,9 @@ impl CameraTruth {
             let host = (o.setting.host)(&names);
             declared
                 .iter()
-                .filter_map(|(k, s)| Some(((*k).clone(), missing_requirements(s, catalog(), &host)?)))
+                .filter_map(|(k, s)| {
+                    Some(((*k).clone(), missing_requirements(s, catalog(), &host)?))
+                })
                 .collect()
         };
         let statics = Statics {
@@ -1230,6 +1235,206 @@ mod tests {
             r.truth.tick();
         }
         assert_eq!(r.rechecks.lock().unwrap().clone(), [660_000]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Phase 2: the sensor setting, a line changed since boot, missing
+    /// requirements and the preset reach the block, from the sources the
+    /// worker wires (`SettingSources`).
+    #[tokio::test(start_paused = true)]
+    async fn the_sensor_setting_reaches_the_report() {
+        use xorgate_core::camera_sensors::HostFacts;
+        let dir = scratch("setting");
+        let config = Arc::new(Mutex::new(
+            "dtoverlay=imx335,cam0\ndtoverlay=imx219,cam1,rotation=180\n".to_string(),
+        ));
+        let sensors: Arc<Mutex<Option<Value>>> = Arc::default();
+        let packages: Arc<Mutex<Vec<(&str, &str)>>> = Arc::default();
+        let asked: Arc<Mutex<Vec<Vec<String>>>> = Arc::default();
+        let preset = Arc::new(Mutex::new("720p15-1mbps".to_string()));
+        let hw = Arc::new(Mutex::new(bench2_hw()));
+        let capture: Arc<Mutex<Vec<(String, CaptureLive)>>> = Arc::new(Mutex::new(vec![(
+            "cam1".to_string(),
+            live(CaptureState::Running, Some(20_000), false),
+        )]));
+        let (c, s, p, a, pr, h, cap) = (
+            config.clone(),
+            sensors.clone(),
+            packages.clone(),
+            asked.clone(),
+            preset.clone(),
+            hw.clone(),
+            capture.clone(),
+        );
+        let truth = CameraTruth::new(CameraTruthOptions {
+            hardware: Box::new(|| Some(block())),
+            stream_hw: Box::new(move || h.lock().unwrap().clone()),
+            boot_config: Arc::new(move || Some(c.lock().unwrap().clone())),
+            board: Arc::new(|| xorgate_core::boot_config::Board::Cm5),
+            port_nodes: Arc::new(|_| {
+                Some(vec![
+                    PortNode {
+                        connector: "csi0".into(),
+                        node: "imx335@1a".into(),
+                        driver: Some("imx335".into()),
+                    },
+                    PortNode {
+                        connector: "csi1".into(),
+                        node: "imx219@10".into(),
+                        driver: Some("imx219".into()),
+                    },
+                ])
+            }),
+            pipeline_dir: dir.display().to_string(),
+            capture: Box::new(move || cap.lock().unwrap().clone()),
+            publish: Box::new(|_| {}),
+            on_change: Box::new(|| {}),
+            recheck: Box::new(|| {}),
+            capture_off: Box::new(|_| None),
+            hold_ms: REPORT_HOLD_MS,
+            setting: SettingSources {
+                sensors: Box::new(move || {
+                    s.lock().unwrap().as_ref().map(|cameras| {
+                        xorgate_core::settings::parse_camera_sensors_settings(
+                            &serde_json::json!({ "cameras": cameras }),
+                        )
+                        .unwrap()
+                    })
+                }),
+                boot_lines: Some(Arc::new(crate::ops::camera_mount::BootLineStore::new(
+                    None,
+                    Box::new(|| "boot-1".to_string()),
+                ))),
+                host: Box::new(move |names| {
+                    a.lock().unwrap().push(names.to_vec());
+                    HostFacts {
+                        os: Some("bookworm".into()),
+                        arch: Some("arm64".into()),
+                        packages: Some(
+                            p.lock()
+                                .unwrap()
+                                .iter()
+                                .map(|(n, v)| (n.to_string(), v.to_string()))
+                                .collect(),
+                        ),
+                    }
+                }),
+                preset: Box::new(move || Some(pr.lock().unwrap().clone())),
+            },
+        });
+        let port = |key: &str| -> (String, String, String) {
+            let v = truth.current().expect("a block");
+            let s = |x: &Value| x.as_str().unwrap_or("").to_string();
+            (
+                s(&v[key]["declared"]["source"]),
+                s(&v[key]["verdict"]),
+                s(&v[key]["detail"]),
+            )
+        };
+
+        // Unmanaged: as before, and the device is not asked about packages.
+        truth.refresh();
+        assert_eq!(
+            port("cam1"),
+            (
+                "boot-config".into(),
+                "ok".into(),
+                "imx219 on csi1 is detected and streaming.".into()
+            )
+        );
+        assert_eq!(port("cam0").0, "boot-config");
+        assert_eq!(port("cam0").1, "not-detected");
+        assert!(asked.lock().unwrap().is_empty());
+
+        // Both ports managed with the sensors their lines name; the IMX335's
+        // packages are not installed.
+        *sensors.lock().unwrap() = Some(serde_json::json!({
+            "cam0": {"sensor": "imx335"}, "cam1": {"sensor": "imx219"}
+        }));
+        truth.refresh();
+        assert_eq!(
+            asked.lock().unwrap().last().unwrap(),
+            &["libcamera-ipa".to_string(), "libcamera0.5".to_string()]
+        );
+        assert_eq!(
+            port("cam0"),
+            (
+                "config".into(),
+                "requirements-missing".into(),
+                "csi0 is set to imx335, which needs extra packages that are not installed in the required versions: libcamera0.5 0.5.2+rpt20250909-1 (not installed), libcamera-ipa 0.5.2+rpt20250909-1 (not installed). The camera will not appear until they are installed.".into()
+            )
+        );
+        assert_eq!(
+            port("cam1"),
+            (
+                "config".into(),
+                "ok".into(),
+                "imx219 on csi1 is detected and streaming.".into()
+            )
+        );
+
+        // The packages arrive; the camera is listed and starts. With a
+        // preset the sensor cannot run, the port says so.
+        *packages.lock().unwrap() = vec![
+            ("libcamera0.5", "0.5.2+rpt20250909-1"),
+            ("libcamera-ipa", "0.5.2+rpt20250909-1"),
+        ];
+        {
+            let mut h = hw.lock().unwrap();
+            h.passes = 2;
+            h.statuses
+                .insert("cam0".to_string(), StreamHardwareStatus::Ok);
+            h.cameras.as_mut().unwrap().push(EnumeratedCamera {
+                camera_name: "/base/axi/pcie@1000120000/rp1/i2c@88000/imx335@1a".into(),
+                sensor: "imx335".into(),
+                connector: Some("csi0".into()),
+            });
+        }
+        capture.lock().unwrap().push((
+            "cam0".to_string(),
+            live(CaptureState::Running, Some(20_000), false),
+        ));
+        *preset.lock().unwrap() = "1080p30-4mbps".to_string();
+        truth.refresh();
+        assert_eq!(
+            port("cam0"),
+            (
+                "config".into(),
+                "ok".into(),
+                "imx335 on csi0 is detected and streaming. The video preset 1080p30-4mbps cannot run on this sensor. The IMX335's full-resolution mode tops out at 29.99 frames per second, so a 30 fps 1080p stream cannot start. Use 1080p15-2mbps or a 720p preset.".into()
+            )
+        );
+        assert_eq!(port("cam1").2, "imx219 on csi1 is detected and streaming.");
+
+        // cam1's line is rewritten (a rotation change): it waits for a
+        // reboot, though the overlay is the same and the camera streams.
+        *config.lock().unwrap() =
+            "dtoverlay=imx335,cam0\ndtoverlay=imx219,cam1,rotation=0\n".to_string();
+        truth.refresh();
+        assert_eq!(
+            port("cam1"),
+            (
+                "config".into(),
+                "reboot-required".into(),
+                "The camera line of csi1 in config.txt was changed since this device booted (it booted with `dtoverlay=imx219,cam1,rotation=180`, the file now says `dtoverlay=imx219,cam1,rotation=0`). Reboot to apply.".into()
+            )
+        );
+        // The same on an unmanaged port (the setting is cleared).
+        *sensors.lock().unwrap() = None;
+        truth.refresh();
+        assert_eq!(port("cam1").0, "boot-config");
+        assert_eq!(port("cam1").1, "reboot-required");
+
+        // A sensor this build does not know.
+        *sensors.lock().unwrap() = Some(serde_json::json!({"cam0": {"sensor": "imx999"}}));
+        truth.refresh();
+        assert_eq!(port("cam0").0, "config");
+        assert_eq!(port("cam0").1, "unknown-sensor");
+        // An entry with no sensor name is not a declaration: the port
+        // reports as unmanaged (the namespace status says it was refused).
+        *sensors.lock().unwrap() = Some(serde_json::json!({"cam0": 7}));
+        truth.refresh();
+        assert_eq!(port("cam0").0, "boot-config");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

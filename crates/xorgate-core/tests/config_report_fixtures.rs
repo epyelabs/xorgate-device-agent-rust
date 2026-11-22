@@ -234,7 +234,11 @@ fn config_report_suites() {
                 )))
             }
             "CONFIG_APPLY_CLASSES" => {
-                let classes: Map<String, Value> = CONFIG_APPLY_CLASSES
+                // D108: the Rust registry ends with the Rust-only
+                // `cameraSensors`; everything before it is the JS registry.
+                let (last, js) = CONFIG_APPLY_CLASSES.split_last().unwrap();
+                assert_eq!(last.0, "cameraSensors", "D108");
+                let classes: Map<String, Value> = js
                     .iter()
                     .map(|(k, c)| (k.to_string(), Value::String(c.as_str().to_string())))
                     .collect();

@@ -701,7 +701,10 @@ pub fn camera_sensor_choice(entry: &Value) -> Result<CameraSensorChoice, String>
             let mut out = Vec::new();
             for (k, v) in o {
                 let Some(n) = v.as_f64().filter(|n| n.is_finite()) else {
-                    return Err(format!("has an option \"{}\" that is not a number", clip(k)));
+                    return Err(format!(
+                        "has an option \"{}\" that is not a number",
+                        clip(k)
+                    ));
                 };
                 out.push((k.clone(), n));
             }

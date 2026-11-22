@@ -946,7 +946,9 @@ async fn run(args: &[String]) -> Result<i32> {
     // tells "written, not booted" from "in force" for the reconciler and
     // the per-port report alike.
     let boot_lines = Arc::new(crate::ops::camera_mount::BootLineStore::real(
-        ctx.paths.home.join(crate::ops::camera_mount::BOOT_LINES_FILE),
+        ctx.paths
+            .home
+            .join(crate::ops::camera_mount::BOOT_LINES_FILE),
     ));
     // Camera mount (`:150-199`): real mode only (`:170`).
     if cfg.mode == RunMode::Real {

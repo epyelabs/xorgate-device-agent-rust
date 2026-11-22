@@ -134,7 +134,10 @@ fn status_render_fixture() {
         let _ = std::fs::remove_dir_all(&home);
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
-    assert_eq!(stopped_hints, 1, "D113: the one stopped case of the fixture");
+    assert_eq!(
+        stopped_hints, 1,
+        "D113: the one stopped case of the fixture"
+    );
 }
 
 /// ANSI colours as the TS `c(code, s)` (`status.ts:11-16`).

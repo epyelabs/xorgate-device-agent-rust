@@ -98,6 +98,9 @@ fn declares_exactly_the_namespaces_the_worker_applies() {
         keys,
         [
             "cameraMount",
+            // Rust-only (the JS agent has no such namespace; the cloud
+            // never sends it to one).
+            "cameraSensors",
             "cellular",
             "gnssAntBias",
             "imuMount",

@@ -48,6 +48,9 @@ pub struct CameraEnv {
     pub board: Board,
     /// The helper to run.
     pub helper: PathBuf,
+    /// Extra environment for the helper (a test seam: the helper's own
+    /// seams, per call). Empty in every real run.
+    pub helper_env: Vec<(String, String)>,
 }
 
 impl CameraEnv {
@@ -55,7 +58,11 @@ impl CameraEnv {
     /// seams (`system/xorgate-camcfg`), which it ignores under sudo: with
     /// them unset (every real run) the real paths are used.
     pub fn from_process() -> Self {
-        let var = |k: &str| std::env::var_os(k).filter(|v| !v.is_empty()).map(PathBuf::from);
+        let var = |k: &str| {
+            std::env::var_os(k)
+                .filter(|v| !v.is_empty())
+                .map(PathBuf::from)
+        };
         let board = match var("XORGATE_CAMCFG_MODEL") {
             Some(model) => xorgate_hal::read_lossy::read_text(&model)
                 .ok()
@@ -67,6 +74,7 @@ impl CameraEnv {
             boot_config: var("XORGATE_BOOT_CONFIG"),
             board,
             helper: var("XORGATE_CAMCFG").unwrap_or_else(|| PathBuf::from(CAMCFG_HELPER)),
+            helper_env: Vec::new(),
         }
     }
 }
@@ -94,25 +102,43 @@ pub fn run(rest: &[String], env: &CameraEnv) -> i32 {
             return 2;
         }
     };
+    let (code, lines) = apply(&claim, env);
+    for line in lines {
+        if code == 2 {
+            eprintln!("{line}");
+        } else {
+            println!("{line}");
+        }
+    }
+    code
+}
+
+/// Apply a claim response's camera choice: `(exit code, the lines to
+/// print)`. Exit 2 = no config.txt (its one line goes to stderr).
+pub fn apply(claim: &serde_json::Value, env: &CameraEnv) -> (i32, Vec<String>) {
+    let mut out: Vec<String> = Vec::new();
+    macro_rules! say {
+        ($($arg:tt)*) => { out.push(format!($($arg)*)) };
+    }
     let config = match &env.boot_config {
         Some(p) => Some(p.clone()),
         None => xorgate_hal::boot_config_io::resolve_boot_config_path_fs(BOOT_CONFIG_CANDIDATES)
             .map(PathBuf::from),
     };
     let Some(config) = config.filter(|p| p.is_file()) else {
-        eprintln!(
-            "xorgate-rs camera apply: no config.txt on this device (looked in /boot/firmware and /boot)"
+        return (
+            2,
+            vec!["xorgate-rs camera apply: no config.txt on this device (looked in /boot/firmware and /boot)".to_string()],
         );
-        return 2;
     };
     let c = catalog();
     let (mut failed, mut changed) = (false, false);
-    for choice in apply_plan(&claim) {
+    for choice in apply_plan(claim) {
         let key = &choice.stream_key;
         let port = match &choice.port {
             Ok(p) => *p,
             Err(why) => {
-                println!("{key}: FAILED: {why}; config.txt is left as it is");
+                say!("{key}: FAILED: {why}; config.txt is left as it is");
                 failed = true;
                 continue;
             }
@@ -121,7 +147,7 @@ pub fn run(rest: &[String], env: &CameraEnv) -> i32 {
         let text = match xorgate_hal::boot_config_io::read_boot_config(&config.to_string_lossy()) {
             Ok(t) => t,
             Err(e) => {
-                println!("{key}: FAILED: cannot read {}: {e}", config.display());
+                say!("{key}: FAILED: cannot read {}: {e}", config.display());
                 failed = true;
                 continue;
             }
@@ -129,7 +155,7 @@ pub fn run(rest: &[String], env: &CameraEnv) -> i32 {
         let want = match wanted_for_apply(&choice, port, &text, env.board, c) {
             Ok(w) => w,
             Err(refusal) => {
-                println!("{key}: FAILED: {refusal}");
+                say!("{key}: FAILED: {refusal}");
                 failed = true;
                 continue;
             }
@@ -139,57 +165,61 @@ pub fn run(rest: &[String], env: &CameraEnv) -> i32 {
         let Some(op) = line_op(&text, env.board, port, &want, None, c) else {
             match (&want, &was) {
                 (Wanted::Empty, _) => {
-                    println!("{key}: no change (no camera line; the port is declared empty by {from})")
+                    say!("{key}: no change (no camera line; the port is declared empty by {from})")
                 }
-                (_, Some(line)) => println!("{key}: no change ({line}; {} by {from})", want.id()),
-                (_, None) => println!("{key}: no change"),
+                (_, Some(line)) => say!("{key}: no change ({line}; {} by {from})", want.id()),
+                (_, None) => say!("{key}: no change"),
             }
             continue;
         };
         if let Err(why) = camcfg_call(op.clone(), c) {
-            println!("{key}: FAILED: {why}");
+            say!("{key}: FAILED: {why}");
             failed = true;
             continue;
         }
-        match run_helper(&env.helper, &op) {
+        match run_helper(env, &op) {
             Ok(true) => {
                 changed = true;
                 let was = was.map(|l| format!(" (was: {l})")).unwrap_or_default();
                 match &op {
-                    CamCfgOp::Remove { .. } => println!(
+                    CamCfgOp::Remove { .. } => say!(
                         "{key}: camera line removed{was}; the port is declared empty by {from}"
                     ),
-                    _ => println!(
+                    _ => say!(
                         "{key}: dtoverlay={} written{was}; {} by {from}",
-                        op.args()[2..].join(",").replacen(',', &format!(",{},", port.token()), 1),
+                        op.args()[2..]
+                            .join(",")
+                            .replacen(',', &format!(",{},", port.token()), 1),
                         want.id()
                     ),
                 }
             }
-            Ok(false) => println!("{key}: no change"),
+            Ok(false) => say!("{key}: no change"),
             Err(why) => {
-                println!("{key}: FAILED: {why}");
+                say!("{key}: FAILED: {why}");
                 failed = true;
             }
         }
     }
-    println!(
-        "{}",
+    out.push(
         if changed {
             CHANGED_LINE
         } else {
             UNCHANGED_LINE
         }
+        .to_string(),
     );
-    i32::from(failed)
+    (i32::from(failed), out)
 }
 
 /// Run the helper with `op`'s arguments. `Ok(true)` = it changed the file
 /// (exit 0), `Ok(false)` = already as asked (exit 3), `Err` = its own
 /// sentence (stderr, else stdout, else the exit code).
-fn run_helper(helper: &Path, op: &CamCfgOp) -> Result<bool, String> {
+fn run_helper(env: &CameraEnv, op: &CamCfgOp) -> Result<bool, String> {
+    let helper = env.helper.as_path();
     let out = xorgate_hal::child::std_command(helper)
         .args(op.args())
+        .envs(env.helper_env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
         .stdin(std::process::Stdio::null())
         .output()
         .map_err(|e| format!("could not run {}: {e}", helper.display()))?;

@@ -835,11 +835,7 @@ async fn managed_port(
     mount: Option<CameraRotationDeg>,
     path: Option<&str>,
     board: Board,
-) -> (
-    CameraSensorsPortState,
-    Option<CameraMountCameraState>,
-    bool,
-) {
+) -> (CameraSensorsPortState, Option<CameraMountCameraState>, bool) {
     let declared = declared_id(entry);
     let sens = |verdict: CameraSensorsVerdict, detail: Option<String>| CameraSensorsPortState {
         stream_key: stream_key.to_string(),
@@ -977,7 +973,9 @@ async fn managed_port(
         let recent = lock(&o.memo)
             .failed
             .get(stream_key)
-            .filter(|(args, when, _)| *args == asked && (o.now - when).abs() < RETRY_FAILED_WRITE_MS)
+            .filter(|(args, when, _)| {
+                *args == asked && (o.now - when).abs() < RETRY_FAILED_WRITE_MS
+            })
             .map(|(_, _, detail)| detail.clone());
         if let Some(detail) = recent {
             return failed(detail);
@@ -1043,11 +1041,10 @@ async fn managed_port(
     // one this boot started with, or the camera running on the port is
     // another overlay's (an edit made before the agent first ran).
     let change = changed_since_boot(&booted, &text_now, board, port, o.catalog);
-    let running = camera_name_for(&o.pipeline_dir, stream_key)
-        .and_then(|name| {
-            let node = name.rsplit('/').next().unwrap_or(&name).to_string();
-            o.catalog.by_dt_node(&node).map(|s| s.overlay.clone())
-        });
+    let running = camera_name_for(&o.pipeline_dir, stream_key).and_then(|name| {
+        let node = name.rsplit('/').next().unwrap_or(&name).to_string();
+        o.catalog.by_dt_node(&node).map(|s| s.overlay.clone())
+    });
     let running_other = match (&running, &want) {
         (Some(r), Wanted::Line { sensor, .. }) => *r != sensor.overlay,
         (Some(_), Wanted::Empty) => true,
@@ -1238,7 +1235,8 @@ pub fn summarise_camera_mount(state: Option<&CameraMountState>) -> CameraMountSu
 }
 
 /// The parts of the `cameraSensors` pass worth re-reporting on.
-pub type CameraSensorsSummary = Option<Vec<(String, Option<String>, CameraSensorsVerdict, Option<String>)>>;
+pub type CameraSensorsSummary =
+    Option<Vec<(String, Option<String>, CameraSensorsVerdict, Option<String>)>>;
 
 pub fn summarise_camera_sensors(state: Option<&CameraSensorsState>) -> CameraSensorsSummary {
     state.map(|s| {

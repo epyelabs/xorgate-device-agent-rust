@@ -702,10 +702,11 @@ fn set_camera_sensors(
     }
     let value = or_empty(value);
     let mut doc = document(loaded);
-    let mut cameras: Map<String, Value> = match doc.get("cameraSensors").and_then(|c| c.get("cameras")) {
-        Some(Value::Object(m)) => m.clone(),
-        _ => Map::new(),
-    };
+    let mut cameras: Map<String, Value> =
+        match doc.get("cameraSensors").and_then(|c| c.get("cameras")) {
+            Some(Value::Object(m)) => m.clone(),
+            _ => Map::new(),
+        };
     let current = cameras.get(stream_key).cloned();
     let current_sensor = current
         .as_ref()
@@ -818,7 +819,10 @@ fn set_camera_sensors(
                 ));
             }
             options.insert(option.to_string(), Value::from(n as i64));
-            stdout = vec![format!("✓ {key} = {} (persisted to settings.json)", n as i64)];
+            stdout = vec![format!(
+                "✓ {key} = {} (persisted to settings.json)",
+                n as i64
+            )];
         }
         if options.is_empty() {
             entry.shift_remove("options");
@@ -1277,6 +1281,147 @@ mod tests {
         assert_eq!(route("timeSync."), Route::TimeSync);
         assert_eq!(route("cameraMount.cam0"), Route::CameraMount);
         assert_eq!(route("apn"), Route::Apn);
+    }
+
+    /// `xorgate-rs set cameraSensors.*` (RUST-ONLY): the document it
+    /// writes, its lines, its refusals.
+    #[test]
+    fn camera_sensors_keys() {
+        fn run(loaded: &str, key: &str, value: &str) -> Result<(String, Vec<String>), Vec<String>> {
+            let loaded: AgentSettings = serde_json::from_str(loaded).unwrap();
+            match apply(&args(&[key, value]), &loaded) {
+                KeyOutcome::Save { doc, stdout, then } => {
+                    assert_eq!(then, Then::Done);
+                    Ok((to_json_string(&Value::Object(doc)), stdout))
+                }
+                KeyOutcome::Fail(lines) => Err(lines),
+            }
+        }
+        let doc = |loaded: &str, key: &str, value: &str| run(loaded, key, value).unwrap().0;
+        let err =
+            |loaded: &str, key: &str, value: &str| run(loaded, key, value).unwrap_err().join("\n");
+        assert_eq!(route("cameraSensors.cam0.sensor"), Route::CameraSensors);
+
+        // A sensor on a device that holds nothing: the namespace is created
+        // after every other key; the lines say what happens next.
+        let (d, out) = run(
+            r#"{"gnssAntBias":true}"#,
+            "cameraSensors.cam0.sensor",
+            "imx708",
+        )
+        .unwrap();
+        assert_eq!(
+            d,
+            r#"{"gnssAntBias":true,"cameraSensors":{"cameras":{"cam0":{"sensor":"imx708"}}}}"#
+        );
+        assert_eq!(
+            out,
+            [
+                "✓ cameraSensors.cam0.sensor = imx708 (persisted to settings.json)",
+                "  the agent rewrites the camera line in /boot/firmware/config.txt within ~a minute,",
+                "  then a REBOOT is required before the camera changes (the agent never reboots itself).",
+            ]
+        );
+        // A second port keeps the first; `none` declares a port empty.
+        let two = doc(&d, "cameraSensors.cam1.sensor", "none");
+        assert_eq!(
+            two,
+            r#"{"gnssAntBias":true,"cameraSensors":{"cameras":{"cam0":{"sensor":"imx708"},"cam1":{"sensor":"none"}}}}"#
+        );
+        // An option of the sensor already set; setting the same sensor
+        // again keeps it; another sensor drops it (it is not that sensor's).
+        let opt = doc(
+            &two,
+            "cameraSensors.cam0.options.linkFrequency",
+            "447000000",
+        );
+        assert_eq!(
+            opt,
+            r#"{"gnssAntBias":true,"cameraSensors":{"cameras":{"cam0":{"sensor":"imx708","options":{"linkFrequency":447000000}},"cam1":{"sensor":"none"}}}}"#
+        );
+        assert_eq!(doc(&opt, "cameraSensors.cam0.sensor", "imx708"), opt);
+        assert_eq!(
+            doc(&opt, "cameraSensors.cam0.sensor", "imx290"),
+            r#"{"gnssAntBias":true,"cameraSensors":{"cameras":{"cam0":{"sensor":"imx290"},"cam1":{"sensor":"none"}}}}"#
+        );
+        // `default` removes the option again.
+        let (d2, out) = run(&opt, "cameraSensors.cam0.options.linkFrequency", "default").unwrap();
+        assert_eq!(d2, two);
+        assert_eq!(
+            out[0],
+            "✓ cameraSensors.cam0.options.linkFrequency = default (450000000 link-frequency; persisted to settings.json)"
+        );
+        // `unmanaged` removes the port; the last port removes the namespace
+        // (a local fold-back then sends `cameraSensors: null`).
+        let (one, out) = run(&two, "cameraSensors.cam1.sensor", "unmanaged").unwrap();
+        assert_eq!(one, d);
+        assert_eq!(
+            out,
+            [
+                "✓ cameraSensors.cam1.sensor is no longer managed (persisted to settings.json)",
+                "  the agent leaves that port's camera line in /boot/firmware/config.txt as it is.",
+            ]
+        );
+        assert_eq!(
+            doc(&one, "cameraSensors.cam0.sensor", "unmanaged"),
+            r#"{"gnssAntBias":true}"#
+        );
+        // An entry this build cannot read (a newer backend's sensor) is
+        // replaced by a sensor it knows; the other entries are kept as held.
+        assert_eq!(
+            doc(
+                r#"{"cameraSensors":{"cameras":{"cam0":{"sensor":"imx999","future":1},"cam1":7}}}"#,
+                "cameraSensors.cam0.sensor",
+                "imx219"
+            ),
+            r#"{"cameraSensors":{"cameras":{"cam0":{"sensor":"imx219"},"cam1":7}}}"#
+        );
+
+        // Refusals: nothing is written.
+        assert_eq!(
+            err("{}", "cameraSensors.cam0.sensor", "imx999"),
+            "cameraSensors.cam0.sensor: 'imx999' is not a camera sensor this agent build knows (known: imx290, imx219, imx708, imx335; or 'none' for a port with no camera, 'unmanaged' to leave the port alone)"
+        );
+        assert_eq!(
+            err("{}", "cameraSensors.cam0.options.clockFrequency", "74250000"),
+            "cameraSensors.cam0.options.clockFrequency: set the sensor of cam0 first (xorgate-rs set cameraSensors.cam0.sensor <imx290|imx219|imx708|imx335>)"
+        );
+        assert_eq!(
+            err(&two, "cameraSensors.cam1.options.clockFrequency", "74250000"),
+            "cameraSensors.cam1.options.clockFrequency: set the sensor of cam1 first (xorgate-rs set cameraSensors.cam1.sensor <imx290|imx219|imx708|imx335>)"
+        );
+        assert_eq!(
+            err(&two, "cameraSensors.cam0.options.lanes", "4"),
+            "cameraSensors.cam0.options.lanes: the imx708 sensor has no option 'lanes' (its options: linkFrequency)"
+        );
+        assert_eq!(
+            err(&two, "cameraSensors.cam0.options.linkFrequency", "1"),
+            "cameraSensors.cam0.options.linkFrequency must be one of 450000000, 447000000, 453000000 (or 'default'), got '1'"
+        );
+        assert_eq!(
+            err(&two, "cameraSensors.cam0.options.linkFrequency", ""),
+            "cameraSensors.cam0.options.linkFrequency must be one of 450000000, 447000000, 453000000 (or 'default'), got ''"
+        );
+        for key in [
+            "cameraSensors.cam0",
+            "cameraSensors..sensor",
+            "cameraSensors.cam0.rotationDeg",
+            "cameraSensors.cam0.options",
+            "cameraSensors.cam0.options.",
+            "cameraSensors.cam0.sensor.x",
+        ] {
+            assert_eq!(err("{}", key, "imx290"), CAMERA_SENSORS_USAGE, "{key}");
+        }
+        assert_eq!(
+            err("{}", "cameraSensors.bad key!.sensor", "imx290"),
+            "'bad key!' is not a valid stream key (see kvs.json channels)"
+        );
+        assert_eq!(
+            err("{}", "cameraSensors.__proto__.sensor", "imx290"),
+            "'__proto__' is not a valid stream key (see kvs.json channels)"
+        );
+        // The JS usage text is untouched (its goldens still hold).
+        assert!(!USAGE.contains("cameraSensors"));
     }
 
     /// set-command.test.ts:81/:91/:100 — the pure half of the sudo note.

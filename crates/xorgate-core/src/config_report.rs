@@ -27,7 +27,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::boot_config::{CameraMountState, CameraMountVerdict};
-use crate::types::{CameraSensorsState, CameraSensorsVerdict};
 use crate::build_info::BuildInfo;
 use crate::clock_trust::ClockTrustState;
 use crate::cloud_config::CloudConfig;
@@ -40,6 +39,7 @@ use crate::settings::{
 use crate::telemetry::JsNumber;
 use crate::telemetry_scope::TelemetryScopeReport;
 use crate::types::{ApnState, SimRegistration, SimState};
+use crate::types::{CameraSensorsState, CameraSensorsVerdict};
 
 pub use crate::config_namespaces::{
     apply_class_of, ApplyClass, CONFIG_APPLY_CLASSES, CONFIG_NAMESPACE_KEYS,
@@ -1251,6 +1251,7 @@ fn parsed_namespace(parsed: &CloudConfig, key: &str) -> Option<Option<Value>> {
 ///   3. cameraMount / cellular                     -> their own machinery's verdict
 ///   4. what we hold differs from what was asked   -> adjusted
 ///   5. otherwise                                  -> applied (+ boot-latch detail)
+#[allow(clippy::too_many_arguments)]
 pub fn build_status(
     desired: Option<&DesiredSnapshot>,
     effective: &Map<String, Value>,
@@ -1833,6 +1834,205 @@ mod tests {
         assert!(!deep_equal(&Value::Null, &Value::Bool(false)));
     }
 
+    fn desired(payload: &str) -> DesiredSnapshot {
+        let m = crate::cloud_config::parse_cloud_message(payload).expect("a v1 message");
+        DesiredSnapshot {
+            rev: m.config.rev.unwrap_or(0),
+            raw: m.raw,
+            parsed: m.config,
+        }
+    }
+
+    fn sensors_state(
+        ports: &[(&str, &str, CameraSensorsVerdict, Option<&str>)],
+    ) -> CameraSensorsState {
+        CameraSensorsState {
+            at: 5,
+            reboot_required: ports
+                .iter()
+                .any(|p| p.2 == CameraSensorsVerdict::PendingReboot),
+            cameras: ports
+                .iter()
+                .map(|(k, s, v, d)| crate::types::CameraSensorsPortState {
+                    stream_key: (*k).to_string(),
+                    sensor: Some((*s).to_string()),
+                    verdict: *v,
+                    detail: d.map(str::to_string),
+                })
+                .collect(),
+            wrote: false,
+        }
+    }
+
+    /// `status.cameraSensors` and `effective.cameraSensors` (RUST-ONLY).
+    #[test]
+    fn camera_sensors_status_and_effective() {
+        use CameraSensorsVerdict::{Applied, PendingReboot, Rejected, WriteFailed};
+        let build = BuildInfo {
+            version: "abc1234".into(),
+            channel: "dev".into(),
+            built_at: None,
+            package_version: "0.2.0".into(),
+        };
+        let held: AgentSettings = serde_json::from_str(
+            r#"{"cameraSensors":{"cameras":{"cam0":{"sensor":"imx708"},"cam1":{"sensor":"none"}}}}"#,
+        )
+        .unwrap();
+        let msg = r#"{"v":1,"rev":7,"cameraSensors":{"cameras":{"cam0":{"sensor":"imx708"},"cam1":{"sensor":"none"}}}}"#;
+        let status = |settings: &AgentSettings,
+                      d: Option<&DesiredSnapshot>,
+                      st: Option<&CameraSensorsState>| {
+            let eff = build_effective(
+                settings,
+                &ModemBiasSample::default(),
+                Some("real"),
+                None,
+                None,
+                None,
+                None,
+                st,
+                &build,
+            );
+            let s = build_status(
+                d,
+                &eff,
+                &ModemBiasSample::default(),
+                9,
+                &ReportHints::default(),
+                None,
+                Some(settings),
+                st,
+            );
+            (
+                eff.get("cameraSensors").map(js::to_json_string),
+                s.get("cameraSensors")
+                    .map(|v| serde_json::to_string(v).unwrap()),
+            )
+        };
+        let d = desired(msg);
+        // Saved, the reconciler has not run: not "applied".
+        assert_eq!(
+            status(&held, Some(&d), None),
+            (
+                Some(r#"{"cameras":{"cam0":{"sensor":"imx708"},"cam1":{"sensor":"none"}},"reconciled":false}"#.into()),
+                Some(r#"{"state":"adjusted","at":9,"detail":"saved; the device has not reconciled its boot config yet"}"#.into())
+            )
+        );
+        // Every port as declared and booted.
+        let st = sensors_state(&[
+            ("cam0", "imx708", Applied, None),
+            ("cam1", "none", Applied, None),
+        ]);
+        assert_eq!(
+            status(&held, Some(&d), Some(&st)),
+            (
+                Some(r#"{"cameras":{"cam0":{"sensor":"imx708"},"cam1":{"sensor":"none"}},"rebootRequired":false}"#.into()),
+                Some(r#"{"state":"applied","at":9}"#.into())
+            )
+        );
+        // Written, not booted: `adjusted` with a detail (what the console
+        // reads as a pending reboot, with the port's `reboot-required`).
+        let st = sensors_state(&[
+            ("cam0", "imx708", PendingReboot, None),
+            ("cam1", "none", PendingReboot, None),
+        ]);
+        assert_eq!(
+            status(&held, Some(&d), Some(&st)),
+            (
+                Some(r#"{"cameras":{"cam0":{"sensor":"imx708"},"cam1":{"sensor":"none"}},"rebootRequired":true}"#.into()),
+                Some(r#"{"state":"adjusted","at":9,"detail":"written to the boot config — REBOOT REQUIRED to apply: cam0 imx708, cam1 none"}"#.into())
+            )
+        );
+        // A port that could not be applied: `rejected`, every such port
+        // named, and the ports that wait for a reboot after them.
+        let st = sensors_state(&[
+            (
+                "cam0",
+                "imx999",
+                Rejected,
+                Some("this agent build does not know the camera sensor \"imx999\""),
+            ),
+            ("cam1", "none", PendingReboot, None),
+            (
+                "cam7",
+                "imx290",
+                WriteFailed,
+                Some("could not edit /boot/firmware/config.txt: sudo: a password is required"),
+            ),
+        ]);
+        assert_eq!(
+            status(&held, Some(&d), Some(&st)).1,
+            Some(r#"{"state":"rejected","at":9,"reason":"cam0: this agent build does not know the camera sensor \"imx999\"; cam7: could not edit /boot/firmware/config.txt: sudo: a password is required; written to the boot config and waiting for a reboot: cam1 none"}"#.into())
+        );
+        // The cloud never spoke about it (a local value): no status entry,
+        // the namespace still shows in `effective`.
+        let quiet = desired(r#"{"v":1,"rev":7,"gnssAntBias":true}"#);
+        let (eff, s) = status(&held, Some(&quiet), Some(&st));
+        assert!(eff.is_some() && s.is_none());
+        // Not held and not sent: neither.
+        assert_eq!(
+            status(&AgentSettings::default(), Some(&quiet), None),
+            (None, None)
+        );
+        // `{}` = revert: applied once the key is gone, adjusted while held.
+        let revert = desired(r#"{"v":1,"rev":8,"cameraSensors":{}}"#);
+        assert_eq!(
+            status(&AgentSettings::default(), Some(&revert), None).1,
+            Some(r#"{"state":"applied","at":9}"#.into())
+        );
+        assert_eq!(
+            status(&held, Some(&revert), None).1,
+            Some(r#"{"state":"adjusted","at":9,"detail":"asked to revert to defaults, but the device is still holding a value"}"#.into())
+        );
+        // A key the parser dropped (not a stream key): normalised.
+        let dropped =
+            desired(r#"{"v":1,"cameraSensors":{"cameras":{"bad key!":{"sensor":"imx290"}}}}"#);
+        assert_eq!(
+            status(&held, Some(&dropped), None).1,
+            Some(r#"{"state":"adjusted","at":9,"detail":"the device clamped or normalized the delivered value"}"#.into())
+        );
+        // A sensor this build does not know is NOT "normalized away": the
+        // entry is held as delivered and the reconciler's verdict is the status.
+        let unknown = desired(
+            r#"{"v":1,"cameraSensors":{"cameras":{"cam0":{"sensor":"imx999","future":1}}}}"#,
+        );
+        let st = sensors_state(&[("cam0", "imx999", Rejected, Some("x"))]);
+        assert_eq!(
+            status(&held, Some(&unknown), Some(&st)).1,
+            Some(r#"{"state":"rejected","at":9,"reason":"cam0: x"}"#.into())
+        );
+    }
+
+    /// A local edit folds back as the WHOLE namespace, or `null` when it
+    /// was removed (`changed.cameraSensors`).
+    #[test]
+    fn camera_sensors_local_changes_fold_back_whole() {
+        let settings = |text: &str| -> AgentSettings { serde_json::from_str(text).unwrap() };
+        let base = namespaces_of(&settings(
+            r#"{"cameraSensors":{"cameras":{"cam0":{"sensor":"imx290"},"cam1":{"sensor":"imx290"}}}}"#,
+        ));
+        // One port changed: the whole namespace, both ports.
+        let next = namespaces_of(&settings(
+            r#"{"cameraSensors":{"cameras":{"cam0":{"sensor":"imx708","options":{"linkFrequency":447000000}},"cam1":{"sensor":"imx290"}}}}"#,
+        ));
+        assert_eq!(
+            js::map_to_json_string(&diff_namespaces(&base, &next)),
+            r#"{"cameraSensors":{"cameras":{"cam0":{"sensor":"imx708","options":{"linkFrequency":447000000}},"cam1":{"sensor":"imx290"}}}}"#
+        );
+        // Removed locally: null.
+        assert_eq!(
+            js::map_to_json_string(&diff_namespaces(&base, &namespaces_of(&settings("{}")))),
+            r#"{"cameraSensors":null}"#
+        );
+        // Unchanged: nothing.
+        assert!(diff_namespaces(&base, &base).is_empty());
+        // Newly set on a device that had none.
+        assert_eq!(
+            js::map_to_json_string(&diff_namespaces(&namespaces_of(&settings("{}")), &base)),
+            r#"{"cameraSensors":{"cameras":{"cam0":{"sensor":"imx290"},"cam1":{"sensor":"imx290"}}}}"#
+        );
+    }
+
     /// THE CAPABILITY PIN (support-other-camera-models Phase 2). The cloud
     /// withdraws a stored `cameraSensors` value on the first report whose
     /// capability list lacks `camera.sensors`, so the list must be the same
@@ -1908,8 +2108,16 @@ mod tests {
             .next()
             .unwrap();
         assert_eq!(code.matches("\"capabilities\".into()").count(), 1);
-        assert_eq!(code.matches("AGENT_CAPABILITIES\n").count(), 1, "one use: the agent block");
-        assert_eq!(code.matches("\"camera.sensors\"").count(), 1, "one definition");
+        assert_eq!(
+            code.matches("AGENT_CAPABILITIES\n").count(),
+            1,
+            "one use: the agent block"
+        );
+        assert_eq!(
+            code.matches("\"camera.sensors\"").count(),
+            1,
+            "one definition"
+        );
     }
 
     #[test]

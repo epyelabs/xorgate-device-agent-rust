@@ -31,10 +31,10 @@ use std::sync::{Arc, Mutex};
 use serde_json::{json, Value};
 use xorgate_agent::ctx::BoxFut;
 use xorgate_agent::ops::camera_mount::{
-    reconcile_camera_mount, reconcile_cameras, BootConfigPath, BootLineStore, CameraMountReconciler,
-    CameraMountReconcilerOptions, CameraStates, HelperRotationWriter, OverlayProbe, PortEvidence,
-    ReconcileCameraMountOptions, RotationResult, RotationWriter, WriteMemo, HELPER_NOT_INSTALLED,
-    RETRY_FAILED_WRITE_MS,
+    reconcile_camera_mount, reconcile_cameras, BootConfigPath, BootLineStore,
+    CameraMountReconciler, CameraMountReconcilerOptions, CameraStates, HelperRotationWriter,
+    OverlayProbe, PortEvidence, ReconcileCameraMountOptions, RotationResult, RotationWriter,
+    WriteMemo, HELPER_NOT_INSTALLED, RETRY_FAILED_WRITE_MS,
 };
 use xorgate_core::boot_config::CamCfgOp;
 use xorgate_core::camera_catalog::catalog;
@@ -612,7 +612,11 @@ impl Rig {
     /// One pass over both namespaces: `cameraMount` = `mounts` (`None` =
     /// the namespace is absent), `cameraSensors` = `sensors` (the
     /// namespace's `cameras` value; `None` = absent).
-    async fn pass_both(&self, mounts: Option<&[(&str, u32)]>, sensors: Option<Value>) -> CameraStates {
+    async fn pass_both(
+        &self,
+        mounts: Option<&[(&str, u32)]>,
+        sensors: Option<Value>,
+    ) -> CameraStates {
         let settings: Option<CameraMountSettings> = mounts.map(|mounts| {
             let cameras: serde_json::Map<String, Value> = mounts
                 .iter()
@@ -1940,4 +1944,708 @@ async fn reconciler_requests_a_report_only_when_the_summary_moves() {
     rec.now().await;
     assert_eq!(reports.load(Ordering::SeqCst), 3);
     assert!(rec.state().is_none());
+}
+
+// ---------------------------------------------------------------------------
+// Phase 2: the sensor setting (`cameraSensors`), through the REAL helper
+// ---------------------------------------------------------------------------
+
+use xorgate_core::types::CameraSensorsVerdict as SV;
+
+impl Device {
+    /// The overlay files the helper's `set` wants to see on the device.
+    fn overlays(&self, names: &[&str]) {
+        for n in names {
+            std::fs::write(self.dir.join("overlays").join(format!("{n}.dtbo")), b"").unwrap();
+        }
+    }
+
+    /// No camera is enumerated on the stream any more.
+    fn no_camera(&self, key: &str) {
+        let _ = std::fs::remove_file(self.pipeline_dir.join(format!("{key}.camera")));
+    }
+}
+
+/// One port of the `cameraSensors` half, as `(verdict, detail)`.
+fn sens(states: &CameraStates, key: &str) -> (SV, String) {
+    let s = states.sensors.as_ref().expect("the namespace is present");
+    let c = s
+        .cameras
+        .iter()
+        .find(|c| c.stream_key == key)
+        .unwrap_or_else(|| panic!("no {key} in {s:?}"));
+    (c.verdict, c.detail.clone().unwrap_or_default())
+}
+
+/// The `cameraMount` half of one port.
+fn mnt(states: &CameraStates, key: &str) -> (CameraMountVerdict, Option<f64>, Option<f64>, String) {
+    cam(states.mount.as_ref().expect("cameraMount is present"), key)
+}
+
+const ALL_OVERLAYS: [&str; 4] = ["imx290", "imx219", "imx708", "imx335"];
+
+/// THE ZERO-WRITE PROOF, Phase 2: a device whose config.txt already holds
+/// the declared sensor's line gets NO write and NO helper call when it
+/// becomes managed. That is every freshly provisioned device (the installer
+/// wrote the line the claim seeded) and every bench after someone saves the
+/// matching sensor. With `cameraMount` absent, present at 0, or at the
+/// mount the line already gives.
+#[tokio::test]
+async fn unmanaged_to_managed_with_the_same_sensor_writes_nothing() {
+    // (fixture, model, [(key, node, dt rotation)], setting, mounts)
+    type Cams = &'static [(&'static str, &'static str, u32)];
+    type Case = (&'static str, &'static str, Cams, Value, &'static [(&'static str, u32)]);
+    let cases: [Case; 4] = [
+        (
+            "config-bench1-imx290.txt",
+            MODEL_CM5,
+            &[("cam0", "imx290@1a", 0), ("cam1", "imx290@1a", 0)],
+            json!({"cam0": {"sensor": "imx290"}, "cam1": {"sensor": "imx290"}}),
+            &[("cam0", 0), ("cam1", 0)],
+        ),
+        (
+            "config-cm4-imx708.txt",
+            MODEL_CM4,
+            &[("cam0", "imx708@1a", 180)],
+            json!({"cam0": {"sensor": "imx708"}}),
+            &[("cam0", 0)],
+        ),
+        (
+            "config-bench2-imx335-imx219.txt",
+            MODEL_CM5,
+            &[("cam0", "imx335@1a", 180), ("cam1", "imx219@10", 180)],
+            json!({"cam0": {"sensor": "imx335"}, "cam1": {"sensor": "imx219"}}),
+            &[("cam0", 0), ("cam1", 0)],
+        ),
+        // An option at its default, written out in the setting.
+        (
+            "config-bench1-imx290.txt",
+            MODEL_CM5,
+            &[("cam0", "imx290@1a", 0), ("cam1", "imx290@1a", 0)],
+            json!({"cam0": {"sensor": "imx290", "options": {"clockFrequency": 37125000}}}),
+            &[],
+        ),
+    ];
+    for (fixture, model, cams, setting, mounts) in cases {
+        let config = bench_config(fixture);
+        let d = Device::bench("p2zero", &config, model);
+        d.overlays(&ALL_OVERLAYS);
+        for (key, node, rot) in cams {
+            d.camera(key, &cm5_path(key, node), Some(*rot));
+        }
+        let rig = Rig::new(d);
+        let md5 = rig.d.md5();
+        // The namespace arrives; passes repeat; `cameraMount` comes and goes.
+        for mount in [None, Some(mounts), None] {
+            for _ in 0..2 {
+                let s = rig.pass_both(mount, Some(setting.clone())).await;
+                for key in setting.as_object().unwrap().keys() {
+                    assert_eq!(
+                        sens(&s, key),
+                        (SV::Applied, String::new()),
+                        "{fixture} {key}"
+                    );
+                }
+                let st = s.sensors.as_ref().unwrap();
+                assert!(!st.wrote && !st.reboot_required, "{fixture}");
+                if let Some(m) = &s.mount {
+                    assert!(!m.wrote && !m.reboot_required, "{fixture}");
+                    for c in &m.cameras {
+                        assert_eq!(c.verdict, Applied, "{fixture} {}", c.stream_key);
+                    }
+                }
+            }
+        }
+        assert_eq!(rig.runner.calls(), Vec::<Vec<String>>::new(), "{fixture}");
+        assert_eq!(rig.d.md5(), md5, "{fixture}");
+        assert_eq!(rig.d.read(), config, "{fixture}");
+        assert_eq!(rig.logs(), Vec::<String>::new(), "{fixture}");
+        assert!(!rig.d.boot_config.with_extension("txt.bak-camcfg").exists());
+    }
+}
+
+/// A sensor change by setting: ONE helper call edits ONE line, both
+/// namespaces say "reboot required", nothing more is written while it
+/// waits, and after the reboot both say applied.
+#[tokio::test]
+async fn a_sensor_change_is_one_write_then_a_reboot() {
+    let config = bench_config("config-bench1-imx290.txt");
+    let d = Device::bench("p2swap", &config, MODEL_CM5);
+    d.overlays(&ALL_OVERLAYS);
+    d.camera("cam0", &cm5_path("cam0", "imx290@1a"), Some(0));
+    d.camera("cam1", &cm5_path("cam1", "imx290@1a"), Some(0));
+    let rig = Rig::new(d);
+    let setting = json!({"cam0": {"sensor": "imx708"}, "cam1": {"sensor": "imx290"}});
+    let mounts: &[(&str, u32)] = &[("cam0", 0), ("cam1", 0)];
+
+    let s = rig.pass_both(Some(mounts), Some(setting.clone())).await;
+    assert_eq!(rig.runner.asked(), ["set cam0 imx708 rotation=180"]);
+    assert_eq!(sens(&s, "cam0"), (SV::PendingReboot, String::new()));
+    assert_eq!(sens(&s, "cam1"), (SV::Applied, String::new()));
+    let st = s.sensors.as_ref().unwrap();
+    assert!(st.wrote && st.reboot_required);
+    // `cameraMount` does not claim the new sensor's rotation as in force:
+    // the camera running on the port is still the IMX290.
+    assert_eq!(
+        mnt(&s, "cam0"),
+        (PendingReboot, None, Some(0.0), String::new())
+    );
+    assert_eq!(
+        mnt(&s, "cam1"),
+        (Applied, Some(0.0), Some(0.0), String::new())
+    );
+    assert!(s.mount.as_ref().unwrap().reboot_required);
+    // Exactly one line of the file changed.
+    let after = rig.d.read();
+    let diff: Vec<(&str, &str)> = config
+        .lines()
+        .zip(after.lines())
+        .filter(|(a, b)| a != b)
+        .collect();
+    assert_eq!(
+        diff,
+        [(
+            "dtoverlay=imx290,cam0",
+            "dtoverlay=imx708,cam0,rotation=180"
+        )]
+    );
+    assert_eq!(config.lines().count(), after.lines().count());
+    assert_eq!(
+        rig.logs(),
+        ["info cam0: camera line for cam0 in <dir>/config.txt is now the imx708 line (imx708,rotation=180) — REBOOT required before the camera changes (the agent never reboots itself)"]
+    );
+
+    // Waiting: no further call, the same answer, however often it passes.
+    for _ in 0..3 {
+        let s = rig.pass_both(Some(mounts), Some(setting.clone())).await;
+        assert_eq!(sens(&s, "cam0").0, SV::PendingReboot);
+        assert!(!s.sensors.as_ref().unwrap().wrote);
+    }
+    assert_eq!(rig.runner.calls().len(), 1);
+    assert_eq!(rig.d.read(), after);
+
+    // The reboot: the kernel loads the imx708 overlay with rotation 180.
+    rig.reboot();
+    rig.d
+        .camera("cam0", &cm5_path("cam0", "imx708@1a"), Some(180));
+    let s = rig.pass_both(Some(mounts), Some(setting.clone())).await;
+    assert_eq!(sens(&s, "cam0"), (SV::Applied, String::new()));
+    assert_eq!(
+        mnt(&s, "cam0"),
+        (Applied, Some(0.0), Some(0.0), String::new())
+    );
+    assert!(!s.sensors.as_ref().unwrap().reboot_required);
+    assert!(!s.mount.as_ref().unwrap().reboot_required);
+    assert_eq!(rig.runner.calls().len(), 1);
+
+    // Changed back before a reboot: written again, and the line is the one
+    // the device booted with only after the NEXT change back.
+    let back = json!({"cam0": {"sensor": "imx290"}, "cam1": {"sensor": "imx290"}});
+    let s = rig.pass_both(Some(mounts), Some(back)).await;
+    assert_eq!(sens(&s, "cam0").0, SV::PendingReboot);
+    let s = rig.pass_both(Some(mounts), Some(setting)).await;
+    assert_eq!(
+        rig.runner.asked(),
+        [
+            "set cam0 imx708 rotation=180",
+            "set cam0 imx290 rotation=0",
+            "set cam0 imx708 rotation=180"
+        ]
+    );
+    // The line is again what this boot started with: nothing waits.
+    assert_eq!(sens(&s, "cam0"), (SV::Applied, String::new()));
+}
+
+/// Rotation and sensor changed together are ONE write: the line carries the
+/// new sensor's default plus the mount.
+#[tokio::test]
+async fn rotation_and_sensor_changed_together_are_one_write() {
+    let config = bench_config("config-bench1-imx290.txt");
+    let d = Device::bench("p2both", &config, MODEL_CM5);
+    d.overlays(&ALL_OVERLAYS);
+    d.camera("cam0", &cm5_path("cam0", "imx290@1a"), Some(0));
+    d.camera("cam1", &cm5_path("cam1", "imx290@1a"), Some(0));
+    let rig = Rig::new(d);
+    let s = rig
+        .pass_both(
+            Some(&[("cam0", 180), ("cam1", 180)]),
+            Some(json!({"cam0": {"sensor": "imx219"}, "cam1": {"sensor": "imx290"}})),
+        )
+        .await;
+    // imx219: default 180 + mount 180 = 0. imx290: 0 + 180.
+    assert_eq!(
+        rig.runner.asked(),
+        ["set cam0 imx219 rotation=0", "set cam1 imx290 rotation=180"]
+    );
+    assert_eq!(sens(&s, "cam0").0, SV::PendingReboot);
+    // cam1: the same sensor with another rotation: the line changed since
+    // boot, and the rotation in force is still the old one.
+    assert_eq!(sens(&s, "cam1").0, SV::PendingReboot);
+    assert_eq!(
+        mnt(&s, "cam1"),
+        (PendingReboot, Some(0.0), Some(180.0), String::new())
+    );
+    assert_eq!(
+        mnt(&s, "cam0"),
+        (PendingReboot, None, Some(180.0), String::new())
+    );
+    assert!(rig
+        .d
+        .read()
+        .contains("\ndtoverlay=imx219,cam0,rotation=0\ndtoverlay=imx290,cam1,rotation=180\n"));
+    // After the reboot.
+    rig.reboot();
+    rig.d
+        .camera("cam0", &cm5_path("cam0", "imx219@10"), Some(0));
+    rig.d
+        .camera("cam1", &cm5_path("cam1", "imx290@1a"), Some(180));
+    let s = rig
+        .pass_both(
+            Some(&[("cam0", 180), ("cam1", 180)]),
+            Some(json!({"cam0": {"sensor": "imx219"}, "cam1": {"sensor": "imx290"}})),
+        )
+        .await;
+    assert_eq!(
+        mnt(&s, "cam0"),
+        (Applied, Some(180.0), Some(180.0), String::new())
+    );
+    assert_eq!(
+        mnt(&s, "cam1"),
+        (Applied, Some(180.0), Some(180.0), String::new())
+    );
+    assert_eq!(rig.runner.calls().len(), 2);
+}
+
+/// A port declared empty: its line is removed; `cameraMount` has nothing to
+/// rotate there and says so by saying nothing.
+#[tokio::test]
+async fn a_port_declared_empty_loses_its_line() {
+    let config = bench_config("config-bench1-imx290.txt");
+    let d = Device::bench("p2none", &config, MODEL_CM5);
+    d.overlays(&ALL_OVERLAYS);
+    d.camera("cam0", &cm5_path("cam0", "imx290@1a"), Some(0));
+    d.camera("cam1", &cm5_path("cam1", "imx290@1a"), Some(0));
+    let rig = Rig::new(d);
+    let setting = json!({"cam1": {"sensor": "none"}});
+    let s = rig
+        .pass_both(Some(&[("cam1", 180)]), Some(setting.clone()))
+        .await;
+    assert_eq!(rig.runner.asked(), ["remove cam1"]);
+    assert_eq!(sens(&s, "cam1"), (SV::PendingReboot, String::new()));
+    assert_eq!(mnt(&s, "cam1"), (Applied, None, None, String::new()));
+    assert_eq!(rig.d.read(), config.replace("dtoverlay=imx290,cam1\n", ""));
+    assert_eq!(
+        rig.logs(),
+        ["info cam1: camera line for cam1 removed from <dir>/config.txt (the port is declared empty) — REBOOT required before the camera changes (the agent never reboots itself)"]
+    );
+    // cam0 is not in the setting: its line is as found.
+    assert!(rig.d.read().contains("dtoverlay=imx290,cam0\n"));
+    // Rebooted: no camera there any more.
+    rig.reboot();
+    rig.d.no_camera("cam1");
+    let s = rig.pass_both(Some(&[("cam1", 180)]), Some(setting)).await;
+    assert_eq!(sens(&s, "cam1"), (SV::Applied, String::new()));
+    assert_eq!(rig.runner.calls().len(), 1);
+}
+
+/// An option change rewrites the line once, keeps the rotation the line
+/// gives when `cameraMount` does not manage the port, and waits for a
+/// reboot although the overlay is the same.
+#[tokio::test]
+async fn an_option_change_is_one_write_and_waits_for_a_reboot() {
+    let config = "camera_auto_detect=0\n[all]\ndtoverlay=imx708,cam0,rotation=0\n";
+    let d = Device::bench("p2opt", config, MODEL_CM4);
+    d.overlays(&ALL_OVERLAYS);
+    d.camera("cam0", &cm5_path("cam0", "imx708@1a"), Some(0));
+    let rig = Rig::new(d);
+    let setting = json!({"cam0": {"sensor": "imx708", "options": {"linkFrequency": 447000000}}});
+    let s = rig.pass_both(None, Some(setting.clone())).await;
+    assert!(s.mount.is_none());
+    assert_eq!(
+        rig.runner.asked(),
+        ["set cam0 imx708 link-frequency=447000000 rotation=0"]
+    );
+    assert_eq!(sens(&s, "cam0"), (SV::PendingReboot, String::new()));
+    assert_eq!(
+        rig.d.read(),
+        "camera_auto_detect=0\n[all]\ndtoverlay=imx708,cam0,link-frequency=447000000,rotation=0\n"
+    );
+    let s = rig.pass_both(None, Some(setting.clone())).await;
+    assert_eq!(sens(&s, "cam0").0, SV::PendingReboot);
+    rig.reboot();
+    let s = rig.pass_both(None, Some(setting)).await;
+    assert_eq!(sens(&s, "cam0"), (SV::Applied, String::new()));
+    assert_eq!(rig.runner.calls().len(), 1);
+}
+
+/// What cannot be applied is refused PER PORT, with a sentence, and
+/// config.txt is left alone for that port; the other ports are applied.
+#[tokio::test]
+async fn a_port_that_cannot_be_applied_is_refused_and_the_others_are_applied() {
+    let config = bench_config("config-bench1-imx290.txt");
+    let d = Device::bench("p2refuse", &config, MODEL_CM5);
+    d.overlays(&ALL_OVERLAYS);
+    d.camera("cam0", &cm5_path("cam0", "imx290@1a"), Some(0));
+    d.camera("cam1", &cm5_path("cam1", "imx290@1a"), Some(0));
+    // (cam0's entry, its sentence)
+    let cases = [
+        (
+            json!({"sensor": "imx999"}),
+            "this agent build does not know the camera sensor \"imx999\" (it knows: imx290, imx219, imx708, imx335); update the agent or choose another sensor. config.txt is left as it is",
+        ),
+        (
+            json!({"sensor": "imx290", "options": {"lanes": 4}}),
+            "the imx290 sensor has no option \"lanes\" in this agent build (its options: clockFrequency); config.txt is left as it is",
+        ),
+        (
+            json!({"sensor": "imx290", "options": {"clockFrequency": 1}}),
+            "option \"clockFrequency\" of the imx290 sensor must be one of 37125000, 74250000 (got 1); config.txt is left as it is",
+        ),
+        (
+            json!(42),
+            "the camera sensor setting of this port is not an object; config.txt is left as it is",
+        ),
+        (
+            json!({"options": {}}),
+            "the camera sensor setting of this port has no \"sensor\" name; config.txt is left as it is",
+        ),
+    ];
+    drop(d);
+    for (entry, sentence) in cases {
+        let rig = Rig::new(Device::bench("p2refuse-x", &config, MODEL_CM5));
+        rig.d.overlays(&ALL_OVERLAYS);
+        rig.d
+            .camera("cam0", &cm5_path("cam0", "imx290@1a"), Some(0));
+        rig.d
+            .camera("cam1", &cm5_path("cam1", "imx290@1a"), Some(0));
+        let s = rig
+            .pass_both(
+                Some(&[("cam0", 180)]),
+                Some(json!({
+                    "cam0": entry,
+                    "cam1": {"sensor": "imx219"},
+                    // A port this device does not have (a model reassignment).
+                    "cam7": {"sensor": "imx290"},
+                })),
+            )
+            .await;
+        assert_eq!(
+            sens(&s, "cam0"),
+            (SV::Rejected, sentence.to_string()),
+            "{entry}"
+        );
+        assert_eq!(
+            sens(&s, "cam7"),
+            (
+                SV::Rejected,
+                "this device has no camera \"cam7\"; config.txt is left as it is".to_string()
+            )
+        );
+        // The good port is still applied: one call, for cam1 only.
+        assert_eq!(sens(&s, "cam1").0, SV::PendingReboot, "{entry}");
+        assert_eq!(
+            rig.runner.asked(),
+            ["set cam1 imx219 rotation=180"],
+            "{entry}"
+        );
+        let after = rig.d.read();
+        assert!(
+            after.contains("dtoverlay=imx290,cam0\n"),
+            "cam0's line is as found: {after}"
+        );
+        // `cameraMount` writes nothing on a port whose sensor entry is refused.
+        assert_eq!(
+            mnt(&s, "cam0"),
+            (
+                Unsupported,
+                None,
+                None,
+                "the camera sensor setting of this port is not applied (see cameraSensors), so its camera line is left as it is".to_string()
+            ),
+            "{entry}"
+        );
+        // The same every pass, without a helper call.
+        let again = rig
+            .pass_both(
+                Some(&[("cam0", 180)]),
+                Some(json!({"cam0": entry, "cam1": {"sensor": "imx219"}, "cam7": {"sensor": "imx290"}})),
+            )
+            .await;
+        assert_eq!(sens(&again, "cam0").0, SV::Rejected);
+        assert_eq!(rig.runner.calls().len(), 1, "{entry}");
+    }
+}
+
+/// The helper's refusals come back as the status, in the helper's words,
+/// and a refused call is not repeated every pass.
+#[tokio::test]
+async fn a_helper_refusal_is_the_status_and_is_not_retried_every_pass() {
+    // A `dtparam=` line follows the camera line: `set` to another overlay
+    // would hand it to that overlay (the helper's exit 5).
+    let config = "camera_auto_detect=0\ndtoverlay=imx290,cam0\ndtparam=i2c_arm=on\n";
+    let d = Device::bench("p2helper", config, MODEL_CM5);
+    d.overlays(&ALL_OVERLAYS);
+    d.camera("cam0", &cm5_path("cam0", "imx290@1a"), Some(0));
+    let mut rig = Rig::new(d);
+    let setting = json!({"cam0": {"sensor": "imx708"}});
+    let s = rig
+        .pass_both(Some(&[("cam0", 0)]), Some(setting.clone()))
+        .await;
+    let refusal = "could not edit <dir>/config.txt: a dtparam= line follows the camera line of cam0 and would then apply to another overlay; move it into the dtoverlay line or remove it first (<dir>/config.txt not changed)";
+    let (v, detail) = sens(&s, "cam0");
+    assert_eq!(
+        (v, rig.d.redact(&detail)),
+        (SV::WriteFailed, refusal.to_string())
+    );
+    let (v, _, _, detail) = mnt(&s, "cam0");
+    assert_eq!(
+        (v, rig.d.redact(&detail)),
+        (WriteFailed, refusal.to_string())
+    );
+    assert_eq!(rig.d.read(), config);
+    assert_eq!(rig.runner.calls().len(), 1);
+    assert_eq!(rig.logs().len(), 1);
+    assert!(rig.logs()[0]
+        .starts_with("warn cam0: boot config camera line edit failed — a dtparam= line follows"));
+    // Not repeated: the next passes answer from memory.
+    for _ in 0..3 {
+        let s = rig
+            .pass_both(Some(&[("cam0", 0)]), Some(setting.clone()))
+            .await;
+        assert_eq!(sens(&s, "cam0").0, SV::WriteFailed);
+    }
+    assert_eq!(rig.runner.calls().len(), 1);
+    // ... until ten minutes have passed, or what is asked changes.
+    rig.now += RETRY_FAILED_WRITE_MS;
+    rig.pass_both(Some(&[("cam0", 0)]), Some(setting)).await;
+    assert_eq!(rig.runner.calls().len(), 2);
+    rig.pass_both(
+        Some(&[("cam0", 0)]),
+        Some(json!({"cam0": {"sensor": "imx219"}})),
+    )
+    .await;
+    assert_eq!(rig.runner.calls().len(), 3);
+
+    // No overlay file on the device: the helper's exit 2, in its words.
+    let d = Device::bench("p2nodtbo", "dtoverlay=imx290,cam0\n", MODEL_CM5);
+    d.camera("cam0", &cm5_path("cam0", "imx290@1a"), Some(0));
+    let rig = Rig::new(d);
+    let s = rig
+        .pass_both(None, Some(json!({"cam0": {"sensor": "imx335"}})))
+        .await;
+    let (v, detail) = sens(&s, "cam0");
+    assert_eq!(v, SV::WriteFailed);
+    assert_eq!(
+        rig.d.redact(&detail),
+        "could not edit <dir>/config.txt: no overlay file <dir>/overlays/imx335.dtbo on this device"
+    );
+
+    // A line under a section the agent cannot evaluate: refused without a
+    // sudo call (the helper would exit 5).
+    let d = Device::bench(
+        "p2section",
+        "[pi3]\ndtoverlay=imx290,cam0\n[all]\n",
+        MODEL_CM5,
+    );
+    d.overlays(&ALL_OVERLAYS);
+    let rig = Rig::new(d);
+    let s = rig
+        .pass_both(None, Some(json!({"cam0": {"sensor": "imx708"}})))
+        .await;
+    let (v, detail) = sens(&s, "cam0");
+    assert_eq!(v, SV::Rejected);
+    assert_eq!(
+        rig.d.redact(&detail),
+        "a camera line for cam0 in <dir>/config.txt sits under [pi3], a section the agent cannot evaluate for this board: it is left as it is; edit it by hand"
+    );
+    assert_eq!(rig.runner.calls().len(), 0);
+
+    // Two lines on the port: `set` collapses them into the declared one.
+    let d = Device::bench(
+        "p2two",
+        "dtoverlay=imx290,cam0\ndtoverlay=imx219,cam0\ndtoverlay=imx290,cam1\n",
+        MODEL_CM5,
+    );
+    d.overlays(&ALL_OVERLAYS);
+    let rig = Rig::new(d);
+    let s = rig
+        .pass_both(None, Some(json!({"cam0": {"sensor": "imx219"}})))
+        .await;
+    // The line in force was already the LAST one (imx219): deleting the
+    // stale line and spelling out the default rotation changes nothing the
+    // kernel booted with, so nothing waits for a reboot.
+    assert_eq!(sens(&s, "cam0"), (SV::Applied, String::new()));
+    assert_eq!(rig.runner.asked(), ["set cam0 imx219 rotation=180"]);
+    assert_eq!(
+        rig.d.read(),
+        "dtoverlay=imx219,cam0,rotation=180\ndtoverlay=imx290,cam1\n"
+    );
+}
+
+/// The update window: this build runs, the helper is not installed yet. A
+/// managed port that needs a write says so once, calls no sudo, and is
+/// applied by itself once the helper is there.
+#[tokio::test]
+async fn the_update_window_holds_for_a_managed_port() {
+    let config = bench_config("config-bench1-imx290.txt");
+    let d = Device::bench("p2window", &config, MODEL_CM5);
+    d.overlays(&ALL_OVERLAYS);
+    d.camera("cam0", &cm5_path("cam0", "imx290@1a"), Some(0));
+    let rig = Rig::new(d);
+    rig.installed.store(false, Ordering::SeqCst);
+    let setting = json!({"cam0": {"sensor": "imx708"}});
+    for _ in 0..3 {
+        let s = rig
+            .pass_both(Some(&[("cam0", 0)]), Some(setting.clone()))
+            .await;
+        let (v, detail) = sens(&s, "cam0");
+        assert_eq!(v, SV::WriteFailed);
+        assert_eq!(
+            rig.d.redact(&detail),
+            format!("could not edit <dir>/config.txt: {HELPER_NOT_INSTALLED}")
+        );
+        assert_eq!(mnt(&s, "cam0").0, WriteFailed);
+    }
+    assert_eq!(rig.runner.calls().len(), 0);
+    assert_eq!(rig.d.read(), config);
+    assert_eq!(rig.logs().len(), 1, "one warning, not one per pass");
+    // A managed port that needs NO write is unaffected by the window.
+    let s = rig
+        .pass_both(None, Some(json!({"cam0": {"sensor": "imx290"}})))
+        .await;
+    assert_eq!(sens(&s, "cam0"), (SV::Applied, String::new()));
+    // The helper arrives (the second update).
+    rig.installed.store(true, Ordering::SeqCst);
+    let s = rig.pass_both(Some(&[("cam0", 0)]), Some(setting)).await;
+    assert_eq!(sens(&s, "cam0").0, SV::PendingReboot);
+    assert_eq!(rig.runner.asked(), ["set cam0 imx708 rotation=180"]);
+}
+
+/// What `cameraMount` says on a managed port whose sensor cannot flip, and
+/// that a managed port and an unmanaged port live in one pass: the
+/// unmanaged one goes through `rotate`, exactly as before.
+#[tokio::test]
+async fn camera_mount_on_managed_ports_and_beside_them() {
+    let config = bench_config("config-bench2-imx335-imx219.txt");
+    let d = Device::bench("p2mount", &config, MODEL_CM5);
+    d.overlays(&ALL_OVERLAYS);
+    d.camera("cam0", &cm5_path("cam0", "imx335@1a"), Some(180));
+    d.camera("cam1", &cm5_path("cam1", "imx219@10"), Some(180));
+    let mut rig = Rig::new(d);
+    rig.evidence = PortEvidence {
+        cameras: Some(vec![
+            listed("cam0", "imx335", "imx335@1a"),
+            listed("cam1", "imx219", "imx219@10"),
+        ]),
+        relisted: false,
+        nodes: Some(vec![
+            node("cam0", "imx335@1a", Some("imx335")),
+            node("cam1", "imx219@10", Some("imx219")),
+        ]),
+    };
+    // cam0 managed (imx335, cannot flip), cam1 unmanaged with a mount.
+    let setting = json!({"cam0": {"sensor": "imx335"}});
+    let s = rig
+        .pass_both(Some(&[("cam0", 180), ("cam1", 180)]), Some(setting.clone()))
+        .await;
+    assert_eq!(sens(&s, "cam0"), (SV::Applied, String::new()));
+    assert_eq!(
+        mnt(&s, "cam0"),
+        (
+            Unsupported,
+            Some(0.0),
+            Some(0.0),
+            "the imx335 sensor cannot be rotated: mount the camera the right way up".to_string()
+        )
+    );
+    // cam1: unmanaged, the Phase 1b `rotate` (180 + 180 = 0).
+    assert_eq!(rig.runner.asked(), ["rotate cam1 imx219 0"]);
+    assert_eq!(
+        mnt(&s, "cam1"),
+        (PendingReboot, Some(0.0), Some(180.0), String::new())
+    );
+    assert!(s
+        .sensors
+        .as_ref()
+        .unwrap()
+        .cameras
+        .iter()
+        .all(|c| c.stream_key != "cam1"));
+    // The imx335 line was not touched for the mount it cannot take.
+    assert!(rig.d.read().contains("dtoverlay=imx335,cam0\n"));
+    // Mount 0 on the sensor that cannot flip: applied.
+    let s = rig
+        .pass_both(Some(&[("cam0", 0), ("cam1", 180)]), Some(setting))
+        .await;
+    assert_eq!(
+        mnt(&s, "cam0"),
+        (Applied, Some(0.0), Some(0.0), String::new())
+    );
+    // The states come out in stream-key order, managed or not.
+    let keys: Vec<&str> = s
+        .mount
+        .as_ref()
+        .unwrap()
+        .cameras
+        .iter()
+        .map(|c| c.stream_key.as_str())
+        .collect();
+    assert_eq!(keys, ["cam0", "cam1"]);
+}
+
+/// The namespace states: absent = `None` and nothing read; present and
+/// empty = an empty state; the boot snapshot survives an agent restart in
+/// the same boot through its file.
+#[tokio::test]
+async fn namespace_presence_and_the_boot_snapshot_file() {
+    let config = bench_config("config-bench1-imx290.txt");
+    let d = Device::bench("p2ns", &config, MODEL_CM5);
+    d.overlays(&ALL_OVERLAYS);
+    d.camera("cam0", &cm5_path("cam0", "imx290@1a"), Some(0));
+    let mut rig = Rig::new(d);
+    let s = rig.pass_both(None, None).await;
+    assert_eq!(s, CameraStates::default());
+    let s = rig.pass_both(None, Some(json!({}))).await;
+    assert!(s.mount.is_none());
+    let st = s.sensors.unwrap();
+    assert!(st.cameras.is_empty() && !st.wrote && !st.reboot_required);
+    assert_eq!(rig.runner.calls().len(), 0);
+
+    // A store on a file: the first pass of the boot writes it.
+    let file = rig.d.dir.join("camera-boot-lines.json");
+    let id = rig.boot_id.clone();
+    let store = |file: &Path| {
+        let id = id.clone();
+        Arc::new(BootLineStore::new(
+            Some(file.to_path_buf()),
+            Box::new(move || id.lock().unwrap().clone()),
+        ))
+    };
+    rig.boot_lines = store(&file);
+    let setting = json!({"cam0": {"sensor": "imx708"}});
+    let s = rig.pass_both(None, Some(setting.clone())).await;
+    assert_eq!(sens(&s, "cam0").0, SV::PendingReboot);
+    let kept: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(kept["bootId"], "boot-1");
+    assert_eq!(kept["ports"]["cam0"]["text"], "dtoverlay=imx290,cam0");
+    assert_eq!(kept["ports"]["cam1"]["text"], "dtoverlay=imx290,cam1");
+    // The agent restarts in the same boot: a new store, the same file. The
+    // written line still waits for a reboot (the camera file is gone too,
+    // as after a restart before the first listing).
+    rig.boot_lines = store(&file);
+    rig.d.no_camera("cam0");
+    let s = rig.pass_both(None, Some(setting.clone())).await;
+    assert_eq!(sens(&s, "cam0").0, SV::PendingReboot);
+    // A reboot: the file is another boot's and is replaced.
+    rig.reboot();
+    rig.boot_lines = store(&file);
+    let s = rig.pass_both(None, Some(setting)).await;
+    assert_eq!(sens(&s, "cam0"), (SV::Applied, String::new()));
+    let kept: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    assert_eq!(kept["bootId"], "boot-1+");
+    assert_eq!(
+        kept["ports"]["cam0"]["text"],
+        "dtoverlay=imx708,cam0,rotation=180"
+    );
+    assert_eq!(rig.runner.calls().len(), 1);
 }
