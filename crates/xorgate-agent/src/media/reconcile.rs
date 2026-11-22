@@ -37,9 +37,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use indexmap::IndexMap;
-use xorgate_core::camera_truth::{
-    boot_config_port_with, declared_for, same_sensor, sensor_base, DeclaredSource,
-};
+use xorgate_core::camera_truth::{boot_config_port_on, declared_for, sensor_base, DeclaredSource};
 use xorgate_core::cameras::EnumeratedCamera;
 use xorgate_core::hardware_block::DeviceHardwareBlock;
 use xorgate_core::js::trim as js_trim;
@@ -101,6 +99,9 @@ pub struct ReconcileOpts {
     /// port's `dtoverlay=` line declares its sensor ahead of the model for
     /// the mismatch warning. `None` = the model alone, as the TS has it.
     pub boot_config: Option<String>,
+    /// The board (`/proc/device-tree/model`), for the `[section]` filters
+    /// of that text.
+    pub board: xorgate_core::boot_config::Board,
 }
 
 /// `ReconcileResult` (`hardware-reconcile.ts:52-59`).
@@ -212,7 +213,7 @@ pub async fn reconcile_hardware(
             let boot = opts
                 .boot_config
                 .as_deref()
-                .map(|t| boot_config_port_with(t, &video.connector, &[]));
+                .map(|t| boot_config_port_on(t, &video.connector, &[], opts.board));
             let expected = declared_for(boot.as_ref(), &video.sensor)
                 .map_or_else(|| video.sensor.clone(), |d| d.sensor);
             log(
@@ -226,13 +227,12 @@ pub async fn reconcile_hardware(
         };
         // Declared = the port's config.txt line, then the model. (The
         // enumerated sensor is the hint that makes a line with an overlay
-        // outside the table count as this port's line.)
-        let boot = opts
-            .boot_config
-            .as_deref()
-            .map(|t| boot_config_port_with(t, &video.connector, &[sensor_base(&cam.sensor)]));
-        if let Some(d) = declared_for(boot.as_ref(), &video.sensor)
-            .filter(|d| !same_sensor(&d.sensor, &cam.sensor))
+        // outside the catalog count as this port's line.)
+        let boot = opts.boot_config.as_deref().map(|t| {
+            boot_config_port_on(t, &video.connector, &[sensor_base(&cam.sensor)], opts.board)
+        });
+        if let Some(d) =
+            declared_for(boot.as_ref(), &video.sensor).filter(|d| d.differs_from(&cam.sensor))
         {
             let who = match d.source {
                 DeclaredSource::Model => "model expects",

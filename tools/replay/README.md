@@ -659,3 +659,46 @@ If these lanes are ever gated again, what would be needed (none of it exists):
   `pi-ns.sh` (Pi tapes only) and `/sys/bus/i2c/devices` is the rig host's, so `bound.driver` reads
   `false` and, off Pi tapes, `bootConfig` reads `null`. `pi-ns.sh` would have to bind a fake
   `/sys/bus/i2c/devices`.
+
+## Camera-line owner (support-other-camera-models, Phase 1): `p4-cam-mount` is a Rust-only scenario now, and the rig cannot run it faithfully yet
+
+Since branch `camera/phase1b-line-owner` the Rust agent changes the camera lines of config.txt through
+`system/xorgate-camcfg` and no longer calls `xorgate-camrotate` (accepted divergences **D95–D104** and **D106**).
+On every tape that changes `cameraMount` (today: `p4-cam-mount`) the two agents differ BY DESIGN:
+
+| # | Stream | JS side | Rust side | Row |
+|---|---|---|---|---|
+| 1 | `sudo` | `sudo -n /usr/local/bin/xorgate-camrotate imx290 cam0 180` | `sudo -n /usr/local/bin/xorgate-camcfg rotate cam0 imx290 180` | D95 |
+| 2 | `exec` | `dtoverlay -h imx290` before each write | none for a catalog overlay | D96 |
+| 3 | end snapshot `config.txt` | `…,cam0,4lane` after 180 → 0 (the token is dropped) | `…,cam0,4lane,rotation=0` | D98 |
+
+**No tolerance matcher was built and no tolerance row was widened** (`tolerances.toml` still says a
+camrotate sudo argv on one side only FAILS, which is now the expected reading of a JS-vs-Rust lane on
+this tape). `p4-cam-mount` is to be run **Rust-vs-Rust** (`rsrs`, or `ab` across a change).
+
+**The rig as it is does NOT exercise the Rust write path of this tape.** Nothing under `tools/replay/`
+or in `xorgate-replay` was changed for it (a harness change lapses every tape's eligibility and needs
+the orchestrator's go). What a Rust side does on the rig today, and what would make it faithful:
+
+1. The agent first checks that the helper is installed (`/usr/local/bin/xorgate-camcfg` and
+   `/usr/local/bin/xorgate-camcfg.overlays`). The rig image has neither, so the Rust side reports
+   `cameraMount` `rejected`: "could not edit …: the xorgate-camcfg helper is not installed on this
+   device yet — run `sudo xorgate-rs update` once more", runs NO sudo and leaves config.txt alone.
+   That is the update-window behaviour, pinned by `tests/camera_mount.rs`
+   `the_update_window_is_a_clear_status_not_a_loop`; it is not a rig failure.
+2. To run the write path: (a) `pi-ns.sh` binds `/rig/system/xorgate-camcfg` and
+   `/rig/system/xorgate-camcfg.overlays` at those two paths (the repo's `system/` is already mounted read-only at
+   `/rig/system`); (b) `shims/sudo` gets a second executing mode beside `RIG_CAMROTATE`: for
+   `xorgate-camcfg`, `exec env -i PATH=… "$RIG_CAMCFG" "$@"` (no test seam is needed: inside the
+   agent's namespace `/boot/firmware/config.txt` and `/proc/device-tree/model` are the tape's own,
+   and `env -i` leaves `SUDO_UID` unset, which the helper does not need); (c) `p4.rs`
+   `prepare_agent` passes `RIG_CAMCFG` as it passes `RIG_CAMROTATE`.
+3. The B7 gate is satisfied on the rig as it is: the tape's `rpicam-hello` listing names `imx290` on
+   both ports and config.txt declares `imx290`, so the port's verdict is `ok` (the rig host's
+   `/sys/bus/i2c/devices` is not consulted when cameras can be listed).
+
+The helper itself, and the reconciler over the REAL helper, are covered off the rig:
+`crates/xorgate-agent/tests/camcfg_helper.rs` and `tests/camera_mount.rs` (the TS golden of
+`reconcileCameraMount`, pass by pass, with every by-design difference named in
+`fixtures/camera_mount/rust-divergences.json`).
+

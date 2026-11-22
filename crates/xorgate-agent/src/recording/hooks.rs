@@ -256,6 +256,15 @@ impl MediaReconciler {
                 list_exec: Some(self.list_exec.clone()),
                 log: Some(log),
                 boot_config: self.boot_config.as_ref().and_then(|f| f()),
+                // Read only where a boot config is read at all (the worker).
+                board: self
+                    .boot_config
+                    .as_ref()
+                    .map_or_else(Default::default, |_| {
+                        xorgate_hal::boot_config_io::read_board(std::path::Path::new(
+                            xorgate_core::boot_config::PROC_DEVICE_TREE,
+                        ))
+                    }),
             },
         )
         // A throw (first failed mkdir/write, Node's message) leaves the

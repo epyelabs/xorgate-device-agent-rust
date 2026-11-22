@@ -731,7 +731,7 @@ A function that returns something tied to its inputs says so. Here the returned 
 pub trait PrivilegedRunner: Send + Sync + 'static {
     fn run<'a>(&'a self, call: &'a PrivilegedArgv) -> RunFut<'a>;
     /// One sudo helper run (I5): the clock stepper's `xorgate-setclock` and
-    /// the camera-mount reconciler's `xorgate-camrotate`.
+    /// the camera-mount reconciler's `xorgate-camcfg`.
     fn run_helper<'a>(&'a self, call: &'a HelperArgv) -> RunFut<'a>;
 }
 ```

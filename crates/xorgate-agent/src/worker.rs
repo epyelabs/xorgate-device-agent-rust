@@ -321,16 +321,27 @@ fn build_recording_manager(
 
 /// `reconcileCameraMountNow`'s inputs (`worker.ts:171-182`): settings.json
 /// `cameraMount` and the hardware block in force, read per pass; the
-/// `[camera-mount] …` + `camera mount: …` event sink.
+/// `[camera-mount] …` + `camera mount: …` event sink. Rust-only (Phase 1 of
+/// the support-other-camera-models plan): the sensor catalog, the
+/// camera-line owner (`xorgate-camcfg`) and, for the B7 gate, what the
+/// hardware reconcile listed and what sysfs shows on the camera ports.
 fn camera_mount_reconciler(
     ctx: &AgentCtx,
     pipeline_dir: &str,
     runner: Arc<dyn xorgate_hal::privileged::PrivilegedRunner>,
+    stream_hw: Arc<StreamHardware>,
     on_change: Arc<dyn Fn() + Send + Sync>,
 ) -> crate::ops::camera_mount::CameraMountReconciler {
     use crate::ops::camera_mount as cm;
     let settings = ctx.paths.settings.clone();
     let hw = ctx.hardware.clone();
+    let (catalog, catalog_error) = xorgate_core::camera_catalog::loaded();
+    if let Some(e) = catalog_error {
+        // Said once: without the catalog no sensor is known, every camera
+        // overlay is "outside the catalog" and goes through `dtoverlay -h`.
+        warn!("[camera-mount] {e}; no camera sensor is known to this build");
+    }
+    let port_nodes = crate::ops::camera_truth::real_port_nodes();
     cm::CameraMountReconciler::new(
         cm::CameraMountReconcilerOptions {
             settings: Box::new(move || {
@@ -343,7 +354,20 @@ fn camera_mount_reconciler(
             probe: Arc::new(cm::DtoverlayProbe {
                 tape: ctx.tape.clone(),
             }),
-            apply_rotation: Arc::new(cm::HelperRotationWriter { runner }),
+            apply_rotation: Arc::new(cm::HelperRotationWriter {
+                runner,
+                catalog,
+                installed: Box::new(cm::helper_installed),
+            }),
+            catalog,
+            evidence: Box::new(move |block| {
+                let snap = stream_hw.snapshot();
+                cm::PortEvidence {
+                    cameras: snap.cameras,
+                    relisted: snap.passes >= 2,
+                    nodes: block.and_then(|b| port_nodes(b.platform)),
+                }
+            }),
             log: cm::camera_mount_event_sink(ctx.state.clone(), ctx.clock.clone()),
             clock: ctx.clock.clone(),
         },
@@ -374,6 +398,7 @@ fn camera_truth(
         hardware: Box::new(move || hw.borrow().clone()),
         stream_hw: Box::new(move || stream_hw.snapshot()),
         boot_config: crate::recording::hooks::real_boot_config_text(),
+        board: ct::real_board(),
         port_nodes: ct::real_port_nodes(),
         pipeline_dir: pipeline_dir.to_string(),
         capture: Box::new(move || {
@@ -897,6 +922,7 @@ async fn run(args: &[String]) -> Result<i32> {
             &ctx,
             &media_cfg.pipeline_dir,
             runner.clone(),
+            stream_hw.clone(),
             ops.camera_mount_on_change(),
         )));
     }

@@ -86,6 +86,7 @@ fn opts(dir: &Path, listing: RunResult, logs: &Logs, boot_config: Option<&str>) 
                 .push((level.as_str().to_string(), msg.to_string()));
         })),
         boot_config: boot_config.map(str::to_string),
+        board: Default::default(),
     }
 }
 
@@ -358,7 +359,11 @@ async fn b6_a_sensor_change_rerenders_our_direct_backup() {
 // ---------------------------------------------------------------------------
 
 async fn warnings(listing: RunResult, boot_config: Option<&str>) -> Vec<String> {
-    let root = common::scratch("cam-truth-warn");
+    // One directory per call: two tests run this at once in one process,
+    // and each removes its directory when it is done.
+    static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let root = common::scratch(&format!("cam-truth-warn-{call}"));
     let logs: Logs = Arc::default();
     reconcile_hardware(
         &cm4_block(),

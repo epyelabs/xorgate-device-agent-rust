@@ -70,6 +70,7 @@ for u in pi operator; do
   same "clockSudoers.$u (021 = update_plan)" "$(golden "clockSudoers.$u"; echo X)" "$(clock_sudoers_body "$u"; echo X)"
   same "camrotateSudoers.$u (023 = update_plan)" "$(golden "camrotateSudoers.$u"; echo X)" "$(camrotate_sudoers_body "$u"; echo X)"
   same "updaterSudoers.$u (024 = update_plan)" "$(golden "updaterSudoers.$u"; echo X)" "$(rs_update_sudoers_body "$u"; echo X)"
+  same "camcfgSudoers.$u (025 = update_plan)" "$(golden "camcfgSudoers.$u"; echo X)" "$(rs_camcfg_sudoers_body "$u"; echo X)"
 done
 same "wrapper (update_plan::WRAPPER_BODY)" "$(golden wrapper; echo X)" "$(rs_wrapper_body; echo X)"
 same "nativeDropin (20-native.conf)" "$(golden nativeDropin; echo X)" "$(native_dropin_body; echo X)"
@@ -78,12 +79,13 @@ same "nativeDistDropin (10-dist.conf)" "$(golden nativeDistDropin; echo X)" "$(n
 same "logindRemoveIpc" "$(golden logindRemoveIpc; echo X)" "$(logind_body; echo X)"
 same "uplinkPriority" "$(golden uplinkPriority; echo X)" "$(uplink_body; echo X)"
 same "aptLockTimeout" "$(golden aptLockTimeout; echo X)" "$(apt_lock_body; echo X)"
-W=$(rs_wrapper_body; echo X); U=$(rs_update_sudoers_body pi; echo X)
+W=$(rs_wrapper_body; echo X); U=$(rs_update_sudoers_body pi; echo X); C=$(rs_camcfg_sudoers_body pi; echo X)
 # shellcheck source=scripts/install-rs.sh
 source "$REPO/scripts/install-rs.sh"
 set +e
 same "wrapper == install-rs.sh rs_wrapper_body" "$(rs_wrapper_body; echo X)" "$W"
 same "024 == install-rs.sh rs_update_sudoers_body" "$(rs_update_sudoers_body pi; echo X)" "$U"
+same "025 == install-rs.sh rs_camcfg_sudoers_body" "$(rs_camcfg_sudoers_body pi; echo X)" "$C"
 
 echo "== 3. JS-shared bodies == the JS install.sh golden"
 # heredoc <start line (fixed string)> <terminator> [nth]: the body after the

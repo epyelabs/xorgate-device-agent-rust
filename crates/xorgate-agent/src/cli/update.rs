@@ -673,6 +673,20 @@ async fn install(
         }
     }
 
+    // The camera-line owner (Rust-only, never shared, so installed on a
+    // coexisting device too): its allow-list, the helper, then `025` once
+    // the helper is in place.
+    for (src, dest, mode) in plan::RS_SYSTEM_ASSETS {
+        let from = live.join(src);
+        if !exists(&from) {
+            continue;
+        }
+        install_file(&from, &p.abs(dest), *mode, journal)?;
+    }
+    if exists(&p.abs(plan::CAMCFG_BIN)) {
+        install_sudoers(p, SudoersGrant::CamCfg, out, journal).await?;
+    }
+
     // `update.ts:341-350`: the remote rail (Rust-only, never shared).
     let updater_unit = live.join(plan::UPDATER_UNIT_SRC);
     if exists(&updater_unit) {
@@ -944,6 +958,104 @@ mod tests {
             0,
             "scratch dirs removed"
         );
+        rm_rf(&r.dir);
+    }
+
+    /// The camera-line owner (support-other-camera-models Phase 1) is
+    /// Rust-only, so `xorgate-rs update` delivers it on EVERY device: its
+    /// allow-list, the helper and the `025` grant land on a coexisting
+    /// device (`/opt/xorgate` present: a device converted in place) too,
+    /// where the shared system assets and 021/023 are left to the JS agent.
+    #[tokio::test]
+    async fn the_camera_line_owner_is_installed_on_a_coexisting_device_too() {
+        for coexisting in [true, false] {
+            let r = rig(if coexisting { "camcfg-js" } else { "camcfg-rs" });
+            publish_with(
+                &r,
+                "v1",
+                "xorgate-rs 0.0.1 (v1, dev)",
+                true,
+                &[
+                    ("system/xorgate-camcfg", "#!/bin/sh\n# camcfg v1\n"),
+                    ("system/xorgate-camcfg.overlays", "imx290\n"),
+                    ("system/xorgate-camrotate", "#!/bin/sh\n# camrotate v1\n"),
+                    ("system/xorgate-setclock", "#!/bin/sh\n# setclock v1\n"),
+                ],
+            );
+            fs::write(
+                r.p.abs(plan::AGENT_ENV),
+                "DEVICE_DIST_BUCKET_URL=https://bucket.example/dist/\n",
+            )
+            .unwrap();
+            // The service user comes from the JS unit's drop-in (a converted
+            // device), so the grants are written for `pi`.
+            let dropin = r.p.abs(&format!("{}.d/10-user.conf", plan::JS_UNIT_DEST));
+            fs::create_dir_all(dropin.parent().unwrap()).unwrap();
+            fs::write(&dropin, "[Service]\nUser=pi\n").unwrap();
+            if coexisting {
+                fs::create_dir_all(r.p.abs(plan::JS_INSTALL_PREFIX)).unwrap();
+                // The JS agent's helper, as its installer left it.
+                fs::write(r.p.abs(plan::CAMROTATE_BIN), "#!/bin/sh\n# JS camrotate\n").unwrap();
+            }
+            let mut log: Vec<String> = Vec::new();
+            update(&argv(&["--tag", "v1"]), &|_| None, &r.p, &mut log)
+                .await
+                .unwrap();
+            assert_eq!(
+                log.contains(&plan::SHARED_SKIP_LOG.to_string()),
+                coexisting,
+                "{log:?}"
+            );
+            // The helper, its allow-list and 025: either way.
+            let helper = r.p.abs(plan::CAMCFG_BIN);
+            assert_eq!(
+                fs::read_to_string(&helper).unwrap(),
+                "#!/bin/sh\n# camcfg v1\n"
+            );
+            assert_eq!(mode_of(&helper), 0o755);
+            let list = r.p.abs(xorgate_core::boot_config::CAMCFG_ALLOW_LIST);
+            assert_eq!(fs::read_to_string(&list).unwrap(), "imx290\n");
+            assert_eq!(mode_of(&list), 0o644);
+            let grant = r.p.abs(plan::CAMCFG_SUDOERS_DEST);
+            assert_eq!(
+                fs::read_to_string(&grant).unwrap(),
+                plan::camcfg_sudoers_body("pi")
+            );
+            assert_eq!(mode_of(&grant), 0o440);
+            // The shared helpers and their grants: only on a Rust-only device.
+            let camrotate = fs::read_to_string(r.p.abs(plan::CAMROTATE_BIN)).unwrap();
+            if coexisting {
+                assert_eq!(
+                    camrotate, "#!/bin/sh\n# JS camrotate\n",
+                    "left to the JS agent"
+                );
+                assert!(!r.p.abs("/usr/local/bin/xorgate-setclock").exists());
+                assert!(!r.p.abs(plan::CAMROTATE_SUDOERS_DEST).exists());
+                assert!(!r.p.abs(plan::CLOCK_SUDOERS_DEST).exists());
+            } else {
+                assert_eq!(camrotate, "#!/bin/sh\n# camrotate v1\n");
+                assert!(r.p.abs(plan::CAMROTATE_SUDOERS_DEST).exists());
+                assert!(r.p.abs(plan::CLOCK_SUDOERS_DEST).exists());
+            }
+            rm_rf(&r.dir);
+        }
+        // A build that ships no helper (an older tarball) installs no grant.
+        let r = rig("camcfg-none");
+        publish(&r, "v1", "xorgate-rs 0.0.1 (v1, dev)", true);
+        fs::write(
+            r.p.abs(plan::AGENT_ENV),
+            "DEVICE_DIST_BUCKET_URL=https://bucket.example/dist/\n",
+        )
+        .unwrap();
+        let dropin = r.p.abs(&format!("{}.d/10-user.conf", plan::JS_UNIT_DEST));
+        fs::create_dir_all(dropin.parent().unwrap()).unwrap();
+        fs::write(&dropin, "[Service]\nUser=pi\n").unwrap();
+        let mut log: Vec<String> = Vec::new();
+        update(&argv(&["--tag", "v1"]), &|_| None, &r.p, &mut log)
+            .await
+            .unwrap();
+        assert!(!r.p.abs(plan::CAMCFG_BIN).exists());
+        assert!(!r.p.abs(plan::CAMCFG_SUDOERS_DEST).exists());
         rm_rf(&r.dir);
     }
 

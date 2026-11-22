@@ -54,6 +54,10 @@ WRAPPER=/usr/local/bin/xorgate-rs
 GENERATOR=/etc/systemd/system-generators/xorgate-agent-rs-native
 SUDOERS_D=/etc/sudoers.d
 SUDOERS_024=$SUDOERS_D/024_xorgate-update-rs
+# The camera-line owner (Rust-only): the helper, its overlay allow-list, 025.
+CAMCFG_BIN=/usr/local/bin/xorgate-camcfg
+CAMCFG_LIST=/usr/local/bin/xorgate-camcfg.overlays
+SUDOERS_025=$SUDOERS_D/025_xorgate-camcfg
 STATE_DIR=/var/lib/xorgate
 CONVERT_RECORD=/var/lib/xorgate-rs-install/record
 LOCK=/run/xorgate-provision-rs.lock
@@ -115,6 +119,15 @@ camrotate_sudoers_body() {
     "# camera overlay's rotation parameter in the boot config, and nothing else." \
     "# See device-agent src/hardware/boot-config.ts + system/xorgate-camrotate." \
     "$1 ALL=(root) NOPASSWD: /usr/local/bin/xorgate-camrotate"
+}
+# update_plan::camcfg_sudoers_body(<user>) (= install-rs.sh rs_camcfg_sudoers_body).
+# Rust-only: the camera-line owner, system/xorgate-camcfg (sudoers 025).
+rs_camcfg_sudoers_body() {
+  printf '%s\n' \
+    "# Installed by xorgate-rs. Allows the agent (running as $1) to change the" \
+    "# camera overlay lines of the boot config through the camera-line owner, and" \
+    "# nothing else. See device-agent-rust system/xorgate-camcfg + crates/xorgate-core/src/boot_config.rs." \
+    "$1 ALL=(root) NOPASSWD: /usr/local/bin/xorgate-camcfg"
 }
 # The JS install.sh 020 body.
 power_sudoers_body() {
@@ -266,7 +279,8 @@ provision-rs.sh: provision this device with the native Rust xorgate agent.
                      /var/lib/xorgate/config-sync.json deleted
   sudo /opt/xorgate-rs/provision-rs.sh --uninstall
       After the JS installer took this device over: disable the Rust units and
-      remove the Rust tree, units, drop-ins, wrapper and sudoers 024. Never
+      remove the Rust tree, units, drop-ins, wrapper, sudoers 024 and the
+      camera-line owner (xorgate-camcfg, its allow-list, sudoers 025). Never
       touches /etc/xorgate, /var/lib/xorgate, the modem/system assets or 020-023.
 
 Exit codes: 0 ok; 1 pre-claim failure, nothing claimed; 2 usage; 3 refused,
@@ -872,6 +886,18 @@ provision_main() {
     put_file /usr/local/bin/xorgate-camrotate 0755 root:root "$RS_PREFIX/system/xorgate-camrotate" || true
     put_sudoers "$SUDOERS_D/023_xorgate-camrotate" "camrotate sudoers drop-in failed validation; camera rotation will not apply" camrotate_sudoers_body "$SVC_USER"
   fi
+  # 6a1b. The camera-line owner (Rust-only; no JS counterpart): its overlay
+  #     allow-list FIRST (the helper never exists without it), the helper,
+  #     then 025 (update_plan; none for a root agent, as update_plan::grant_user).
+  #     The Rust agent calls this helper, not xorgate-camrotate, which stays
+  #     installed above for a device that is later given the JS agent.
+  if [ -f "$RS_PREFIX/system/xorgate-camcfg" ] && [ -f "$RS_PREFIX/system/xorgate-camcfg.overlays" ]; then
+    put_file "$CAMCFG_LIST" 0644 root:root "$RS_PREFIX/system/xorgate-camcfg.overlays" || true
+    put_file "$CAMCFG_BIN" 0755 root:root "$RS_PREFIX/system/xorgate-camcfg" || true
+    if [ "$SVC_USER" != root ]; then
+      put_sudoers "$SUDOERS_025" "camcfg sudoers drop-in failed validation; camera line changes will not apply" rs_camcfg_sudoers_body "$SVC_USER"
+    fi
+  fi
   # 6a2. The Rust update rail: xorgate-updater-rs.service (+ 10-dist.conf) and
   #     024 (update_plan; none for a root agent, as update_plan::grant_user).
   #     No JS updater, no 022.
@@ -1071,7 +1097,7 @@ uninstall_main() {
     *) systemctl stop "$RS_SVC" 2>/dev/null || warn "systemctl stop $RS_SVC failed"; log "  - $RS_SVC stopped" ;;
   esac
   for p in "$GENERATOR" "$SYSD/multi-user.target.wants/$RS_SVC.service" "$RS_UNIT_D/10-user.conf" "$RS_UNIT_D/20-native.conf" "$RS_UNIT" "$UPD_UNIT_D/10-dist.conf" "$UPD_UNIT" \
-           "$SUDOERS_024" "$WRAPPER"; do
+           "$SUDOERS_024" "$SUDOERS_025" "$CAMCFG_BIN" "$CAMCFG_LIST" "$WRAPPER"; do
     if [ -e "$p" ] || [ -L "$p" ]; then rm -f "$p"; log "  - $p removed"; fi
   done
   for d in "$RS_UNIT_D" "$UPD_UNIT_D"; do

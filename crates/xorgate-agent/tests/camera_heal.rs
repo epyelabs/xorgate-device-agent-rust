@@ -237,6 +237,7 @@ impl World {
             boot_config: Arc::new(|| {
                 Some("dtoverlay=imx335,cam0\ndtoverlay=imx219,cam1,rotation=180\n".to_string())
             }),
+            board: Arc::new(|| xorgate_core::boot_config::Board::Unknown),
             port_nodes: Arc::new(|_| {
                 Some(vec![
                     PortNode {

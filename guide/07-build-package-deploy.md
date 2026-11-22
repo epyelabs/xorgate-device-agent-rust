@@ -113,6 +113,8 @@ What gets uploaded, and the guard rails:
 | `/etc/systemd/system/xorgate-agent-rs.service` (+ `.d/10-user.conf`) | the agent unit, run as the provisioning user |
 | `/etc/systemd/system/xorgate-updater-rs.service` (+ `.d/10-dist.conf`) | the one-shot updater |
 | `/etc/sudoers.d/024_xorgate-update-rs` | lets the agent start exactly the updater unit, nothing else |
+| `/usr/local/bin/xorgate-camcfg` (+ `xorgate-camcfg.overlays`) | the camera-line owner: the root helper through which the agent changes the camera `dtoverlay=` lines of `config.txt`, and its allow-list: the overlay names it may write and, per overlay, the parameter names (generated from the sensor catalog). It builds every line itself from checked parts and never reboots |
+| `/etc/sudoers.d/025_xorgate-camcfg` | lets the agent run that helper, nothing else |
 | `/etc/xorgate/` | identity, `agent.env`, manifests: shared with the reference agent, read-only for the converter |
 | `/var/lib/xorgate/` | settings and state: shared with the reference agent |
 
@@ -172,6 +174,37 @@ The updater unit's drop-in `10-dist.conf` overrides it to `latest`. A hand-run
 `sudo xorgate-rs update` does not see that drop-in, so pass `--tag latest`.
 
 Test it with `tools/update-e2e/run.sh`, which uses a local fake bucket.
+
+### Before releasing a build that brings the camera-line owner
+
+The first build with `xorgate-camcfg` (the one after v0.1.1) reaches a fielded device in two
+updates: the first is run by the old updater, which does not install the helper or its grant; the
+second installs them. Between the two, a device that needs a camera-line write reports
+`cameraMount` `rejected` ("the xorgate-camcfg helper is not installed on this device yet …") and
+changes nothing.
+
+After the second update the agent **writes `config.txt` by itself, with no new request**, on every
+device whose stored `cameraMount` is not yet what its camera line says. The picture then turns at
+the next reboot. That is what the setting asks for, but on a device that has sat in another state
+for months it is a surprise. So, before the release, list the Rust devices and look at two groups:
+
+1. **Devices whose `cameraMount` status is not `applied`** (`rejected`, `write-failed`, `adjusted`).
+   v0.1.1 could leave such a request unapplied for ever (no `dtoverlay` tool to ask, the
+   `xorgate-camrotate` helper or its grant missing). This build applies it.
+2. **Devices with a camera line that is not `imx290` and a `cameraMount` that is not 0.** v0.1.1
+   took the mount for the device-tree rotation; this build adds the overlay's own default (180 for
+   IMX219, IMX708 and IMX335). An IMX708 with `cameraMount` 180 and a line saying `rotation=180`
+   gets `rotation=0`.
+
+The exact rule: the rotation a camera line gives is its one `rotation=` token read as a number,
+or the overlay's default when it has no token. A write follows for a managed camera when that is
+not (the overlay's default + its `cameraMount`) mod 360, or when the line has two `rotation=`
+tokens or one that is not a number. The write is withheld, with a `rejected` status that says why,
+when the camera report does not confirm the camera on the port, when two lines configure the port,
+or when the line sits under a section the agent cannot evaluate.
+
+For each device in the two groups, decide before the release whether the stored setting is the
+one wanted, and correct it in the console if it is not. Nothing has to be done on the device.
 
 ## The bench scripts (`scripts/bench/`)
 

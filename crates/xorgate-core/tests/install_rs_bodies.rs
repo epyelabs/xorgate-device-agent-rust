@@ -17,7 +17,8 @@ mod common;
 use serde::Deserialize;
 use std::collections::BTreeMap;
 use xorgate_core::update_plan::{
-    camrotate_sudoers_body, clock_sudoers_body, updater_sudoers_body, WRAPPER_BODY,
+    camcfg_sudoers_body, camrotate_sudoers_body, clock_sudoers_body, updater_sudoers_body,
+    WRAPPER_BODY,
 };
 
 #[derive(Deserialize)]
@@ -30,6 +31,7 @@ struct Bodies {
     dist_dropin: String,
     clock_sudoers: BTreeMap<String, String>,
     camrotate_sudoers: BTreeMap<String, String>,
+    camcfg_sudoers: BTreeMap<String, String>,
     power_sudoers: BTreeMap<String, String>,
     user_dropin: BTreeMap<String, String>,
     native_dropin: String,
@@ -71,6 +73,14 @@ fn clock_and_camrotate_sudoers_equal_update_plan() {
     per_user(&g.camrotate_sudoers, "023", camrotate_sudoers_body);
 }
 
+/// The camera-line owner's `025` (Rust-only; support-other-camera-models
+/// Phase 1): the converter and the provisioner write the bytes `xorgate-rs
+/// update` writes on every device.
+#[test]
+fn camcfg_sudoers_equal_update_plan() {
+    per_user(&golden().camcfg_sudoers, "025", camcfg_sudoers_body);
+}
+
 #[test]
 fn golden_is_bash_readable() {
     // The bash reader decodes only \n and \" : no other escape may appear.
@@ -91,6 +101,7 @@ fn golden_is_bash_readable() {
         &g.updater_sudoers,
         &g.clock_sudoers,
         &g.camrotate_sudoers,
+        &g.camcfg_sudoers,
         &g.power_sudoers,
         &g.user_dropin,
     ] {
@@ -125,6 +136,7 @@ fn golden_is_bash_readable() {
         "updaterSudoers",
         "clockSudoers",
         "camrotateSudoers",
+        "camcfgSudoers",
         "powerSudoers",
         "userDropin",
     ] {

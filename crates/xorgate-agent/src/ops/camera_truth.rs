@@ -108,6 +108,18 @@ pub fn real_port_nodes() -> PortNodesFn {
     })
 }
 
+/// Reads the board (`xorgate_hal::boot_config_io::read_board`).
+pub type BoardFn = Arc<dyn Fn() -> xorgate_core::boot_config::Board + Send + Sync>;
+
+/// The real [`BoardFn`]: `/proc/device-tree/model`.
+pub fn real_board() -> BoardFn {
+    Arc::new(|| {
+        xorgate_hal::boot_config_io::read_board(std::path::Path::new(
+            xorgate_core::boot_config::PROC_DEVICE_TREE,
+        ))
+    })
+}
+
 /// Why a stream's capture is not wanted (`None` = it is wanted).
 pub type CaptureOffFn = Box<dyn Fn(&str) -> Option<CaptureOff> + Send + Sync>;
 
@@ -119,6 +131,9 @@ pub struct CameraTruthOptions {
     pub stream_hw: Box<dyn Fn() -> StreamHardwareSnapshot + Send + Sync>,
     /// The boot config text.
     pub boot_config: BootConfigTextFn,
+    /// The board (`/proc/device-tree/model`), for config.txt's `[section]`
+    /// filters: [`real_board`].
+    pub board: BoardFn,
     /// The sysfs scan.
     pub port_nodes: PortNodesFn,
     /// `config.media.pipelineDir`.
@@ -147,6 +162,8 @@ pub struct CameraTruthOptions {
 #[derive(Debug, Clone, Default)]
 struct Statics {
     boot_text: Option<String>,
+    /// The board, for config.txt's `[section]` filters.
+    board: xorgate_core::boot_config::Board,
     nodes: Option<Vec<PortNode>>,
     /// Stream key → its `.gst` is the bridged kind (`None` = no `.gst`).
     bridged: HashMap<String, Option<bool>>,
@@ -276,6 +293,7 @@ fn build_block(
             connector: &video.connector,
             model_sensor: &video.sensor,
             boot_text: statics.boot_text.as_deref(),
+            board: statics.board,
             nodes: statics.nodes.as_deref(),
             enumerated: hw.cameras.is_some(),
             relisted,
@@ -369,6 +387,7 @@ impl CameraTruth {
             .collect();
         let statics = Statics {
             boot_text: (o.boot_config)(),
+            board: (o.board)(),
             nodes: (o.port_nodes)(block.platform),
             bridged,
             unwanted: block
@@ -587,6 +606,7 @@ mod tests {
             boot_config: Arc::new(|| {
                 Some("dtoverlay=imx335,cam0\ndtoverlay=imx219,cam1,rotation=180\n".to_string())
             }),
+            board: Arc::new(|| xorgate_core::boot_config::Board::Unknown),
             port_nodes: Arc::new(move |_| {
                 Some(vec![
                     PortNode {
