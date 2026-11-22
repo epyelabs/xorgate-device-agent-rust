@@ -900,7 +900,14 @@ fn hostile_arguments_are_refused_and_never_written() {
         vec!["set", "cam0", "imx290", "cam1=1", "rotation=0"],
         vec!["set", "cam0", "imx290", "rotation-x=1", "rotation=0"],
         vec!["set", "cam0", "imx290", "rotations=1", "rotation=0"],
-        vec!["set", "cam0", "imx290", "clock-frequency=1", "clock-frequency=2", "rotation=0"],
+        vec![
+            "set",
+            "cam0",
+            "imx290",
+            "clock-frequency=1",
+            "clock-frequency=2",
+            "rotation=0",
+        ],
         vec!["set", "cam0", "imx290", "rotation", "rotation=0"],
         vec!["set", "cam0", "imx290", "a b", "rotation=0"],
         vec!["set", "cam0", "imx290", "x=1,y=2", "rotation=0"],
@@ -1009,7 +1016,10 @@ fn a_file_without_a_trailing_newline_whichever_line_is_last() {
         b.read(),
         "dtparam=audio=on\nenable_uart=1\ndtoverlay=imx290,cam0,rotation=0\n"
     );
-    assert_eq!(b.backup().as_deref(), Some("dtparam=audio=on\nenable_uart=1"));
+    assert_eq!(
+        b.backup().as_deref(),
+        Some("dtparam=audio=on\nenable_uart=1")
+    );
     // …and `remove` takes the camera line away again (the file now ends in
     // a newline, as `set` left it).
     assert_eq!(b.run(&["remove", "cam0"]).code, 0);
@@ -1097,25 +1107,46 @@ fn set_takes_only_the_parameter_names_of_the_overlay() {
     assert_eq!(b.read(), original);
     assert_eq!(b.backup(), None);
     // What the catalog lists is written.
-    let r = b.run(&["set", "cam0", "imx290", "clock-frequency=74250000", "rotation=180"]);
+    let r = b.run(&[
+        "set",
+        "cam0",
+        "imx290",
+        "clock-frequency=74250000",
+        "rotation=180",
+    ]);
     assert_eq!(r.code, 0, "{}", r.stderr);
     assert!(b
         .read()
         .contains("\ndtoverlay=imx290,cam0,clock-frequency=74250000,rotation=180\n"));
     // `rotate` keeps whatever tokens the existing line has, listed or not.
-    let b = Boot::new("dtoverlay=imx290,cam0,4lane,mono,future=1\n", Some(MODEL_CM5));
+    let b = Boot::new(
+        "dtoverlay=imx290,cam0,4lane,mono,future=1\n",
+        Some(MODEL_CM5),
+    );
     assert_eq!(b.run(&["rotate", "cam0", "imx290", "180"]).code, 0);
-    assert_eq!(b.read(), "dtoverlay=imx290,cam0,4lane,mono,future=1,rotation=180\n");
+    assert_eq!(
+        b.read(),
+        "dtoverlay=imx290,cam0,4lane,mono,future=1,rotation=180\n"
+    );
 
     // The allow-list itself: an entry may not list a name this helper writes.
-    for bad in ["imx290 cam0\n", "imx290 rotation\n", "imx290 clock-frequency rotation-x\n", "imx290 A\n"] {
+    for bad in [
+        "imx290 cam0\n",
+        "imx290 rotation\n",
+        "imx290 clock-frequency rotation-x\n",
+        "imx290 A\n",
+    ] {
         std::fs::write(b.dir.join("list"), bad).unwrap();
         let r = ran(b
             .cmd()
             .env("XORGATE_CAMCFG_OVERLAYS", b.dir.join("list"))
             .args(["rotate", "cam0", "imx290", "0"]));
         assert_eq!(r.code, 2, "{bad:?}");
-        assert!(r.stderr.contains("holds a bad entry"), "{bad:?}: {}", r.stderr);
+        assert!(
+            r.stderr.contains("holds a bad entry"),
+            "{bad:?}: {}",
+            r.stderr
+        );
     }
     // The firmware's 98 characters hold for `set` too (shown with a list of
     // long names: the shipped catalog cannot reach the limit).
@@ -1124,13 +1155,23 @@ fn set_takes_only_the_parameter_names_of_the_overlay() {
     let r = ran(b
         .cmd()
         .env("XORGATE_CAMCFG_OVERLAYS", b.dir.join("list"))
-        .args(["set", "cam0", "imx290", &format!("{a}={v}"), &format!("{c}={v}"), "rotation=0"]));
+        .args([
+            "set",
+            "cam0",
+            "imx290",
+            &format!("{a}={v}"),
+            &format!("{c}={v}"),
+            "rotation=0",
+        ]));
     assert_eq!(r.code, 2);
     assert_eq!(
         r.stderr,
         "the line would be 164 characters; the firmware reads at most 98\n"
     );
-    assert_eq!(b.read(), "dtoverlay=imx290,cam0,4lane,mono,future=1,rotation=180\n");
+    assert_eq!(
+        b.read(),
+        "dtoverlay=imx290,cam0,4lane,mono,future=1,rotation=180\n"
+    );
 }
 
 /// Finding 8: a `dtparam=` line applies to the overlay loaded before it.
@@ -1140,7 +1181,14 @@ fn set_takes_only_the_parameter_names_of_the_overlay() {
 #[test]
 fn a_dtparam_after_the_camera_line_is_not_handed_to_another_overlay() {
     let refused = "a dtparam= line follows the camera line of cam0 and would then apply to another overlay; move it into the dtoverlay line or remove it first";
-    for between in ["", "\n", "# note\n", "\n# note\n\n", "[all]\n", "  \t\n#x\n[all]\n"] {
+    for between in [
+        "",
+        "\n",
+        "# note\n",
+        "\n# note\n\n",
+        "[all]\n",
+        "  \t\n#x\n[all]\n",
+    ] {
         let text = format!(
             "dtoverlay=vc4-kms-v3d\ndtoverlay=imx290,cam0\n{between}dtparam=clock-frequency=74250000\n"
         );
@@ -1160,8 +1208,16 @@ fn a_dtparam_after_the_camera_line_is_not_handed_to_another_overlay() {
         }
         // The SAME overlay stays on the line: the dtparam keeps its target.
         let b = Boot::new(&text, Some(MODEL_CM5));
-        assert_eq!(b.run(&["set", "cam0", "imx290", "rotation=180"]).code, 0, "{between:?}");
-        assert_eq!(b.run(&["rotate", "cam0", "imx290", "0"]).code, 0, "{between:?}");
+        assert_eq!(
+            b.run(&["set", "cam0", "imx290", "rotation=180"]).code,
+            0,
+            "{between:?}"
+        );
+        assert_eq!(
+            b.run(&["rotate", "cam0", "imx290", "0"]).code,
+            0,
+            "{between:?}"
+        );
         assert!(b.read().contains("dtoverlay=imx290,cam0,rotation=0\n"));
     }
     // Another line in between ends "follows"; a commented dtparam is a comment.
@@ -1212,7 +1268,9 @@ fn lock_backup_and_messages() {
     );
     assert_eq!(b.read(), original);
     assert_eq!(
-        std::fs::read_dir(b.dir.join("config.txt.bak-camcfg")).unwrap().count(),
+        std::fs::read_dir(b.dir.join("config.txt.bak-camcfg"))
+            .unwrap()
+            .count(),
         0,
         "nothing was moved into it"
     );
@@ -1254,10 +1312,15 @@ fn a_signal_ends_the_run_with_nothing_written() {
         .spawn()
         .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(500));
-    let mut helper = b.cmd().args(["rotate", "cam0", "imx290", "180"]).spawn().unwrap();
+    let mut helper = b
+        .cmd()
+        .args(["rotate", "cam0", "imx290", "180"])
+        .spawn()
+        .unwrap();
     std::thread::sleep(std::time::Duration::from_millis(700));
-    let killed = Command::new("kill")
-        .args(["-TERM", &helper.id().to_string()])
+    // (`kill` is a shell builtin; the build image has no /bin/kill.)
+    let killed = Command::new("/bin/sh")
+        .args(["-c", &format!("kill -TERM {}", helper.id())])
         .status()
         .unwrap();
     assert!(killed.success());
@@ -1289,8 +1352,14 @@ fn the_fail_closed_checks_are_in_the_script() {
     }
     // Nothing is waved through with `|| true` on the way to the rename,
     // and no message is printed with `echo`.
-    let tail = &body[body.find("# Before the new file replaces the old one").unwrap()..];
-    assert_eq!(tail.matches("|| true").count(), 1, "only the final whole-disk sync");
+    let tail = &body[body
+        .find("# Before the new file replaces the old one")
+        .unwrap()..];
+    assert_eq!(
+        tail.matches("|| true").count(),
+        1,
+        "only the final whole-disk sync"
+    );
     assert!(tail.contains("sync 2>/dev/null || true"));
     for line in body.lines().filter(|l| !l.trim_start().starts_with('#')) {
         assert!(

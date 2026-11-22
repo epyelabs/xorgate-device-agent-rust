@@ -6,7 +6,7 @@
 //!   run through the Rust reconciler over the REAL `system/xorgate-camcfg`.
 //!   Where the Rust agent answers differently BY DESIGN the case is named
 //!   in `fixtures/camera_mount/rust-divergences.json` (accepted divergences
-//!   D95-D104); every other field of every case must equal the TS;
+//!   D95-D104, D106); every other field of every case must equal the TS;
 //! - the rule "device-tree rotation = the overlay's default + the mount" on
 //!   the three benches' real `config.txt`: zero writes and zero helper calls
 //!   on an IMX290 device, both rotations reachable on IMX708 / IMX219, an
@@ -1417,7 +1417,11 @@ async fn an_overlay_outside_the_catalog_is_rotated_only_through_the_probe() {
             )
         );
     }
-    assert_eq!(rig.probe.calls(), ["imx477"], "a failed probe is remembered");
+    assert_eq!(
+        rig.probe.calls(),
+        ["imx477"],
+        "a failed probe is remembered"
+    );
     assert_eq!(rig.runner.calls().len(), 0);
     // While it fails the default is ASSUMED 0. A line that looks settled
     // under that assumption (no token, mount 0) is not written; and a
@@ -1517,7 +1521,7 @@ async fn a_node_without_a_rotation_property_is_rotation_0() {
     assert_eq!(rig.runner.calls().len(), 0);
 }
 
-/// D105: which port a camera line WITHOUT a port token belongs to, and a
+/// D106: which port a camera line WITHOUT a port token belongs to, and a
 /// line carrying both tokens. The firmware's rule (`cam0` is the only port
 /// selector): no `cam0` = CAM1; `cam0,cam1` = CAM0 only. The TS matched the
 /// literal `camN` token, so the first was nobody's and the second both's.

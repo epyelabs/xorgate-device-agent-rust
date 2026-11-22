@@ -2,7 +2,7 @@
 //! @89b5c64 (`applyRotationViaHelper` `:280-302`, `reconcileCameraMount`
 //! `:329-457`) and of the worker's `reconcileCameraMountNow` (`worker.ts:150-205`),
 //! Phase 4 WP3 (I7), reworked in Phase 1 of the support-other-camera-models
-//! plan (accepted divergences D95-D104).
+//! plan (accepted divergences D95-D104, D106).
 //!
 //! It makes the boot config's camera overlay line agree with the
 //! `cameraMount` namespace and reports the three rotations (desired / boot /

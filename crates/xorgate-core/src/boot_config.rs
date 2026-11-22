@@ -11,7 +11,7 @@
 //!   (`:54`, `existsSync` injected), `resolveCamToken` (`:304`) and the
 //!   reconciler's verdict/state types (`:219-253`).
 //! - The camera-line model of the support-other-camera-models plan (Phase 1,
-//!   RUST-ONLY; accepted divergences D95-D104): which `[section]` a line sits
+//!   RUST-ONLY; accepted divergences D95-D104, D106): which `[section]` a line sits
 //!   under and whether it applies to this board ([`parse_scoped_lines`]),
 //!   which port a camera line configures ([`port_of_line`]), "no `rotation=`
 //!   token" as its own case ([`rotation_token`], bug B3), the rotation a line
@@ -50,7 +50,8 @@ pub const PROC_DEVICE_TREE: &str = "/proc/device-tree";
 /// JS; the Rust agent no longer calls it (D95).
 pub const CAMCFG_HELPER: &str = "/usr/local/bin/xorgate-camcfg";
 
-/// The helper's allow-list of overlay names, installed beside it
+/// The helper's allow-list (overlay names and, per overlay, the parameter
+/// names `set` may write), installed beside it
 /// (`system/xorgate-camcfg.overlays`, generated from the catalog).
 pub const CAMCFG_ALLOW_LIST: &str = "/usr/local/bin/xorgate-camcfg.overlays";
 

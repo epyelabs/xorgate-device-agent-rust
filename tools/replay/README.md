@@ -663,7 +663,7 @@ If these lanes are ever gated again, what would be needed (none of it exists):
 ## Camera-line owner (support-other-camera-models, Phase 1): `p4-cam-mount` is a Rust-only scenario now, and the rig cannot run it faithfully yet
 
 Since branch `camera/phase1b-line-owner` the Rust agent changes the camera lines of config.txt through
-`system/xorgate-camcfg` and no longer calls `xorgate-camrotate` (accepted divergences **D95–D104**).
+`system/xorgate-camcfg` and no longer calls `xorgate-camrotate` (accepted divergences **D95–D104** and **D106**).
 On every tape that changes `cameraMount` (today: `p4-cam-mount`) the two agents differ BY DESIGN:
 
 | # | Stream | JS side | Rust side | Row |

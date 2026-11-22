@@ -911,9 +911,9 @@ mod tests {
             c.by_id("imx290").unwrap().param_names(),
             ["4lane", "clock-frequency", "media-controller"]
         );
-        assert!(c
-            .helper_allow_list()
-            .contains("\nimx290 4lane clock-frequency media-controller\nimx219\nimx708 link-frequency\n"));
+        assert!(c.helper_allow_list().contains(
+            "\nimx290 4lane clock-frequency media-controller\nimx219\nimx708 link-frequency\n"
+        ));
         assert!(catalog()
             .helper_allow_list()
             .ends_with("# catalogVersion 3\nimx290 clock-frequency\nimx219\nimx708 link-frequency\nimx335 link-frequency\n"));

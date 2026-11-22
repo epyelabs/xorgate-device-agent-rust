@@ -12,7 +12,7 @@
 //! two readers must agree on every case. Where they differ by design is not
 //! in this fixture: a token-less line of a default-180 overlay (D97, the
 //! test below), two `rotation=` tokens (D97), a line without a port token
-//! (D105).
+//! (D106).
 
 mod common;
 
@@ -92,10 +92,7 @@ fn boot_config_test_ts() {
             }
             "bootConfigCamera" => {
                 pinned += 1;
-                ts_view(
-                    i["text"].as_str().unwrap(),
-                    i["camToken"].as_str().unwrap(),
-                )
+                ts_view(i["text"].as_str().unwrap(), i["camToken"].as_str().unwrap())
             }
             "overlayCamToken" => to_value(overlay_cam_token(i["connector"].as_str().unwrap())),
             "resolveCamToken" => {

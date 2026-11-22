@@ -213,7 +213,7 @@ pub async fn reconcile_hardware(
             let boot = opts
                 .boot_config
                 .as_deref()
-                .map(|t| boot_config_port_with(t, &video.connector, &[]));
+                .map(|t| boot_config_port_on(t, &video.connector, &[], opts.board));
             let expected = declared_for(boot.as_ref(), &video.sensor)
                 .map_or_else(|| video.sensor.clone(), |d| d.sensor);
             log(
