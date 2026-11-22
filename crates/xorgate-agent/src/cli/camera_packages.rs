@@ -123,6 +123,9 @@ pub struct PkgEnv<'c> {
     pub arch: Option<String>,
     /// dpkg's journal of an unfinished run (`/var/lib/dpkg/updates`).
     pub dpkg_updates: PathBuf,
+    /// The locks a running package operation holds
+    /// (`camera_host::DPKG_LOCKS`).
+    pub dpkg_locks: Vec<PathBuf>,
     /// The record and the download directories.
     pub state_dir: PathBuf,
     /// The uid that must own the state directory (root).
@@ -132,6 +135,10 @@ pub struct PkgEnv<'c> {
     /// The agent's unit.
     pub service: String,
     pub limits: FetchLimits,
+    /// The bound of the real `apt-get install` (`camera_packages::T_INSTALL`
+    /// in every real run; the time limit's arithmetic always reserves that
+    /// constant).
+    pub install_bound: Duration,
     pub redirect_ok: RedirectCheck,
     /// TEST SEAM: where a pinned URL is fetched from instead. `None` in
     /// every real run: the catalog's URL is the one fetched.
@@ -172,11 +179,16 @@ impl PkgEnv<'static> {
             os_release: "/etc/os-release".into(),
             arch: xorgate_hal::camera_host::package_arch(),
             dpkg_updates: xorgate_hal::camera_host::DPKG_UPDATES.into(),
+            dpkg_locks: xorgate_hal::camera_host::DPKG_LOCKS
+                .iter()
+                .map(PathBuf::from)
+                .collect(),
             state_dir: STATE_DIR.into(),
             state_owner: 0,
             settings: xorgate_hal::settings_io::settings_path(&home),
             service: xorgate_core::update_plan::SERVICE.to_string(),
             limits: FetchLimits::default(),
+            install_bound: Duration::from_secs(pk::T_INSTALL),
             redirect_ok: Box::new(pk::redirect_allowed),
             url_map: None,
             now_ms: crate::now_ms(),
@@ -222,7 +234,7 @@ pub fn parse(rest: &[String]) -> Option<Args> {
 /// `main()` → exit code. `rest` excludes `camera requirements`.
 pub fn main(rest: &[String]) -> i32 {
     let Some(args) = parse(rest) else {
-        eprintln!("{USAGE}");
+        super::out::err(USAGE);
         return 2;
     };
     let rt = match tokio::runtime::Builder::new_current_thread()
@@ -231,7 +243,7 @@ pub fn main(rest: &[String]) -> i32 {
     {
         Ok(rt) => rt,
         Err(e) => {
-            eprintln!("xorgate-rs camera requirements: {e}");
+            super::out::err(&format!("xorgate-rs camera requirements: {e}"));
             return 1;
         }
     };
@@ -244,7 +256,9 @@ pub fn main(rest: &[String]) -> i32 {
             env.stop = stop_on_signals();
         }
         // Printed as it happens: a download takes a while.
-        run(&args, &env, &mut |line| println!("{line}")).await
+        // Through `out`: a line that cannot be written (the terminal hung
+        // up, the reader of the pipe is gone) is dropped, never a panic.
+        run(&args, &env, &mut |line| super::out::out(&line)).await
     })
 }
 
@@ -386,6 +400,11 @@ async fn tool(
     // for a moment after (what is still in the pipes). Not "until the pipes
     // close": something a package's script left running with the pipe open
     // must not make a finished install look like one that hangs.
+    // Set the moment the tool's exit status is known. From then on neither
+    // its bound nor a stop request applies: a tool that has finished is not
+    // "timed out", and its process group (whose leader is reaped) is not
+    // signalled.
+    let exited = std::cell::Cell::new(false);
     let done = async {
         let (mut o, mut e) = (Vec::new(), Vec::new());
         let status = {
@@ -405,8 +424,13 @@ async fn tool(
             tokio::pin!(reads);
             tokio::select! {
                 // Both pipes closed: the tool is going or gone.
-                _ = &mut reads => child.wait().await,
+                _ = &mut reads => {
+                    let status = child.wait().await;
+                    exited.set(true);
+                    status
+                }
                 status = child.wait() => {
+                    exited.set(true);
                     let _ = tokio::time::timeout(Duration::from_secs(2), &mut reads).await;
                     status
                 }
@@ -419,17 +443,22 @@ async fn tool(
     tokio::pin!(timer);
     let stop = stopped(&env.stop);
     tokio::pin!(stop);
-    let (mut timed_out, mut was_stopped, mut noted) = (false, false, false);
+    let (mut timed_out, mut was_stopped, mut noted, mut expired) = (false, false, false, false);
     let (status, o, e) = loop {
         tokio::select! {
             r = &mut done => break r,
-            _ = &mut timer, if !timed_out => {
+            _ = &mut timer, if !timed_out && !expired => {
+                expired = true;
                 // A killable step: its bound. The transaction: the last
-                // resort against an apt that hangs.
-                timed_out = true;
-                kill_group();
+                // resort against an apt that hangs. Not a tool that has
+                // already exited (its output is only being collected).
+                if !exited.get() {
+                    timed_out = true;
+                    kill_group();
+                }
             }
             _ = &mut stop, if !was_stopped && !noted => match end {
+                _ if exited.get() => noted = true,
                 End::Killable => {
                     was_stopped = true;
                     kill_group();
@@ -671,13 +700,24 @@ enum Failure {
     Stopped,
 }
 
-/// A download directory that is gone when this is dropped. (A run that is
-/// killed does not get here: the next run's sweep removes what it left.)
-struct Scratch(PathBuf);
+/// A download directory that is removed when this is dropped, WHILE IT IS
+/// ARMED. It is disarmed for the length of the apt transaction: whatever
+/// ends this command then (a panic, an early return), the files apt-get
+/// and dpkg are reading stay where they are. It is armed again only once
+/// apt-get is known to have exited by itself. A directory that is left (a
+/// run that was killed, an apt-get that had to be stopped at its bound and
+/// whose dpkg may live on) is removed by a later run's sweep, which does
+/// not run while a package operation holds the dpkg lock.
+struct Scratch {
+    dir: PathBuf,
+    armed: bool,
+}
 
 impl Drop for Scratch {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.0);
+        if self.armed {
+            let _ = std::fs::remove_dir_all(&self.dir);
+        }
     }
 }
 
@@ -714,6 +754,8 @@ pub async fn run(args: &Args, env: &PkgEnv<'_>, out: &mut dyn FnMut(String)) -> 
     // What the device has: the holds and the whole dpkg database.
     const NO_TIME: &str =
         "not enough time left in this run; run `sudo xorgate-rs camera requirements --install`";
+    const BUSY: &str =
+        "another package operation is running on this device; try again when it has finished";
     let (Some(held_bound), Some(db_bound)) = (clock.plain(pk::T_HELD), clock.plain(pk::T_DPKG))
     else {
         say(format!("WARN nothing was looked at: {NO_TIME}"));
@@ -736,6 +778,11 @@ pub async fn run(args: &Args, env: &PkgEnv<'_>, out: &mut dyn FnMut(String)) -> 
             xorgate_hal::camera_host::dpkg_journal_pending(&env.dpkg_updates),
         )
     });
+    // Is a package operation RUNNING (someone holds the dpkg lock)? Asked
+    // after the database was read: while one runs, the database shows the
+    // very signs of an interrupted dpkg, and they pass by themselves.
+    // (Only root can ask; an unprivileged listing cannot tell.)
+    let busy = xorgate_hal::camera_host::dpkg_lock_held(&env.dpkg_locks) == Some(true);
     let plans = pk::plan(&declared, env.catalog, &host);
     let mut record = read_record(env);
 
@@ -751,14 +798,26 @@ pub async fn run(args: &Args, env: &PkgEnv<'_>, out: &mut dyn FnMut(String)) -> 
                 _ => i32::from(pk::needs_work(plan, held.as_deref())),
             });
         }
-        if let Some(how) = &interrupted {
+        if interrupted.is_some() && busy {
+            say(BUSY.to_string());
+            code = code.max(1);
+        } else if let Some(how) = &interrupted {
             say(format!(
                 "dpkg was interrupted on this device ({how}): nothing can be installed until `{}` has run",
                 pk::DPKG_REMEDY
             ));
             code = code.max(1);
         } else if code == 1 {
-            say("to install what is missing: sudo xorgate-rs camera requirements --install (or sudo xorgate-rs update)".to_string());
+            // What is true: a package to install, or only its hold to set.
+            let packages = plans
+                .iter()
+                .any(|p| !matches!(p.state, SetState::Satisfied));
+            say(if packages {
+                "to install what is missing: sudo xorgate-rs camera requirements --install (or sudo xorgate-rs update)"
+            } else {
+                "to set the hold again: sudo xorgate-rs camera requirements --install (or sudo xorgate-rs update)"
+            }
+            .to_string());
         }
         return code;
     }
@@ -770,7 +829,10 @@ pub async fn run(args: &Args, env: &PkgEnv<'_>, out: &mut dyn FnMut(String)) -> 
         Ok(false) => None,
         Ok(true) => match lock_state_dir(env) {
             Ok(lock) => {
-                let swept = sweep_downloads(env);
+                // Not while a package operation runs: the dpkg of an
+                // apt-get this command once had to stop at its bound may
+                // still be reading one of those directories.
+                let swept = if busy { 0 } else { sweep_downloads(env) };
                 if swept > 0 {
                     say(format!(
                         "removed {swept} download director{} an earlier run left in {}",
@@ -840,6 +902,16 @@ pub async fn run(args: &Args, env: &PkgEnv<'_>, out: &mut dyn FnMut(String)) -> 
                 }
                 // An interrupted dpkg: apt would refuse after the download.
                 // Said first, with the remedy, and nothing is fetched.
+                if let (SetState::Missing, Some(_), true) = (&plan.state, &interrupted, busy) {
+                    // The signs of an interrupted dpkg while someone holds
+                    // the dpkg lock: a package operation is simply running.
+                    say(format!(
+                        "WARN {} NOT installed: {BUSY} (nothing was downloaded or changed)",
+                        plan.id
+                    ));
+                    code = code.max(1);
+                    continue;
+                }
                 if let (SetState::Missing, Some(how)) = (&plan.state, &interrupted) {
                     say(format!(
                         "WARN {} NOT installed: dpkg was interrupted on this device ({how}). Run `{}` there, then `sudo xorgate-rs camera requirements --install` again; nothing was downloaded or changed",
@@ -878,7 +950,10 @@ pub async fn run(args: &Args, env: &PkgEnv<'_>, out: &mut dyn FnMut(String)) -> 
                             "WARN {} NOT installed: stopped on request before the install began; nothing was changed",
                             plan.id
                         ));
-                        return 1;
+                        // No further set is started; a set installed
+                        // earlier in this run still gets its restart below.
+                        code = code.max(1);
+                        break;
                     }
                     // The camera works; what is missing is said.
                     Err(Failure::Installed { installed, why }) => {
@@ -1063,13 +1138,13 @@ impl Job<'_, '_> {
                     env.state_dir.display()
                 ))
             })?;
-        let scratch = Scratch(dir);
+        let mut scratch = Scratch { dir, armed: true };
         // 2. Download and verify EVERY file before anything is installed.
         let mut files: Vec<String> = Vec::new();
         for p in &missing {
             let file = pk::check_package(p)
                 .map_err(|e| not(format!("{}: {e}; nothing was changed", p.name)))?;
-            let dest = scratch.0.join(&file);
+            let dest = scratch.dir.join(&file);
             let url = match &env.url_map {
                 Some(map) => map(&p.url),
                 None => p.url.clone(),
@@ -1156,6 +1231,9 @@ impl Job<'_, '_> {
         if *env.stop.borrow() {
             return Err(Failure::Stopped);
         }
+        // From here until apt-get has exited by itself, NOTHING removes the
+        // files it reads: not an early return, not a panic's unwind.
+        scratch.armed = false;
         say(format!(
             "{id}: installing {} with apt-get (never interrupted once begun)",
             missing
@@ -1168,11 +1246,16 @@ impl Job<'_, '_> {
             env,
             &env.apt_get,
             &pk::apt_install_args(&files, false),
-            Duration::from_secs(pk::T_INSTALL),
+            env.install_bound,
             End::Never,
             say,
         )
         .await;
+        // apt-get has exited. By itself: dpkg is done with the files, and
+        // they go. Stopped at its bound: dpkg, which apt runs in a session
+        // of its own, may live on and still read them; they are left for a
+        // later run's sweep (which waits for the dpkg lock to be free).
+        scratch.armed = !res.timed_out;
         drop(scratch);
         // What is there now. Its time was reserved; a failure to read is
         // "could not confirm", never "not installed".
@@ -1235,8 +1318,9 @@ impl Job<'_, '_> {
         if res.failed || !wrong.is_empty() {
             let why = if res.timed_out {
                 format!(
-                    "apt-get install did not finish within {} s and was stopped (the one case in which a running install is ended)",
-                    pk::T_INSTALL
+                    "apt-get install did not finish within {} s and was stopped (the one case in which a running install is ended); its files are left in {} until a later run removes them, in case dpkg is still at work",
+                    env.install_bound.as_secs(),
+                    env.state_dir.display()
                 )
             } else if res.failed {
                 format!("apt-get install failed ({})", last_line(&res))

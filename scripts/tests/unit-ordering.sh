@@ -18,6 +18,9 @@
 #      exactly one agent runs, the same one as with the pre-fix unit
 #   E. the updater's path: `systemctl restart xorgate-agent-rs` with JS
 #      inactive is not delayed
+#   G. the updater unit (xorgate-updater-rs.service as shipped) and a running
+#      apt transaction: what its start timeout and `systemctl stop` send to
+#      whom, with KillMode=mixed + TimeoutStopSec=15min (see the section)
 # Run (systemd must be PID 1):
 #   docker run -d --name xg-order --label xorgate.agent=<tag> --privileged --cgroupns=private \
 #     --tmpfs /run --tmpfs /run/lock -v "$PWD:/src:ro" debian:bookworm \
@@ -167,5 +170,138 @@ case $post in active/inactive|inactive/active) ok "power-cut boot: exactly one a
 
 systemctl stop xorgate-agent-rs xorgate-agent 2>/dev/null
 rm -f $D/xg-boot.target
+
+# ---- G: the updater unit and a running apt transaction ----
+# `xorgate-rs update` ends with the camera-packages step, which may be inside
+# an `apt-get install` when systemd stops the unit (its start timeout, a
+# `systemctl stop`, a shutdown). This runs the REAL shipped
+# xorgate-updater-rs.service (its KillMode and TimeoutStopSec as shipped;
+# only ExecStart and the two timeouts are replaced, to seconds) with
+# stand-ins shaped like the real processes:
+#   updater (the unit's main process)
+#     -> step, in its own process group   (`camera requirements --install`)
+#          -> apt, in its own process group  (the `apt-get install`)
+# and records what each of them was sent and whether "apt" got to finish.
+#   G1 control: KillMode=control-group (the unit before): the start timeout
+#      SIGTERMs apt itself.
+#   G2 control: KillMode=mixed with an updater that dies on SIGTERM (the
+#      default): systemd SIGKILLs what is left the moment the main process
+#      is gone. mixed ALONE does not let apt finish.
+#   G3 the shipped unit + an updater that passes the stop on and waits (what
+#      `xorgate-rs update` does in that step): apt survives the START TIMEOUT
+#      and finishes.
+#   G4 the same under `systemctl stop`: the stop waits for apt.
+#   G5 nothing to protect (the step is in a killable phase): `systemctl stop`
+#      returns promptly.
+#   G6 the bound: an apt that outlasts TimeoutStopSec is killed. (Shipped:
+#      15 min, above the 12.5 min an install and what follows it may take.)
+echo "== G. the updater unit and a running apt transaction"
+UL=/var/log/xg-updater.log
+cat > /usr/local/bin/xg-updater-standin <<'EOF'
+#!/bin/bash
+L=/var/log/xg-updater.log
+log() { echo "$1" >> $L; }
+# Each child in its own process group, as Command::process_group(0); the
+# `perl … exec` keeps the pid, so $! is the child itself.
+OWN='setpgrp(0,0); exec @ARGV'
+case ${1:-updater} in
+  apt)   # the `apt-get install`: $2 seconds of work
+    trap 'log "apt: GOT SIGTERM"; exit 143' TERM
+    log "apt: transaction begins"
+    sleep "$2" & wait $!
+    log "apt: transaction finished"; exit 0 ;;
+  step)  # `camera requirements --install`
+    what=$(cat /etc/xg-updater.step)
+    if [ "$what" = idle ]; then   # a killable phase: a stop ends it at once
+      trap 'log "step: stopped at once"; exit 1' TERM
+      log "step: downloading"; sleep 600 & wait $!; exit 1
+    fi
+    trap 'log "step: stop noted, waiting for apt"' TERM   # in its transaction
+    perl -e "$OWN" "$0" apt "${what#apt }" & apt=$!
+    while kill -0 "$apt" 2>/dev/null; do wait "$apt"; done
+    log "step: apt ended, hold and restart done"; exit 0 ;;
+  updater)
+    log "updater: update complete, the step begins"
+    perl -e "$OWN" "$0" step & step=$!
+    if [ "$(cat /etc/xg-updater.mode)" = passes ]; then   # what `xorgate-rs update` does
+      trap 'log "updater: stop passed on to the step"; kill -TERM "$step" 2>/dev/null' TERM
+      while kill -0 "$step" 2>/dev/null; do wait "$step"; done
+    else                                                  # SIGTERM's default: it dies
+      wait "$step"
+    fi
+    log "updater: exits"; exit 0 ;;
+esac
+EOF
+chmod 0755 /usr/local/bin/xg-updater-standin
+UPD="$REPO/systemd/xorgate-updater-rs.service"
+cp "$UPD" $D/xorgate-updater-rs.service
+mkdir -p $D/xorgate-updater-rs.service.d
+# <mode> <step> <TimeoutStartSec> [extra [Service] lines]
+updater_case() {
+  systemctl stop xorgate-updater-rs 2>/dev/null; systemctl reset-failed xorgate-updater-rs 2>/dev/null
+  : > $UL; echo "$1" > /etc/xg-updater.mode; echo "$2" > /etc/xg-updater.step
+  printf '[Service]\nExecStart=\nExecStart=/usr/local/bin/xg-updater-standin\nTimeoutStartSec=%s\n%b' "$3" "${4:-}" \
+    > $D/xorgate-updater-rs.service.d/10-test.conf
+  systemctl daemon-reload
+}
+wait_log() { for _ in $(seq "${2:-100}"); do grep -q "$1" $UL 2>/dev/null && return 0; sleep 0.1; done; return 1; }
+gone() { [ -z "$(cat "/sys/fs/cgroup/system.slice/xorgate-updater-rs.service/cgroup.procs" 2>/dev/null)" ]; }
+show_log() { sed 's/^/      /' $UL; }
+
+updater_case passes "apt 1" 60
+k=$(systemctl show -p KillMode --value xorgate-updater-rs); t=$(systemctl show -p TimeoutStopUSec --value xorgate-updater-rs)
+echo "    loaded: KillMode=$k TimeoutStopUSec=$t TimeoutStartUSec=$(systemctl show -p TimeoutStartUSec --value xorgate-updater-rs)"
+[ "$k" = mixed ] && [ "$t" = 15min ] && ok "G0: the shipped unit loads with KillMode=mixed and TimeoutStopSec=15min" || bad "G0: KillMode=$k TimeoutStopUSec=$t"
+grep -qx 'TimeoutStartSec=45min' "$UPD" && ok "G0: the shipped unit's TimeoutStartSec is 45min" || bad "G0: TimeoutStartSec"
+
+echo "  -- G1 (control) KillMode=control-group, as the unit was: the start timeout (3 s) with apt needing 8 s"
+updater_case dies "apt 8" 3 'KillMode=control-group\n'
+systemctl start xorgate-updater-rs 2>/dev/null; sleep 9; show_log
+grep -q 'apt: GOT SIGTERM' $UL && ! grep -q 'apt: transaction finished' $UL \
+  && ok "G1: with control-group the start timeout SIGTERMs apt itself; it does not finish" || bad "G1: control-group did not signal apt"
+
+echo "  -- G2 (control) KillMode=mixed, an updater that dies on SIGTERM: the start timeout (3 s) with apt needing 8 s"
+updater_case dies "apt 8" 3
+systemctl start xorgate-updater-rs 2>/dev/null; sleep 9; show_log
+! grep -q 'apt: GOT SIGTERM' $UL && ! grep -q 'apt: transaction finished' $UL && ! grep -q 'updater: exits' $UL && gone \
+  && ok "G2: mixed alone: apt got no SIGTERM, but it was KILLED when the main process went (it never finished)" || bad "G2: unexpected (see the log above)"
+
+echo "  -- G3 the shipped unit, an updater that passes the stop on and waits: the start timeout (3 s) with apt needing 8 s"
+updater_case passes "apt 8" 3
+t0=$(date +%s.%N); systemctl start xorgate-updater-rs 2>/dev/null; rc=$?; t1=$(date +%s.%N); show_log
+took=$(awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.1f", b - a }')
+echo "    systemctl start returned $rc after ${took}s; Result=$(systemctl show -p Result --value xorgate-updater-rs)"
+grep -q 'updater: stop passed on to the step' $UL && grep -q 'step: stop noted, waiting for apt' $UL && ok "G3: the timeout reached the updater only; it passed the stop on, the step noted it" || bad "G3: the stop was not passed on"
+grep -q 'apt: transaction finished' $UL && ! grep -q 'apt: GOT SIGTERM' $UL && ok "G3: apt was never signalled and FINISHED, 5 s after the start timeout" || bad "G3: apt did not finish"
+grep -q 'step: apt ended, hold and restart done' $UL && grep -q 'updater: exits' $UL && gone && ok "G3: the step did what follows the install; then the updater exited; nothing is left" || bad "G3: the step or the updater did not end in order"
+awk -v t="$took" 'BEGIN { exit !(t >= 7 && t < 14) }' && [ "$rc" != 0 ] && ok "G3: the start job failed (timeout) only once apt was done (${took}s)" || bad "G3: timing ${took}s rc=$rc"
+
+echo "  -- G4 the same, 'systemctl stop' 1 s into an apt needing 8 s"
+updater_case passes "apt 8" 60
+systemctl start --no-block xorgate-updater-rs; wait_log 'apt: transaction begins' || bad "G4: apt did not begin"
+sleep 1; t0=$(date +%s.%N); systemctl stop xorgate-updater-rs; t1=$(date +%s.%N); show_log
+took=$(awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.1f", b - a }')
+grep -q 'apt: transaction finished' $UL && ! grep -q 'apt: GOT SIGTERM' $UL && grep -q 'updater: exits' $UL && gone \
+  && ok "G4: 'systemctl stop' did not signal apt; apt finished, then the unit stopped" || bad "G4: apt did not finish under stop"
+awk -v t="$took" 'BEGIN { exit !(t >= 5 && t < 12) }' && ok "G4: the stop waited for apt (${took}s)" || bad "G4: stop took ${took}s"
+
+echo "  -- G5 nothing to protect: 'systemctl stop' while the step downloads"
+updater_case passes idle 60
+systemctl start --no-block xorgate-updater-rs; wait_log 'step: downloading' || bad "G5: the step did not begin"
+t0=$(date +%s.%N); systemctl stop xorgate-updater-rs; t1=$(date +%s.%N); show_log
+took=$(awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.1f", b - a }')
+grep -q 'step: stopped at once' $UL && gone && awk -v t="$took" 'BEGIN { exit !(t < 3) }' \
+  && ok "G5: with no transaction running the unit stops promptly (${took}s)" || bad "G5: stop took ${took}s"
+
+echo "  -- G6 the bound: TimeoutStopSec=4 s (shipped: 15 min), an apt needing 15 s"
+updater_case passes "apt 15" 60 'TimeoutStopSec=4\n'
+systemctl start --no-block xorgate-updater-rs; wait_log 'apt: transaction begins' || bad "G6: apt did not begin"
+t0=$(date +%s.%N); systemctl stop xorgate-updater-rs; t1=$(date +%s.%N); sleep 1; show_log
+took=$(awk -v a="$t0" -v b="$t1" 'BEGIN { printf "%.1f", b - a }')
+! grep -q 'apt: transaction finished' $UL && ! grep -q 'apt: GOT SIGTERM' $UL && gone && awk -v t="$took" 'BEGIN { exit !(t >= 3 && t < 8) }' \
+  && ok "G6: an apt that outlasts TimeoutStopSec is killed when it runs out (${took}s): the shipped 15 min must exceed the longest install" || bad "G6: stop took ${took}s"
+
+systemctl stop xorgate-updater-rs 2>/dev/null; systemctl reset-failed xorgate-updater-rs 2>/dev/null
+rm -rf $D/xorgate-updater-rs.service $D/xorgate-updater-rs.service.d /etc/xg-updater.mode /etc/xg-updater.step; systemctl daemon-reload
 echo "== result: $([ $fail = 0 ] && echo ALL PASS || echo FAILURES)"
 exit $fail

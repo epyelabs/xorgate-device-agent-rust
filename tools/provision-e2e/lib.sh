@@ -201,6 +201,7 @@ elif a[:2] == ["camera", "requirements"]:
         print("camera packages: arducam-libcamera: installed libcamera0.5 0.5.2+rpt20250909-1 (was 0.5.2+rpt20250903-1), libcamera-ipa 0.5.2+rpt20250909-1 (was 0.5.2+rpt20250903-1)")
         print("not a camera-packages line")
         print("camera packages: arducam-libcamera: apt hold set on libcamera0.5, libcamera-ipa")
+        print("camera packages: the camera appears when the agent starts next (or at its next camera re-listing, within 5 minutes); no reboot is needed")
     elif mode == "failed":
         print("camera packages: arducam-libcamera: downloading libcamera0.5 0.5.2+rpt20250909-1 (527340 bytes)")
         print("camera packages: WARN arducam-libcamera NOT installed: libcamera0.5_0.5.2+rpt20250909-1_arm64.deb was not accepted: sha256 mismatch: the file is 00, the catalog pins 85; nothing was changed. imx335 (cam0) will not appear until this succeeds: run `sudo xorgate-rs camera requirements --install` again")

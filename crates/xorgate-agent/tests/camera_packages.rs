@@ -109,6 +109,9 @@ async fn package_server(mode: &Mode) -> HttpStub {
             A
         } else if path == b {
             B
+        } else if path.starts_with("/libfoo9_") {
+            // The file of a second package set: its server never answers.
+            return Reply::Hang;
         } else {
             return Reply::status(404);
         };
@@ -171,6 +174,9 @@ env > "$D/apt.env"
 [ "$mode" = install-fail ] && { echo "E: Sub-process /usr/bin/dpkg returned an error code (1)" >&2; exit 100; }
 [ "$mode" = install-noop ] && exit 0
 [ "$mode" = install-slow ] && sleep 2
+# An install that hangs, with a "dpkg" of its own (apt runs dpkg in a session
+# of its own, so stopping apt-get's process group does not reach it).
+[ "$mode" = install-hangs ] && { setsid sh -c 'echo $$ > "$D/dpkg.pid"; exec sleep 60' & sleep 60; }
 # Something the package's script leaves running, with apt's output still open.
 [ "$mode" = install-lingers ] && { sleep 20 & }
 # Another package changes with the transaction.
@@ -245,6 +251,7 @@ impl Dev {
             os_release: dir.join("os-release"),
             arch: Some("arm64".to_string()),
             dpkg_updates: dir.join("dpkg-updates"),
+            dpkg_locks: vec![dir.join("dpkg-lock-frontend"), dir.join("dpkg-lock")],
             state_dir: dir.join("packages"),
             // The tests run as whoever runs them (root in the gate).
             state_owner: nix::unistd::geteuid().as_raw(),
@@ -255,6 +262,7 @@ impl Dev {
                 read: Duration::from_secs(5),
                 total: Duration::from_secs(20),
             },
+            install_bound: Duration::from_secs(pk::T_INSTALL),
             // The REAL policy: https and the pinned hosts only.
             redirect_ok: Box::new(pk::redirect_allowed),
             url_map: Some(Box::new(move |url: &str| url.replacen(BASE, &to, 1))),
@@ -541,7 +549,9 @@ async fn install_downloads_verifies_installs_holds_and_restarts() {
             "  apt hold: set on every package",
             "  installed by xorgate-rs; it replaced: libcamera0.5 0.5.2+rpt20250903-1, libcamera-ipa 0.5.2+rpt20250903-1",
             "  to go back: sudo apt-mark unhold libcamera0.5 libcamera-ipa",
-            "  to go back: sudo apt-get install --allow-downgrades libcamera0.5=0.5.2+rpt20250903-1 libcamera-ipa=0.5.2+rpt20250903-1",
+            "  to go back: sudo apt-get install -y --allow-downgrades libcamera0.5=0.5.2+rpt20250903-1 libcamera-ipa=0.5.2+rpt20250903-1",
+            "  to go back: then: sudo systemctl restart xorgate-agent-rs (until the agent restarts, its running captures keep the replaced library loaded and the port still reads ok)",
+            "  (going back does not last while a port is set to a sensor that needs these packages: the next `xorgate-rs update` installs them again. Set the port to another sensor or to `none` first)",
         ]
     );
 }
@@ -605,7 +615,8 @@ async fn only_what_is_missing_is_done() {
         lines[3..],
         [
             "  apt hold: set on every package",
-            "  to go back: sudo apt-mark unhold libcamera-ipa"
+            "  to go back: sudo apt-mark unhold libcamera-ipa",
+            "  (going back does not last while a port is set to a sensor that needs these packages: the next `xorgate-rs update` installs them again. Set the port to another sensor or to `none` first)",
         ]
     );
 
@@ -845,6 +856,83 @@ async fn the_sensors_of_a_claim_response() {
     );
 }
 
+/// Bench findings (2026-11-22, bench 2): the "to go back" lines must work
+/// as printed, say what else is needed, and be printed only for what is
+/// still in place; with only the hold missing the listing says so, and
+/// `--install` sets it without a download or an apt-get.
+#[tokio::test]
+async fn going_back_and_the_hold_alone() {
+    let dev = Dev::new("go-back").await;
+    assert_eq!(
+        dev.run(&["--install", "--quiet", "--no-restart"]).await.0,
+        0
+    );
+    let (hits, apt_calls) = (dev.stub.hits(), dev.read("apt.log").lines().count());
+
+    // Someone released the hold: the packages are fine, the hold is not.
+    dev.set("held", "");
+    let (code, lines) = dev.run(&[]).await;
+    assert_eq!(code, 1, "the hold is to be set");
+    assert_eq!(
+        lines[3..],
+        [
+            "  apt hold: MISSING on libcamera0.5, libcamera-ipa (an apt upgrade may replace them)",
+            "  installed by xorgate-rs; it replaced: libcamera0.5 0.5.2+rpt20250903-1, libcamera-ipa 0.5.2+rpt20250903-1",
+            // No hold exists: no "unhold" line.
+            "  to go back: sudo apt-get install -y --allow-downgrades libcamera0.5=0.5.2+rpt20250903-1 libcamera-ipa=0.5.2+rpt20250903-1",
+            "  to go back: then: sudo systemctl restart xorgate-agent-rs (until the agent restarts, its running captures keep the replaced library loaded and the port still reads ok)",
+            "  (going back does not last while a port is set to a sensor that needs these packages: the next `xorgate-rs update` installs them again. Set the port to another sensor or to `none` first)",
+            // Not "to install what is missing": no package is.
+            "to set the hold again: sudo xorgate-rs camera requirements --install (or sudo xorgate-rs update)",
+        ]
+    );
+    // --install in that state sets the hold and nothing else: no download,
+    // no apt-get, no restart of the agent.
+    assert_eq!(
+        dev.run(&["--install", "--quiet"]).await,
+        (
+            0,
+            vec![
+                "camera packages: arducam-libcamera: apt hold set on libcamera0.5, libcamera-ipa"
+                    .to_string()
+            ]
+        )
+    );
+    assert_eq!(dev.stub.hits(), hits);
+    assert_eq!(dev.read("apt.log").lines().count(), apt_calls);
+    assert_eq!(dev.read("systemctl.log"), "");
+    assert_eq!(dev.read("held"), "libcamera0.5\nlibcamera-ipa\n");
+    assert_eq!(dev.run(&[]).await.0, 0);
+
+    // Gone back by hand: the hold released, the stock versions installed.
+    // The record still tells what this command once did, but nothing of it
+    // is in place any more, so no "to go back" line is printed.
+    dev.set("held", "");
+    dev.installed(&[("libcamera0.5", STOCK), ("libcamera-ipa", STOCK)]);
+    let (code, lines) = dev.run(&[]).await;
+    assert_eq!(code, 1);
+    assert_eq!(
+        lines[1..],
+        [
+            "  libcamera0.5   required 0.5.2+rpt20250909-1  installed 0.5.2+rpt20250903-1  MISSING",
+            "  libcamera-ipa  required 0.5.2+rpt20250909-1  installed 0.5.2+rpt20250903-1  MISSING",
+            "to install what is missing: sudo xorgate-rs camera requirements --install (or sudo xorgate-rs update)",
+        ]
+    );
+    // Half-way back (the hold released, one package put back): a line only
+    // for the package that is still this command's.
+    dev.installed(&[("libcamera0.5", STOCK), ("libcamera-ipa", V)]);
+    let (_, lines) = dev.run(&[]).await;
+    assert_eq!(
+        lines[3..6],
+        [
+            "  installed by xorgate-rs; it replaced: libcamera-ipa 0.5.2+rpt20250903-1",
+            "  to go back: sudo apt-get install -y --allow-downgrades libcamera-ipa=0.5.2+rpt20250903-1",
+            "  to go back: then: sudo systemctl restart xorgate-agent-rs (until the agent restarts, its running captures keep the replaced library loaded and the port still reads ok)"
+        ]
+    );
+}
+
 /// Review N1 + N6: the state directory is root's own real directory or it
 /// is not used; a second run is kept out; what a killed run left behind is
 /// swept at the start of the next.
@@ -1061,7 +1149,9 @@ async fn the_record_is_truthful_across_a_partial_install() {
         [
             "  installed by xorgate-rs; it replaced: libcamera0.5 0.5.2+rpt20250903-1, libcamera-ipa 0.5.2+rpt20250903-1",
             "  to go back: sudo apt-mark unhold libcamera0.5 libcamera-ipa",
-            "  to go back: sudo apt-get install --allow-downgrades libcamera0.5=0.5.2+rpt20250903-1 libcamera-ipa=0.5.2+rpt20250903-1",
+            "  to go back: sudo apt-get install -y --allow-downgrades libcamera0.5=0.5.2+rpt20250903-1 libcamera-ipa=0.5.2+rpt20250903-1",
+            "  to go back: then: sudo systemctl restart xorgate-agent-rs (until the agent restarts, its running captures keep the replaced library loaded and the port still reads ok)",
+            "  (going back does not last while a port is set to a sensor that needs these packages: the next `xorgate-rs update` installs them again. Set the port to another sensor or to `none` first)",
         ]
     );
 }
@@ -1226,6 +1316,243 @@ async fn a_process_left_behind_by_the_install_does_not_hold_it_up() {
             .any(|l| l.contains(": installed libcamera0.5 ")),
         "{lines:?}"
     );
+
+    // The install's bound runs out while only its OUTPUT is still being
+    // collected (apt-get itself exited long before): a tool that has
+    // finished is not "timed out" and is not signalled (review F6).
+    let mut dev = Dev::new("lingers-bound").await;
+    dev.set("apt.mode", "install-lingers");
+    dev.env.install_bound = Duration::from_millis(1000);
+    let (code, lines) = dev.run(&["--install", "--quiet", "--no-restart"]).await;
+    assert_eq!(code, 0, "{lines:?}");
+    assert!(
+        !lines.iter().any(|l| l.contains("did not finish")),
+        "{lines:?}"
+    );
+    assert_eq!(dev.read("held"), "libcamera0.5\nlibcamera-ipa\n");
+}
+
+/// Another process holding the dpkg lock (`fcntl`), as a running apt or
+/// dpkg does. `None` where there is no perl to hold it with.
+struct LockHolder(std::process::Child);
+
+impl LockHolder {
+    fn hold(path: &Path) -> Option<Self> {
+        use std::io::BufRead;
+        if !Path::new("/usr/bin/perl").exists() {
+            eprintln!("SKIPPED the dpkg-lock part: no perl to hold the lock with");
+            return None;
+        }
+        // struct flock on 64-bit Linux: l_type, l_whence, pad, l_start, l_len, l_pid, pad.
+        let script = r#"use Fcntl; open(my $f, ">", $ARGV[0]) or die "open: $!"; my $l = pack("s s x4 q q i x4", F_WRLCK, 0, 0, 0, 0); fcntl($f, F_SETLK, $l) or die "lock: $!"; $| = 1; print "locked\n"; sleep 120;"#;
+        let mut child = xorgate_hal::child::std_command("/usr/bin/perl")
+            .args(["-e", script])
+            .arg(path)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let mut line = String::new();
+        std::io::BufReader::new(child.stdout.take().unwrap())
+            .read_line(&mut line)
+            .unwrap();
+        assert_eq!(line, "locked\n", "the lock holder");
+        Some(Self(child))
+    }
+}
+
+impl Drop for LockHolder {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+/// Review F5: while another package operation RUNS, dpkg's journal is not
+/// empty and packages sit half-installed: the signs of an interrupted
+/// dpkg, but passing ones. The root command asks the dpkg lock and says
+/// which it is.
+#[tokio::test]
+async fn a_running_package_operation_is_not_called_an_interrupted_dpkg() {
+    let dev = Dev::new("busy").await;
+    dev.set(
+        "installed.tsv",
+        &format!("libcamera0.5\t{STOCK}\tii \nlibcamera-ipa\t{STOCK}\tii \nfoo\t1\tiU \n"),
+    );
+    std::fs::create_dir_all(&dev.env.dpkg_updates).unwrap();
+    std::fs::write(dev.env.dpkg_updates.join("0003"), b"x").unwrap();
+    // Nobody holds the lock (the lock files do not even exist): interrupted.
+    let (code, lines) = dev.run(&["--install", "--quiet"]).await;
+    assert_eq!(code, 1);
+    assert!(
+        lines[0].contains("dpkg was interrupted on this device (foo is unpacked, not configured)"),
+        "{lines:?}"
+    );
+    let Some(holder) = LockHolder::hold(&dev.env.dpkg_locks[1]) else {
+        return;
+    };
+    assert_eq!(
+        xorgate_hal::camera_host::dpkg_lock_held(&dev.env.dpkg_locks),
+        Some(true)
+    );
+    let (code, lines) = dev.run(&["--install", "--quiet"]).await;
+    assert_eq!(
+        (code, lines),
+        (
+            1,
+            vec!["camera packages: WARN arducam-libcamera NOT installed: another package operation is running on this device; try again when it has finished (nothing was downloaded or changed)".to_string()]
+        )
+    );
+    assert_eq!((dev.stub.hits(), dev.read("apt.log")), (0, String::new()));
+    let (code, lines) = dev.run(&[]).await;
+    assert_eq!(code, 1);
+    assert_eq!(
+        lines.last().unwrap(),
+        "another package operation is running on this device; try again when it has finished"
+    );
+    // The operation ends and the signs are still there: THEN it is an
+    // interrupted dpkg.
+    drop(holder);
+    assert_eq!(
+        xorgate_hal::camera_host::dpkg_lock_held(&dev.env.dpkg_locks),
+        Some(false)
+    );
+    let (_, lines) = dev.run(&[]).await;
+    assert!(
+        lines
+            .last()
+            .unwrap()
+            .starts_with("dpkg was interrupted on this device ("),
+        "{lines:?}"
+    );
+    // No lock file can be opened: it cannot be told.
+    assert_eq!(
+        xorgate_hal::camera_host::dpkg_lock_held(&[dev.dir.join("no-such-lock")]),
+        None
+    );
+}
+
+/// The download directory is never removed while the real install may
+/// still be alive. An apt-get that had to be stopped at its bound (the
+/// last resort) leaves the files where they are: its dpkg, which runs in
+/// a session of its own, may still be reading them. A later run removes
+/// them, but not while a package operation holds the dpkg lock.
+#[tokio::test]
+async fn the_files_of_an_install_that_had_to_be_stopped_are_left_for_the_sweep() {
+    let mut dev = Dev::new("bound").await;
+    dev.set("apt.mode", "install-hangs");
+    dev.env.install_bound = Duration::from_millis(1500);
+    let t0 = std::time::Instant::now();
+    let (code, lines) = dev.run(&["--install", "--quiet", "--no-restart"]).await;
+    assert_eq!(code, 1);
+    assert!(t0.elapsed() < Duration::from_secs(15), "{:?}", t0.elapsed());
+    assert_eq!(
+        lines.last().unwrap(),
+        "camera packages: WARN arducam-libcamera NOT installed: apt-get install did not finish within 1 s and was stopped (the one case in which a running install is ended); its files are left in <dir>/packages until a later run removes them, in case dpkg is still at work; nothing was changed. imx335 (cam0) will not appear until this succeeds: run `sudo xorgate-rs camera requirements --install` again"
+    );
+    // The "dpkg" (its own session) outlived the stop of apt-get's group…
+    let dpkg: i32 = dev.read("dpkg.pid").trim().parse().unwrap();
+    assert!(
+        Path::new(&format!("/proc/{dpkg}")).exists(),
+        "the stand-in dpkg is gone"
+    );
+    // …and the files it may be reading are still there.
+    let left: Vec<String> = dev
+        .kept()
+        .into_iter()
+        .filter(|n| n.starts_with("download-"))
+        .collect();
+    assert_eq!(left.len(), 1, "{:?}", dev.kept());
+    let dir = dev.env.state_dir.join(&left[0]);
+    assert!(dir.join(file_a()).exists() && dir.join(file_b()).exists());
+
+    // A later run while a package operation still holds the dpkg lock: the
+    // directory is NOT swept.
+    dev.set("apt.mode", "ok");
+    dev.env.install_bound = Duration::from_secs(pk::T_INSTALL);
+    if let Some(holder) = LockHolder::hold(&dev.env.dpkg_locks[0]) {
+        let (code, lines) = dev.run(&["--install", "--quiet", "--no-restart"]).await;
+        assert_eq!(code, 0, "{lines:?}");
+        assert!(!lines.iter().any(|l| l.contains("removed ")), "{lines:?}");
+        assert!(
+            dir.join(file_a()).exists(),
+            "swept under a running package operation"
+        );
+        drop(holder);
+    }
+    // The lock is free: the next run removes it.
+    let (code, lines) = dev.run(&["--install", "--quiet", "--no-restart"]).await;
+    assert_eq!(code, 0, "{lines:?}");
+    assert_eq!(
+        lines[0],
+        "camera packages: removed 1 download directory an earlier run left in <dir>/packages"
+    );
+    assert!(!dir.exists());
+    let _ = nix::sys::signal::kill(
+        nix::unistd::Pid::from_raw(dpkg),
+        nix::sys::signal::Signal::SIGKILL,
+    );
+}
+
+/// Review F6: a stop request during a LATER set does not skip the agent's
+/// restart for a set installed earlier in the same run.
+#[tokio::test]
+async fn a_stop_during_a_later_set_keeps_the_restart_for_an_earlier_one() {
+    let mut dev = Dev::new("two-sets").await;
+    // A second package set, needed by the imx219 on cam1; its one file
+    // never arrives.
+    let c: &[u8] = b"a third tiny package\n";
+    let mut cat = dev.env.catalog.clone();
+    cat.package_sets
+        .push(xorgate_core::camera_catalog::PackageSet {
+            id: "extra-set".into(),
+            label: "a second set".into(),
+            apt_hold: false,
+            targets: vec![PackageTarget {
+                os: "bookworm".into(),
+                arch: "arm64".into(),
+                packages: vec![Package {
+                    name: "libfoo9".into(),
+                    version: "1.0".into(),
+                    url: format!("{BASE}libfoo9_1.0_arm64.deb"),
+                    sha256: sha(c),
+                    bytes: c.len() as u64,
+                }],
+            }],
+        });
+    cat.sensors
+        .iter_mut()
+        .find(|s| s.id == "imx219")
+        .unwrap()
+        .package_set = Some("extra-set".into());
+    dev.env.catalog = Box::leak(Box::new(cat));
+    let (stop, hits) = (dev.stop.clone(), dev.stub.hits.clone());
+    tokio::spawn(async move {
+        // Once the second set's download has begun (the third request).
+        for _ in 0..500 {
+            if hits.load(std::sync::atomic::Ordering::SeqCst) >= 3 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        let _ = stop.send(true);
+    });
+    let (code, lines) = dev.run(&["--install"]).await;
+    assert_eq!(code, 1, "{lines:?}");
+    let n = lines.len();
+    assert_eq!(
+        lines[n - 3..],
+        [
+            "camera packages: extra-set: downloading libfoo9 1.0 (21 bytes)",
+            "camera packages: WARN extra-set NOT installed: stopped on request before the install began; nothing was changed",
+            "camera packages: the agent was restarted so the camera is listed again; no reboot is needed",
+        ],
+        "{lines:?}"
+    );
+    // The first set IS installed and held, and the agent was restarted.
+    assert_eq!(dev.read("held"), "libcamera0.5\nlibcamera-ipa\n");
+    assert_eq!(dev.read("systemctl.log"), "try-restart xorgate-agent-rs\n");
 }
 
 /// Review S1: a stop request (SIGTERM, Ctrl-C) ends a killable step at

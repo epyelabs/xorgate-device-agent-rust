@@ -694,14 +694,31 @@ pub fn merge_record(
 }
 
 /// The commands that undo by hand what this command did (printed by the
-/// listing and in the guide): release the holds it set, then put the
-/// replaced versions back from apt. `installed` = the versions installed
-/// now: a package that is no longer at the version this command put there
-/// was changed since, and is left out.
-pub fn rollback_commands(rec: &SetRecord, installed: &BTreeMap<String, String>) -> Vec<String> {
+/// listing and in the guide), ONLY for what is still in place:
+/// - `apt-mark unhold` for the holds it set that still exist (`held` = the
+///   packages on hold now; `None` = that could not be read, and no unhold
+///   is offered);
+/// - `apt-get install -y --allow-downgrades name=version` for the packages
+///   that are still at the version it put there (`installed` = the versions
+///   installed now), back to what was there before; `apt-get remove -y` for
+///   those that were not installed before. `-y`: the lines must work as
+///   printed, also where there is no terminal to answer apt's question.
+///
+/// Nothing still in place = no line (the listing after going back).
+pub fn rollback_commands(
+    rec: &SetRecord,
+    installed: &BTreeMap<String, String>,
+    held: Option<&[String]>,
+) -> Vec<String> {
     let mut out = Vec::new();
-    if !rec.held.is_empty() {
-        out.push(format!("sudo apt-mark unhold {}", rec.held.join(" ")));
+    let unhold: Vec<&str> = rec
+        .held
+        .iter()
+        .filter(|n| held.is_some_and(|h| h.contains(n)))
+        .map(String::as_str)
+        .collect();
+    if !unhold.is_empty() {
+        out.push(format!("sudo apt-mark unhold {}", unhold.join(" ")));
     }
     let ours: Vec<&PackageRecord> = rec
         .packages
@@ -714,7 +731,7 @@ pub fn rollback_commands(rec: &SetRecord, installed: &BTreeMap<String, String>) 
         .collect();
     if !back.is_empty() {
         out.push(format!(
-            "sudo apt-get install --allow-downgrades {}",
+            "sudo apt-get install -y --allow-downgrades {}",
             back.join(" ")
         ));
     }
@@ -724,10 +741,20 @@ pub fn rollback_commands(rec: &SetRecord, installed: &BTreeMap<String, String>) 
         .map(|p| p.name.as_str())
         .collect();
     if !gone.is_empty() {
-        out.push(format!("sudo apt-get remove {}", gone.join(" ")));
+        out.push(format!("sudo apt-get remove -y {}", gone.join(" ")));
     }
     out
 }
+
+/// What the listing adds under its "to go back" lines when packages are
+/// put back: the agent must be restarted (its running captures keep the
+/// removed library loaded, so the port keeps reading `ok` until then).
+pub const AFTER_GOING_BACK: &str =
+    "then: sudo systemctl restart xorgate-agent-rs (until the agent restarts, its running captures keep the replaced library loaded and the port still reads ok)";
+
+/// …and that going back does not last by itself.
+pub const GOING_BACK_DOES_NOT_LAST: &str =
+    "going back does not last while a port is set to a sensor that needs these packages: the next `xorgate-rs update` installs them again. Set the port to another sensor or to `none` first";
 
 // ---------------------------------------------------------------------------
 // what the command prints
@@ -808,8 +835,18 @@ pub fn listing(plan: &SetPlan, held: Option<&[String]>, record: Option<&SetRecor
                 replaced.join(", ")
             ));
         }
-        for cmd in rollback_commands(rec, &installed) {
+        let back = rollback_commands(rec, &installed, held);
+        // The agent's restart matters when packages are put back; a
+        // released hold alone changes nothing the agent runs.
+        let packages = back.iter().any(|c| c.contains("apt-get"));
+        for cmd in &back {
             out.push(format!("  to go back: {cmd}"));
+        }
+        if packages {
+            out.push(format!("  to go back: {AFTER_GOING_BACK}"));
+        }
+        if !back.is_empty() {
+            out.push(format!("  ({GOING_BACK_DOES_NOT_LAST})"));
         }
     }
     out
@@ -1275,10 +1312,10 @@ mod tests {
         assert_eq!(first.packages[0].replaced.as_deref(), Some(STOCK));
         assert_eq!(first.held, held);
         assert_eq!(
-            rollback_commands(&first, &both),
+            rollback_commands(&first, &both, Some(&held)),
             [
                 "sudo apt-mark unhold libcamera0.5 libcamera-ipa",
-                "sudo apt-get install --allow-downgrades libcamera0.5=0.5.2+rpt20250903-1 libcamera-ipa=0.5.2+rpt20250903-1",
+                "sudo apt-get install -y --allow-downgrades libcamera0.5=0.5.2+rpt20250903-1 libcamera-ipa=0.5.2+rpt20250903-1",
             ]
         );
         // A second run with nothing to replace: the record is as it was.
@@ -1317,8 +1354,8 @@ mod tests {
             .iter()
             .all(|p| p.replaced.as_deref() != Some(V)));
         assert_eq!(
-            rollback_commands(&run2, &both)[1],
-            "sudo apt-get install --allow-downgrades libcamera0.5=0.5.2+rpt20250903-1 libcamera-ipa=0.5.2+rpt20250903-1"
+            rollback_commands(&run2, &both, Some(&held))[1],
+            "sudo apt-get install -y --allow-downgrades libcamera0.5=0.5.2+rpt20250903-1 libcamera-ipa=0.5.2+rpt20250903-1"
         );
         // Without run 1's record (the old behaviour's input): a package
         // found AT the pinned version is simply not recorded, rather than
@@ -1335,10 +1372,10 @@ mod tests {
         assert_eq!(blind.packages.len(), 1);
         assert_eq!(blind.packages[0].name, "libcamera-ipa");
         assert_eq!(
-            rollback_commands(&blind, &both),
+            rollback_commands(&blind, &both, Some(&held)),
             [
                 "sudo apt-mark unhold libcamera0.5 libcamera-ipa",
-                "sudo apt-get install --allow-downgrades libcamera-ipa=0.5.2+rpt20250903-1",
+                "sudo apt-get install -y --allow-downgrades libcamera-ipa=0.5.2+rpt20250903-1",
             ]
         );
 
@@ -1371,8 +1408,8 @@ mod tests {
         // is left out of the way back.
         let changed = now(&[("libcamera0.5", "0.5.3-1"), ("libcamera-ipa", V)]);
         assert_eq!(
-            rollback_commands(&first, &changed)[1],
-            "sudo apt-get install --allow-downgrades libcamera-ipa=0.5.2+rpt20250903-1"
+            rollback_commands(&first, &changed, Some(&held))[1],
+            "sudo apt-get install -y --allow-downgrades libcamera-ipa=0.5.2+rpt20250903-1"
         );
         // A package that was not installed before; a hold this command did
         // not set is not released.
@@ -1383,10 +1420,10 @@ mod tests {
             1,
         );
         assert_eq!(
-            rollback_commands(&none, &both),
+            rollback_commands(&none, &both, Some(&held)),
             [
                 "sudo apt-mark unhold libcamera-ipa",
-                "sudo apt-get remove libcamera0.5 libcamera-ipa"
+                "sudo apt-get remove -y libcamera0.5 libcamera-ipa"
             ]
         );
         // The file round-trips.
@@ -1420,8 +1457,20 @@ mod tests {
             [
                 "  installed by xorgate-rs; it replaced: libcamera0.5 0.5.2+rpt20250903-1, libcamera-ipa 0.5.2+rpt20250903-1",
                 "  to go back: sudo apt-mark unhold libcamera0.5 libcamera-ipa",
-                "  to go back: sudo apt-get install --allow-downgrades libcamera0.5=0.5.2+rpt20250903-1 libcamera-ipa=0.5.2+rpt20250903-1",
+                "  to go back: sudo apt-get install -y --allow-downgrades libcamera0.5=0.5.2+rpt20250903-1 libcamera-ipa=0.5.2+rpt20250903-1",
+                "  to go back: then: sudo systemctl restart xorgate-agent-rs (until the agent restarts, its running captures keep the replaced library loaded and the port still reads ok)",
+                "  (going back does not last while a port is set to a sensor that needs these packages: the next `xorgate-rs update` installs them again. Set the port to another sensor or to `none` first)",
             ]
+        );
+        // Only what is still in place: no hold now = no unhold line; the
+        // holds unknown = none offered either; nothing left = no line.
+        let no_holds: &[String] = &[];
+        assert_eq!(rollback_commands(&first, &both, Some(no_holds)).len(), 1);
+        assert_eq!(rollback_commands(&first, &both, None).len(), 1);
+        assert!(rollback_commands(&first, &BTreeMap::new(), Some(no_holds)).is_empty());
+        assert_eq!(
+            rollback_commands(&first, &BTreeMap::new(), Some(&held)),
+            ["sudo apt-mark unhold libcamera0.5 libcamera-ipa"]
         );
     }
 }

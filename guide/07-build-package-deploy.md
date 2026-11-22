@@ -218,7 +218,9 @@ What `--install` does (`cli/camera_packages.rs`; the plan and every check are in
 1. **Takes the state directory** `/var/lib/xorgate-packages`: it must be a real directory (not a
    link), owned by root, that nobody else can write; it is created 0755 when absent and refused
    otherwise. The run locks it (a second run is turned away) and removes the `download-*`
-   directories an earlier run left behind.
+   directories an earlier run left behind. The directory and its `lock` file (0600) are
+   created as soon as a run finds work to do, also when it then refuses (not enough time, a
+   busy dpkg) and changes no package.
 2. **Refuses** in one sentence when the catalog has no packages for this OS release and
    architecture, or a pinned entry is not plain. Nothing is changed.
 3. **Refuses before any download when dpkg was interrupted** (below).
@@ -230,9 +232,13 @@ What `--install` does (`cli/camera_packages.rs`; the plan and every check are in
    name), over HTTPS, at most four times; the HTTP library itself follows none. No credentials,
    no proxy, and never more bytes than the catalog's `bytes`.
 5. **Verifies** size and sha256 against the pin BEFORE anything is installed. A file that is not
-   the pinned one is refused, and the download directory is removed when the run ends. (A run
-   that is KILLED cannot remove it; the next run's sweep in step 1 does. The directory is
-   root-only and holds about 1 MB.)
+   the pinned one is refused, and the download directory is removed when the run ends, with
+   two exceptions. A run that is KILLED cannot remove it. And it is never removed while the
+   real install may still be alive: not by an early return, not by a panic, and not after an
+   `apt-get` that had to be stopped at its 600 s bound (apt runs dpkg in a session of its own,
+   which that stop does not reach). What is left is removed by a later run's sweep (step 1),
+   which does not run while a package operation holds the dpkg lock. The directory is
+   root-only and holds about 1 MB.
 6. **Asks apt first**: `apt-get -s install <those files>` (a simulation) and reads the plan. It
    must be exactly the pinned packages in the pinned versions: every one of them, nothing else
    installed, nothing removed. Otherwise the install is refused before the system is touched.
@@ -274,6 +280,7 @@ path (`/usr/bin/apt-get`, `/usr/bin/apt-mark`, `/usr/bin/dpkg-query`).
 | `--time-limit` a caller gives (`STEP_LIMIT`) | 1320 (22 min) | |
 | the caller's backstop: the limit + 60 | 1380 | |
 | the updater unit, `TimeoutStartSec` | 2700 (45 min) | |
+| the updater unit, `TimeoutStopSec` (`KillMode=mixed`) | 900 (15 min) | |
 
 - A step that "may be cut short" is ended by its bound and by a stop request (SIGTERM, Ctrl-C),
   and its tool is killed as a process group, so nothing it started is left running.
@@ -289,20 +296,45 @@ path (`/usr/bin/apt-get`, `/usr/bin/apt-mark`, `/usr/bin/dpkg-query`).
   camera requirements --install`".
 - **`xorgate-rs update`** runs the step AFTER the update is complete, so the step can no longer
   keep the new build from being restarted. It gives the step `min(1320, what is left of the
-  unit's 45 minutes − 120)` seconds. By hand (no unit) the limit is 1320.
-- **What systemd does when the unit's `TimeoutStartSec` runs out:** it fails the start job and
-  stops the unit, which with the default `KillMode=control-group` sends SIGTERM to EVERY
-  process in the unit's cgroup (the updater, the step, and any apt or dpkg they started), and
-  SIGKILL 90 s later to what is left. That is the one thing that could interrupt dpkg, and it
-  can no longer fall into an install: the install starts only when its full 600 s and the 150 s
-  after it fit before the step's limit, the limit ends at least 120 s before the unit's budget,
-  and the unit's budget was raised from the JS unit's 20 minutes to 45 so that an ordinary
-  update (minutes) leaves the step its whole 22. Worst case: an update that itself used more
-  than 21 minutes leaves less than the step's limit; with less than 750 s left the install is
-  not started and one line says so.
+  unit's budget − 120)` seconds. By hand (no unit) the limit is 1320. The unit's budget is not
+  taken from the unit file: the updater asks systemd what the LOADED unit has (`systemctl show
+  -p TimeoutStartUSec`), before it touches the unit file and again after its `daemon-reload`,
+  and uses the smallest of the two answers and this build's 45 minutes. If systemd cannot be
+  asked, it assumes 20 minutes (the smallest budget an updater unit of ours has had).
+- **What systemd does when it stops the unit, and why that cannot hit a running install.** A
+  stop is the start timeout running out, a `systemctl stop`, or a shutdown / reboot. The unit
+  has `KillMode=mixed` and `TimeoutStopSec=15min`. Observed with a real systemd 252
+  (`scripts/tests/unit-ordering.sh`, section G):
+  - With the default `KillMode=control-group` the stop SIGTERMs EVERY process of the unit, apt
+    and dpkg included (G1). That is what the unit did before.
+  - With `KillMode=mixed` the SIGTERM goes to the main process only, the updater. apt is not
+    signalled. But the moment the main process is gone, systemd SIGKILLs whatever is left of the
+    unit (G2). So `mixed` alone would be worse: the updater would die of the SIGTERM and apt
+    would be killed outright.
+  - Therefore the updater, while the step runs, does not die of SIGTERM: it passes the stop on
+    to the step and waits for it. The step ends a download or a simulation at once (the unit
+    then stops promptly, G5) and finishes an `apt-get install` that has begun, with the hold
+    and the restart after it; then the updater exits (G3 for the start timeout, G4 for
+    `systemctl stop`).
+  - systemd waits `TimeoutStopSec` for that, then kills what is left (G6). 15 minutes is more
+    than the 12.5 (600 + 150 s) an install and what follows it can take.
+  - The arithmetic is still there as a second line of defence: the install starts only when
+    its 600 s and the 150 s after it fit before the step's limit, and the limit ends at least
+    120 s before the unit's start budget. Worst case: an update that itself used more than 21
+    minutes leaves less than the step's limit; with less than 750 s left the install is not
+    started and one line says so.
+  - **A reboot or power-off asked for while packages are being installed waits for the
+    install** (the shutdown stops the unit like any other stop, and waits up to those 15
+    minutes); one asked for during a download ends the download and proceeds at once.
 - The updater's own backstop for a step that overruns its limit: SIGTERM to the step (which
   ends a killable step at once, and is waited out by an install), and only 810 s later a kill
   of the step's process group, which does not contain an install's `apt-get`.
+- **Nobody reading the output.** Both commands print through a writer that cannot panic. A
+  terminal that hung up, or the closed pipe of an SSH session that dropped, makes every write
+  fail; the lines are then dropped and the command still reads the database back, holds the
+  packages, writes the record and restarts the agent. (`println!` panics on a failed write,
+  and a panic would unwind through the cleanup while apt runs.) A hand-run `xorgate-rs update`
+  that is interrupted with Ctrl-C ends, and the step it started finishes on its own.
 - The provisioner passes `--time-limit 1320` inside a `timeout 1500`.
 
 **An interrupted dpkg.** If a power cut or a kill ever stops dpkg half-way, packages are left
@@ -314,6 +346,14 @@ configured). Run `sudo dpkg --configure -a` there, then `sudo xorgate-rs camera 
 --install` again; nothing was downloaded or changed". The agent's `requirements-missing`
 sentence and the listing say the same. The remedy is that one command at a shell; nothing in
 the agent runs it for you.
+
+While ANOTHER package operation runs (an `apt upgrade` in a second shell, unattended
+upgrades), the same signs are there for a moment: a journal entry, packages unpacked and not
+yet configured. The root command therefore asks the dpkg lock first (`fcntl(F_GETLK)`, a
+question that takes nothing) and says "another package operation is running on this device;
+try again when it has finished" instead. The unprivileged agent cannot open the lock files
+(root's, mode 0640), so its `requirements-missing` sentence may say "dpkg was interrupted"
+for as long as that operation runs; it corrects itself at the next check.
 
 **The hold and a later `apt upgrade`.** The stock `libcamera0.5` and `libcamera-ipa` come from the
 Raspberry Pi apt repository, and a newer stock version would replace Arducam's build on the next
@@ -327,17 +367,27 @@ catalog pins a newer build and the agent is updated (the update then installs ov
 again; the next `xorgate-rs update` puts them back.
 
 **Going back to the stock packages** is done by hand (there is no `--remove`): the listing prints
-the two commands, from the record of what it replaced.
+the commands, from the record of what it replaced, and only for what is still in place (a hold
+that exists, a package still at the version it installed). They work as printed, also without a
+terminal (`-y`).
 
 ```sh
-xorgate-rs camera requirements        # ends with "to go back: …"
+# 1. first choose another sensor for the port, or `none`: while a port is set to a sensor that
+#    needs these packages, the next `xorgate-rs update` installs them again
+xorgate-rs camera requirements        # prints the "to go back: …" lines
 sudo apt-mark unhold libcamera0.5 libcamera-ipa
-sudo apt-get install --allow-downgrades libcamera0.5=<replaced version> libcamera-ipa=<replaced version>
+sudo apt-get install -y --allow-downgrades libcamera0.5=<replaced version> libcamera-ipa=<replaced version>
+sudo systemctl restart xorgate-agent-rs   # until then the running captures keep the replaced library loaded
 ```
 
-If apt no longer offers the replaced version, take the one `apt-cache policy libcamera0.5` shows
-as the candidate of the Raspberry Pi repository and install that with the same command. Then
-choose another sensor for the port, or the next update installs the set again.
+Until the agent restarts, the port still reads `ok` and streams; after it, a port still set to
+the sensor reads `requirements-missing`. If apt no longer offers the replaced version, take the
+one `apt-cache policy libcamera0.5` shows as the candidate of the Raspberry Pi repository and
+install that with the same command.
+
+With only the HOLD missing (someone ran `apt-mark unhold`), the listing says "to set the hold
+again: sudo xorgate-rs camera requirements --install" and exits 1; `--install` then sets the
+hold and does nothing else (no download, no apt-get, no restart).
 
 **A first update INTO this build does not install them yet.** `xorgate-rs update` is run by the
 build that is being replaced, and a build before this one has no such step. The port then reads

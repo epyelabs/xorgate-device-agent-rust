@@ -1013,7 +1013,7 @@ provision_main() {
   #     cameraSensors when it carries one, else hardware.video[].sensor, else
   #     the two imx290 lines. One implementation for the installer and the
   #     running agent; idempotent on a re-provision.
-  local CONFIG_TXT=/boot/firmware/config.txt cam_out cam_rc cam_line
+  local CONFIG_TXT=/boot/firmware/config.txt cam_out cam_rc cam_line CAM_REBOOT=0
   [ -f "$CONFIG_TXT" ] || CONFIG_TXT=/boot/config.txt
   if [ -f "$CONFIG_TXT" ]; then
     cp -n "$CONFIG_TXT" "$CONFIG_TXT.bak-xorgate" 2>/dev/null || true
@@ -1035,6 +1035,9 @@ provision_main() {
         *) log "  camera: $cam_line" ;;
       esac
     done
+    # Remembered for the installer's LAST line: a changed camera line takes
+    # effect at the next boot, whatever else is said in between.
+    if printf '%s\n' "$cam_out" | grep -q '^config.txt changed'; then CAM_REBOOT=1; fi
     case $cam_rc in
       0)
         if printf '%s\n' "$cam_out" | grep -q '^config.txt changed'; then
@@ -1071,6 +1074,12 @@ provision_main() {
   printf '%s\n' "$pkg_out" | while IFS= read -r pkg_line; do
     case $pkg_line in
       'camera packages: WARN '*) log "WARN: camera packages: ${pkg_line#camera packages: WARN }" ;;
+      # The command's closing line speaks for a running device ("the camera
+      # appears when the agent starts next …; no reboot is needed"). Here the
+      # agent has not started yet and step 8b may just have asked for a
+      # reboot, so the installer says only what is true in both cases.
+      'camera packages: the camera appears when the agent starts next'*)
+        log "  camera packages: in place; the packages need no reboot of their own" ;;
       'camera packages: '*) log "  $pkg_line" ;;
     esac
   done
@@ -1117,6 +1126,11 @@ provision_main() {
   log "  $RS_SVC active"
   log "registered device $DEVICE_ID"
   log "tail logs: sudo journalctl -u $RS_SVC -f"
+  # The last word when step 8b changed a camera line: it is easy to miss
+  # among the lines above, and nothing streams from that port before it.
+  if [ "$CAM_REBOOT" = 1 ]; then
+    log "REBOOT REQUIRED before the cameras stream: the camera lines in $CONFIG_TXT were changed (sudo reboot)"
+  fi
   FINISHED=1
   exit 0
 }

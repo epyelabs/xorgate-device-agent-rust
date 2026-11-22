@@ -137,6 +137,7 @@ PID2=$(systemctl show -p MainPID --value xorgate-agent-rs)
 # could leave two after a sensor swap).
 [ "$(grep -c '^dtoverlay=imx' /boot/firmware/config.txt)" = 2 ] && grep -q 'overlays already present' "$OUT" \
   && ok "reprovision: still one camera line per port, config.txt not rewritten" || bad "reprovision camera lines: $(grep '^dtoverlay=imx' /boot/firmware/config.txt | tr '\n' ' ')"
+! grep -q 'REBOOT REQUIRED before the cameras stream' "$OUT" && ok "…and no final reboot notice when config.txt was not changed" || bad "a reboot notice without a change"
 # ... and with ANOTHER sensor chosen for this registration: the port's line
 # is replaced, the empty port's line removed.
 : > "$E/claims.log"; rm -f "$E/used-codes"; echo ok-sensors > "$E/claim-mode"
@@ -171,6 +172,12 @@ expect_rc 0 "the packages of a sensor were installed"
 grep -q '  camera packages: arducam-libcamera: installed libcamera0.5 0.5.2+rpt20250909-1 (was 0.5.2+rpt20250903-1)' "$OUT" && grep -q '  camera packages: arducam-libcamera: apt hold set on libcamera0.5, libcamera-ipa' "$OUT" \
   && ok "the command's own lines are in the log" || bad "8c lines: $(grep -n 'camera packages' "$OUT")"
 ! grep -q 'not a camera-packages line' "$OUT" && ok "…and nothing else of its output" || bad "8c passed on other output"
+grep -q '  camera packages: in place; the packages need no reboot of their own' "$OUT" && ! grep -q 'no reboot is needed' "$OUT" \
+  && ok "…its closing line is the installer's own: it does not say \"no reboot is needed\" right after 8b asked for one" || bad "8c closing line: $(grep -n 'reboot' "$OUT" | tail -4)"
+rb=$(grep -n 'REBOOT REQUIRED before the cameras stream: the camera lines in /boot/firmware/config.txt were changed (sudo reboot)' "$OUT" | tail -1 | cut -d: -f1)
+# (the harness appends its own "(provisioning unit) exit code" line to $OUT)
+[ -n "$rb" ] && [ "$rb" -gt "$(grep -n 'tail logs:' "$OUT" | tail -1 | cut -d: -f1)" ] && ! sed -n "$((rb + 1)),\$p" "$OUT" | grep -v '(provisioning unit) exit code' | grep -q '^\[xorgate\] ' \
+  && ok "the installer ENDS with the reboot notice when 8b changed config.txt (after 'registered device' and 'tail logs')" || bad "final reboot notice: $(tail -3 "$OUT")"
 [ "$(grep -n 'camera packages: arducam-libcamera: installed' "$OUT" | cut -d: -f1)" -gt "$(grep -n 'camera overlays' "$OUT" | head -1 | cut -d: -f1)" ] \
   && [ "$(grep -n 'camera packages: arducam-libcamera: installed' "$OUT" | cut -d: -f1)" -lt "$(grep -n 'starting xorgate-agent-rs' "$OUT" | head -1 | cut -d: -f1)" ] \
   && ok "…after the camera lines and BEFORE the agent is started (so no restart is needed)" || bad "8c order"
