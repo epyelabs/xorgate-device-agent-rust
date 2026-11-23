@@ -809,6 +809,9 @@ async fn run(args: &[String]) -> Result<i32> {
             pipeline_dir: media_cfg.pipeline_dir.clone().into(),
             list_exec: crate::media::real_list_exec(ctx.tape.clone()),
             boot_config: Some(crate::recording::hooks::real_boot_config_text()),
+            requirements: Some(crate::recording::hooks::real_requirements(
+                ctx.paths.settings.clone(),
+            )),
         })),
         config_plane::upload_options_builder(&ctx),
         ctx.clock.clone(),

@@ -337,6 +337,16 @@ pub fn node_sensor(node: &str) -> &str {
     node.split('@').next().unwrap_or(node)
 }
 
+/// The overlay a device-tree node stands for, for a sentence: the catalog
+/// sensor whose node name it is (`starvis2@1a` → `imx662`; the IMX662's
+/// node is named after its driver family), else the node's own name
+/// (`imx708@1a` → `imx708`, the same as before for every other sensor).
+pub fn node_overlay(node: &str) -> &str {
+    catalog()
+        .by_dt_node(node)
+        .map_or_else(|| node_sensor(node), |s| s.overlay.as_str())
+}
+
 /// The port's node to report: a bound one first, else the first found.
 pub fn node_for_port<'a>(nodes: &'a [PortNode], connector: &str) -> Option<&'a PortNode> {
     let mut mine = nodes.iter().filter(|n| n.connector == connector);
@@ -814,7 +824,7 @@ impl Resolved<'_> {
             .port_nodes
             .iter()
             .any(|n| want.iter().any(|w| w == node_sensor(&n.node)));
-        (!loaded).then(|| node_sensor(&node.node))
+        (!loaded).then(|| node_overlay(&node.node))
     }
 
     /// "This agent build does not know the overlay of the port's line."
@@ -893,7 +903,7 @@ pub fn derive_port(f: &PortFacts<'_>) -> CameraPort {
                 " config.txt has {} camera lines for {}; the one in force is the {} line (the kernel bound its driver) and the others did not take effect. Remove them, unless the lines sit under different [section] filters.",
                 b.lines,
                 f.connector,
-                node_sensor(&n.node)
+                node_overlay(&n.node)
             ),
             None => format!(
                 " config.txt has {} camera lines for {}; only one can work unless they sit under different [section] filters: remove the stale one.",
@@ -951,6 +961,15 @@ fn preset_note(f: &PortFacts<'_>, declared: Option<&Declared>, verdict: CameraVe
     }
 }
 
+/// The sentence of a `requirements-missing` port, e.g. `csi0 is set to
+/// imx335, which needs extra packages …`, from the connector, the sensor id
+/// and the text of `camera_sensors::missing_requirements`. The journal's
+/// hold lines of such a port say the same (`media::reconcile`,
+/// `policy_sources`).
+pub fn requirements_sentence(connector: &str, sensor: &str, missing: &str) -> String {
+    format!("{connector} is set to {sensor}, which {missing}.")
+}
+
 /// The verdicts that come from the `cameraSensors` setting and from a line
 /// that waits for a reboot, before anything else is looked at. In order:
 ///
@@ -999,7 +1018,7 @@ fn setting_verdict(r: &Resolved<'_>) -> Option<(CameraVerdict, String)> {
             };
             return Some((
                 CameraVerdict::RequirementsMissing,
-                format!("{port} is set to {}, which {missing}.{reboot}", s.id),
+                format!("{}{reboot}", requirements_sentence(port, &s.id, missing)),
             ));
         }
     }
@@ -1419,7 +1438,7 @@ pub fn rotation_write_block(f: &PortFacts<'_>) -> Option<String> {
         None => Some(match nodes.first() {
             Some(other) => format!(
                 "config.txt now declares {overlay} on {connector}, but the running kernel still has the {} overlay loaded. Reboot to apply the config.txt change.",
-                node_sensor(&other.node)
+                node_overlay(&other.node)
             ),
             None => format!(
                 "{connector} is declared as {overlay} by config.txt, but that overlay is not loaded in the running kernel. Reboot if config.txt was edited; otherwise check the dtoverlay line."
@@ -1553,7 +1572,7 @@ mod tests {
             .iter()
             .map(|s| s.overlay.as_str())
             .collect();
-        assert_eq!(names, ["imx290", "imx219", "imx708", "imx335"]);
+        assert_eq!(names, ["imx290", "imx219", "imx708", "imx335", "imx662"]);
         for o in &names {
             assert_eq!(port_of(&format!("dtoverlay={o},cam0")), Some("csi0"));
             assert_eq!(port_of(&format!("dtoverlay={o}")), Some("csi1"));
@@ -1563,6 +1582,7 @@ mod tests {
         assert_eq!(id("imx708"), Identity::ChipId);
         assert_eq!(id("imx335"), Identity::Weak);
         assert_eq!(id("imx290"), Identity::None);
+        assert_eq!(id("imx662"), Identity::ChipId);
         // The three overlays Phase 0's temporary table also held are outside
         // the catalog: a line of theirs is a port's only with an explicit
         // port token (or a hint), and nothing is known about their driver.
@@ -2839,7 +2859,7 @@ mod tests {
         assert_eq!(p.verdict.as_str(), "unknown-sensor");
         assert_eq!(
             p.detail,
-            "cam0 on csi0 is set to \"imx999\", a camera sensor this agent build does not know (it knows: imx290, imx219, imx708, imx335). Update the agent, or choose another sensor. The camera line in config.txt is left as it is."
+            "cam0 on csi0 is set to \"imx999\", a camera sensor this agent build does not know (it knows: imx290, imx219, imx708, imx335, imx662). Update the agent, or choose another sensor. The camera line in config.txt is left as it is."
         );
         // What is really there is still reported beside it.
         assert_eq!(p.declared.as_ref().unwrap().sensor, "imx999");
@@ -2923,6 +2943,99 @@ mod tests {
             p.detail,
             "The imx335 driver is bound on csi0 but libcamera lists no camera there (checked again after the agent started): libcamera on this device may not support this sensor."
         );
+    }
+
+    /// Catalog 4: the IMX662's node is `starvis2@1a` (named after its driver
+    /// family). It is found by that name: identity, an `ok` port, no false
+    /// "another overlay is loaded", and sentences that name the overlay
+    /// (`imx662`), not the node. Not yet seen on hardware; the driver name
+    /// the kernel reports is assumed here.
+    #[test]
+    fn imx662_on_its_starvis2_node() {
+        const PATH: &str = "/base/axi/pcie@1000120000/rp1/i2c@88000/starvis2@1a";
+        const LINE: &str = "dtoverlay=imx662,cam0,clock-frequency=24000000,rotation=180\n";
+        assert_eq!(node_overlay("starvis2@1a"), "imx662");
+        assert_eq!(node_overlay("imx708@1a"), "imx708");
+        assert_eq!(node_overlay("ov5647@36"), "ov5647");
+        let nodes = [node("csi0", "starvis2@1a", Some("sony-starvis2"))];
+        let base = PortFacts {
+            boot_text: Some(LINE),
+            nodes: Some(&nodes),
+            relisted: true,
+            setting: managed("imx662"),
+            ..facts("cam0", "csi0")
+        };
+        let p = derive_port(&PortFacts {
+            listed: Some(("imx662", PATH)),
+            capture: CaptureTruth::Streaming,
+            ..base.clone()
+        });
+        assert_eq!(p.verdict, CameraVerdict::Ok);
+        assert_eq!(p.detail, "imx662 on csi0 is detected and streaming.");
+        assert_eq!(p.bound.node.as_deref(), Some("starvis2@1a"));
+        assert_eq!(p.bound.identity, Some(Identity::ChipId));
+        assert_eq!(p.bound.path.as_deref(), Some(PATH));
+        let declared = p.declared.as_ref().unwrap();
+        assert_eq!(
+            (declared.sensor.as_str(), declared.source),
+            ("imx662", DeclaredSource::Config)
+        );
+        assert_eq!(
+            p.boot_config.as_ref().unwrap().overlay.as_deref(),
+            Some("imx662")
+        );
+        // Bound, not listed (libcamera without the helper): not a stale
+        // overlay, the libcamera sentence.
+        let p = derive_port(&base);
+        assert_eq!(p.verdict, CameraVerdict::NotDetected);
+        assert_eq!(
+            p.detail,
+            "The sony-starvis2 driver is bound on csi0 but libcamera lists no camera there (checked again after the agent started): libcamera on this device may not support this sensor."
+        );
+        // The line was changed away from the IMX662 and not rebooted: the
+        // overlay still loaded is named as the overlay, not as the node.
+        let p = derive_port(&PortFacts {
+            boot_text: Some("dtoverlay=imx290,cam0\n"),
+            setting: PortSetting::default(),
+            ..base.clone()
+        });
+        assert_eq!(p.verdict, CameraVerdict::RebootRequired);
+        assert_eq!(
+            p.detail,
+            "config.txt now declares imx290 on csi0, but the running kernel still has the imx662 overlay loaded, and no camera is listed there. Reboot to apply the config.txt change."
+        );
+        // Where cameras cannot be listed, the kernel's facts decide a
+        // rotation write: the IMX662's own node is bound, so it may.
+        let unlisted = PortFacts {
+            enumerated: false,
+            setting: PortSetting::default(),
+            ..base.clone()
+        };
+        assert_eq!(rotation_write_block(&unlisted), None);
+        assert_eq!(
+            rotation_write_block(&PortFacts {
+                boot_text: Some("dtoverlay=imx290,cam0\n"),
+                ..unlisted.clone()
+            })
+            .as_deref(),
+            Some("config.txt now declares imx290 on csi0, but the running kernel still has the imx662 overlay loaded. Reboot to apply the config.txt change.")
+        );
+        // On Bookworm (no driver, no overlay node): the OS release.
+        const BOOKWORM: &str = "needs an OS release this device does not run (needs trixie; this device runs bookworm). The camera cannot work on this OS release";
+        let p = derive_port(&PortFacts {
+            nodes: Some(&[]),
+            setting: PortSetting {
+                missing: Some(BOOKWORM),
+                ..managed("imx662")
+            },
+            ..base
+        });
+        assert_eq!(p.verdict, CameraVerdict::RequirementsMissing);
+        assert_eq!(
+            p.detail,
+            format!("csi0 is set to imx662, which {BOOKWORM}.")
+        );
+        assert_eq!(p.detail, requirements_sentence("csi0", "imx662", BOOKWORM));
     }
 
     /// A camera line that changed since this boot waits for a reboot,

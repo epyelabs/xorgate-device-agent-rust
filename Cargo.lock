@@ -2925,7 +2925,7 @@ checksum = "3ad82d2a33cdc9674dc7465672f271e096168fcdbe0f799d9e6db8c5892679dc"
 
 [[package]]
 name = "xorgate-agent"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "bytes",
@@ -2961,7 +2961,7 @@ dependencies = [
 
 [[package]]
 name = "xorgate-cloud"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "bytes",
  "hex",
@@ -2984,7 +2984,7 @@ dependencies = [
 
 [[package]]
 name = "xorgate-core"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "hex",
  "indexmap",
@@ -2995,7 +2995,7 @@ dependencies = [
 
 [[package]]
 name = "xorgate-hal"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "flate2",
  "gpiocdev",
@@ -3014,7 +3014,7 @@ dependencies = [
 
 [[package]]
 name = "xorgate-replay"
-version = "0.2.0"
+version = "0.2.1"
 dependencies = [
  "anyhow",
  "clap",

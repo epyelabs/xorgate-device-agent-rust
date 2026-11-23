@@ -199,6 +199,7 @@ impl World {
                 })
             }),
             boot_config: None,
+            requirements: None,
         });
 
         // The recording manager, its capture cameras from the REAL resolver.

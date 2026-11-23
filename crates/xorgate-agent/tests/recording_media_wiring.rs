@@ -100,6 +100,7 @@ async fn reconcile_arms_the_guard_and_journals_hardware_events() {
         pipeline_dir: pipelines.clone(),
         list_exec: exec,
         boot_config: None,
+        requirements: None,
     };
     let r0 = rec(counting_exec(
         listing(&unavailable["passes"][0]["listing"]),
@@ -187,6 +188,7 @@ async fn offline_skips_the_reconcile() {
         pipeline_dir: home.join("pipelines"),
         list_exec: counting_exec(listing(&good["passes"][0]["listing"]), runs.clone()),
         boot_config: None,
+        requirements: None,
     };
     assert!(rec.reconcile().await.unwrap().is_empty());
     assert_eq!(runs.load(Ordering::SeqCst), 0);

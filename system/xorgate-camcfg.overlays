@@ -2,8 +2,9 @@
 # write for each: <overlay> [<param name>...]. GENERATED from
 # crates/xorgate-core/data/camera-catalog.json (Catalog::helper_allow_list);
 # do not edit by hand.
-# catalogVersion 3
+# catalogVersion 4
 imx290 clock-frequency
 imx219
 imx708 link-frequency
 imx335 link-frequency
+imx662 clock-frequency

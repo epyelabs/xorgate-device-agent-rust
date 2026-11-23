@@ -176,6 +176,25 @@ The consumer's compatibility rule (unknown keys ignored, an unknown `schemaVersi
 unknown enum member costs only its entry) is in the module docs of
 `crates/xorgate-core/src/camera_catalog.rs`.
 
+### The sensors of catalog 4 (agent 0.2.1)
+
+| Sensor | OS releases | Extra packages | Seen on hardware |
+|---|---|---|---|
+| `imx290` | Bookworm, Trixie | none | Bookworm. Not yet on Trixie |
+| `imx219` | Bookworm, Trixie | none | Bookworm; Trixie (CM5, stock libcamera 0.8.0, 2026-11-23) |
+| `imx708` | Bookworm, Trixie | none | Bookworm. Not yet on Trixie |
+| `imx335` | Bookworm, Trixie | Arducam's libcamera build (`guide/07`) | Bookworm; Trixie with Arducam's 0.8.0 pair installed by hand (CM5, 2026-11-23) |
+| `imx662` | Trixie only (kernel 6.18.60 or later, libcamera 0.8.0 or later) | none | **Not yet.** Its default rotation (180, from the overlay's dtsi; the overlay README says 0) and the crystal of the board (`clockFrequency`, default 24 MHz) await the first bench |
+
+The OS release is `VERSION_CODENAME` in `/etc/os-release`. A sensor on a release it does not list
+reports `requirements-missing` ("needs an OS release this device does not run (needs trixie; this
+device runs bookworm)"). The IMX662's device-tree node is `starvis2@1a`, not `imx662@1a` (the
+driver serves a family of STARVIS 2 sensors); the agent finds it by the catalog's `dtNodeNames`.
+On a kernel older than 6.18.60 (the Trixie images up to 2026-10-06 ship 6.18.50) the overlay file
+`imx662.dtbo` is not on the device, so the helper refuses to write the line ("no overlay file …
+on this device", in the status of the camera sensor setting): run `sudo apt full-upgrade` first. A fresh Trixie image installed with
+`scripts/provision-rs.sh` has not been tried yet (the bench was upgraded in place).
+
 ## Declare or change a camera sensor on one device
 
 The sensor is a setting of the device, per port (`cameraSensors`). Normally it is set in the console
@@ -184,6 +203,7 @@ The sensor is a setting of the device, per port (`cameraSensors`). Normally it i
 ```sh
 xorgate-rs set cameraSensors.cam0.sensor imx708          # one of the catalog's ids
 xorgate-rs set cameraSensors.cam0.options.linkFrequency 447000000   # an option of that sensor; `default` removes it
+xorgate-rs set cameraSensors.cam1.options.clockFrequency 27000000   # the IMX662's crystal (24000000 is the default)
 xorgate-rs set cameraSensors.cam1.sensor none            # the port has no camera: its line is removed
 xorgate-rs set cameraSensors.cam1.sensor unmanaged       # hands the port back: its line is left as it is
 ```

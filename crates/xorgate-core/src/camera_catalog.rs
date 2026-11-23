@@ -680,11 +680,11 @@ mod tests {
     fn the_vendored_catalog_reads_whole() {
         let (c, err) = loaded();
         assert_eq!(*err, None);
-        assert_eq!(c.catalog_version, 3);
+        assert_eq!(c.catalog_version, 4);
         assert_eq!(c.skipped, vec![]);
         let ids: Vec<&str> = c.sensors.iter().map(|s| s.id.as_str()).collect();
-        assert_eq!(ids, ["imx290", "imx219", "imx708", "imx335"]);
-        assert_eq!(c.planned, ["imx662"]);
+        assert_eq!(ids, ["imx290", "imx219", "imx708", "imx335", "imx662"]);
+        assert!(c.planned.is_empty());
         // The facts the rotation rule rests on (bench, 2026-11-21).
         let rot = |id: &str| {
             let s = c.by_id(id).unwrap();
@@ -694,21 +694,57 @@ mod tests {
         assert_eq!(rot("imx219"), (180, true));
         assert_eq!(rot("imx708"), (180, true));
         assert_eq!(rot("imx335"), (180, false));
+        // The IMX662: the overlay's dtsi says 180; the README says 0. Not yet
+        // seen on a bench (catalog 4 notes).
+        assert_eq!(rot("imx662"), (180, true));
         let id = |n: &str| c.by_id(n).unwrap().identity;
         assert_eq!(id("imx290"), Identity::None);
         assert_eq!(id("imx219"), Identity::ChipId);
         assert_eq!(id("imx708"), Identity::ChipId);
         assert_eq!(id("imx335"), Identity::Weak);
+        assert_eq!(id("imx662"), Identity::ChipId);
+        // Every sensor runs on Bookworm and Trixie, except the IMX662: its
+        // driver is only in the Trixie kernel (6.18.60 or later).
+        for s in &c.sensors {
+            let want: &[&str] = if s.id == "imx662" {
+                &["trixie"]
+            } else {
+                &["bookworm", "trixie"]
+            };
+            assert_eq!(s.requires_os, want, "{}", s.id);
+        }
+        let imx662 = c.by_id("imx662").unwrap();
+        assert_eq!(imx662.tier, Tier::Supported);
+        assert_eq!(imx662.overlay, "imx662");
+        assert_eq!(imx662.libcamera_names, ["imx662"]);
+        assert_eq!(imx662.dt_node_names, ["starvis2"]);
+        assert_eq!(imx662.package_set, None);
+        assert_eq!(imx662.param_names(), ["clock-frequency"]);
         assert_eq!(c.by_id("imx335").unwrap().tier, Tier::SupportedWithPackages);
         assert_eq!(
             c.by_id("imx335").unwrap().package_set.as_deref(),
             Some("arducam-libcamera")
         );
+        // The Arducam set: one pinned pair per OS release, each with its own
+        // package names (libcamera0.5 on Bookworm, libcamera0.8 on Trixie).
+        let set = c.package_set("arducam-libcamera").unwrap();
+        let targets: Vec<(&str, &str, Vec<&str>)> = set
+            .targets
+            .iter()
+            .map(|t| {
+                (
+                    t.os.as_str(),
+                    t.arch.as_str(),
+                    t.packages.iter().map(|p| p.name.as_str()).collect(),
+                )
+            })
+            .collect();
         assert_eq!(
-            c.package_set("arducam-libcamera").unwrap().targets[0]
-                .packages
-                .len(),
-            2
+            targets,
+            [
+                ("bookworm", "arm64", vec!["libcamera0.5", "libcamera-ipa"]),
+                ("trixie", "arm64", vec!["libcamera0.8", "libcamera-ipa"]),
+            ]
         );
         assert!(c
             .by_id("imx335")
@@ -734,6 +770,12 @@ mod tests {
         assert!(c.by_libcamera_name("imx219_noir").is_none());
         assert_eq!(c.by_dt_node("imx708@1a").unwrap().id, "imx708");
         assert_eq!(c.by_dt_node("imx290").unwrap().id, "imx290");
+        // The IMX662's node is named after its driver family, not the sensor.
+        assert_eq!(c.by_dt_node("starvis2@1a").unwrap().id, "imx662");
+        assert_eq!(c.by_dt_node("starvis2").unwrap().id, "imx662");
+        assert!(c.by_dt_node("imx662@1a").is_none());
+        assert_eq!(c.by_libcamera_name("imx662").unwrap().id, "imx662");
+        assert_eq!(c.by_overlay("imx662").unwrap().id, "imx662");
         assert!(c.by_dt_node("dw9817@c").is_none());
         assert!(c.by_dt_node("").is_none());
     }
@@ -839,7 +881,7 @@ mod tests {
             edit(&mut d);
             let c = reparse(&d).unwrap();
             let ids: Vec<&str> = c.sensors.iter().map(|s| s.id.as_str()).collect();
-            assert_eq!(ids, ["imx290", "imx708", "imx335"], "{name}");
+            assert_eq!(ids, ["imx290", "imx708", "imx335", "imx662"], "{name}");
             assert_eq!(
                 c.skipped,
                 vec![("imx219".to_string(), reason.to_string())],
@@ -852,7 +894,18 @@ mod tests {
         let mut d = doc();
         d["packageSets"][0]["targets"][0]["arch"] = "riscv64".into();
         let c = reparse(&d).unwrap();
-        assert_eq!(c.sensors.len(), 4);
+        assert_eq!(c.sensors.len(), 5);
+        let left: Vec<&str> = c
+            .package_set("arducam-libcamera")
+            .unwrap()
+            .targets
+            .iter()
+            .map(|t| t.os.as_str())
+            .collect();
+        assert_eq!(left, ["trixie"]);
+        d["packageSets"][0]["targets"][1]["os"] = "forky".into();
+        let c = reparse(&d).unwrap();
+        assert_eq!(c.sensors.len(), 5);
         assert!(c
             .package_set("arducam-libcamera")
             .unwrap()
@@ -886,7 +939,7 @@ mod tests {
             let mut d = doc();
             edit(&mut d);
             let c = reparse(&d).unwrap();
-            assert_eq!(c.sensors.len(), 3, "edit {i}");
+            assert_eq!(c.sensors.len(), 4, "edit {i}");
             assert_eq!(c.skipped.len(), 1, "edit {i}");
             assert_eq!(c.skipped[0].0, "imx708", "edit {i}");
         }
@@ -895,7 +948,7 @@ mod tests {
         let dup = d["sensors"][0].clone();
         d["sensors"].as_array_mut().unwrap().push(dup);
         let c = reparse(&d).unwrap();
-        assert_eq!(c.sensors.len(), 4);
+        assert_eq!(c.sensors.len(), 5);
         assert_eq!(c.skipped[0].1, "duplicate id or overlay name");
     }
 
@@ -916,7 +969,7 @@ mod tests {
         ));
         assert!(catalog()
             .helper_allow_list()
-            .ends_with("# catalogVersion 3\nimx290 clock-frequency\nimx219\nimx708 link-frequency\nimx335 link-frequency\n"));
+            .ends_with("# catalogVersion 4\nimx290 clock-frequency\nimx219\nimx708 link-frequency\nimx335 link-frequency\nimx662 clock-frequency\n"));
         assert!(reserved_param_name("cam0") && reserved_param_name("cam1"));
         assert!(reserved_param_name("rotation") && reserved_param_name("rotation-x"));
         assert!(!reserved_param_name("cam0-reg") && !reserved_param_name("orientation"));

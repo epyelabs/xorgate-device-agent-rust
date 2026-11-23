@@ -269,11 +269,18 @@ pub struct RadioResult {
 }
 
 /// The ONE argv `setWifi` runs (`radios.ts:27`):
-/// `sudo nmcli device connect|disconnect <device>`. Verbatim TS — no `-n`:
-/// the CLI/TUI run interactively as `pi` (evidence wp5 A1).
-pub fn wifi_toggle_argv(on: bool, device: &str) -> [String; 5] {
+/// `sudo -n nmcli device connect|disconnect <device>`. The TS has no `-n`
+/// (the CLI/TUI run interactively as `pi`, evidence wp5 A1); this build
+/// passes it (D128): Raspberry Pi OS images since 2026-04-13 (Trixie) give
+/// `pi` no passwordless sudo, and no sudoers grant of ours covers `nmcli`,
+/// so without `-n` sudo would ask for a password on the terminal, inside
+/// the TUI's raw mode, with nothing to stop the wait. With `-n` it fails at
+/// once and the reason is printed ("wifi on failed: sudo: a password is
+/// required"). As root (`sudo xorgate-rs set wifi on`) nothing changes.
+pub fn wifi_toggle_argv(on: bool, device: &str) -> [String; 6] {
     [
         "sudo".to_string(),
+        "-n".to_string(),
         "nmcli".to_string(),
         "device".to_string(),
         if on { "connect" } else { "disconnect" }.to_string(),
@@ -322,7 +329,7 @@ pub fn wifi_result(on: bool, device: &str, res: &RunResult) -> RadioResult {
 }
 
 /// `setWifi(on)` (`radios.ts:20-33`): re-detects, no-ops when already in
-/// the target state, else `sudo nmcli device connect|disconnect <dev>`.
+/// the target state, else `sudo -n nmcli device connect|disconnect <dev>`.
 pub async fn set_wifi(on: bool) -> RadioResult {
     let wifi = detect_wifi().await;
     if !wifi.present {
@@ -354,6 +361,19 @@ mod tests {
             address: address.into(),
             internal,
         }
+    }
+
+    /// Never a password prompt (D128): `-n` before the command.
+    #[test]
+    fn the_wifi_toggle_never_waits_for_a_password() {
+        assert_eq!(
+            wifi_toggle_argv(true, "wlan0"),
+            ["sudo", "-n", "nmcli", "device", "connect", "wlan0"]
+        );
+        assert_eq!(
+            wifi_toggle_argv(false, "wlan1"),
+            ["sudo", "-n", "nmcli", "device", "disconnect", "wlan1"]
+        );
     }
 
     #[test]

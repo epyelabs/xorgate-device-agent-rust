@@ -2028,7 +2028,7 @@ fn mnt(states: &CameraStates, key: &str) -> (CameraMountVerdict, Option<f64>, Op
     cam(states.mount.as_ref().expect("cameraMount is present"), key)
 }
 
-const ALL_OVERLAYS: [&str; 4] = ["imx290", "imx219", "imx708", "imx335"];
+const ALL_OVERLAYS: [&str; 5] = ["imx290", "imx219", "imx708", "imx335", "imx662"];
 
 /// THE ZERO-WRITE PROOF, Phase 2: a device whose config.txt already holds
 /// the declared sensor's line gets NO write and NO helper call when it
@@ -2247,6 +2247,95 @@ async fn a_sensor_change_is_one_write_then_a_reboot() {
         ]
     );
     assert_eq!(sens(&s, "cam0"), (SV::Applied, String::new()));
+}
+
+/// Catalog 4: the IMX662 on CAM1 of a CM5 (Trixie). Its device-tree node
+/// is named after the driver family, `starvis2@1a`, not after the sensor:
+/// the line is written through the real helper with its clock option, the
+/// node is recognised as the line's sensor after the reboot (no false
+/// "another overlay runs here"), the rotation in force is read back from
+/// that node (default 180), and a mount change rewrites only the rotation,
+/// keeping the option. Not yet seen on hardware (catalog note).
+#[tokio::test]
+async fn imx662_on_its_starvis2_node() {
+    let config =
+        "camera_auto_detect=0\n[all]\ndtoverlay=imx335,cam0\ndtoverlay=imx219,cam1,rotation=180\n";
+    let d = Device::bench("p6imx662", config, MODEL_CM5);
+    d.overlays(&ALL_OVERLAYS);
+    d.camera("cam0", &cm5_path("cam0", "imx335@1a"), Some(180));
+    d.camera("cam1", &cm5_path("cam1", "imx219@10"), Some(180));
+    let mut rig = Rig::new(d);
+    rig.live(&[
+        ("cam0", "imx335", "imx335@1a"),
+        ("cam1", "imx219", "imx219@10"),
+    ]);
+    let setting = json!({"cam1": {"sensor": "imx662", "options": {"clockFrequency": 27000000}}});
+    let mounts: &[(&str, u32)] = &[("cam1", 0)];
+    let s = rig.pass_both(Some(mounts), Some(setting.clone())).await;
+    assert_eq!(
+        rig.runner.asked(),
+        ["set cam1 imx662 clock-frequency=27000000 rotation=180"]
+    );
+    assert_eq!(sens(&s, "cam1"), (SV::PendingReboot, String::new()));
+    assert_eq!(
+        rig.d.read(),
+        "camera_auto_detect=0\n[all]\ndtoverlay=imx335,cam0\ndtoverlay=imx662,cam1,clock-frequency=27000000,rotation=180\n"
+    );
+    assert_eq!(
+        rig.logs(),
+        ["info cam1: camera line for cam1 in <dir>/config.txt is now the imx662 line (imx662,clock-frequency=27000000,rotation=180) — REBOOT required before the camera changes (the agent never reboots itself)"]
+    );
+
+    // The reboot: the kernel loads the imx662 overlay; its node is
+    // `starvis2@1a`, with the dtsi's rotation 180; libcamera lists `imx662`.
+    rig.reboot();
+    rig.d.dt(&cm5_path("cam1", "starvis2@1a"), 180);
+    rig.live(&[
+        ("cam0", "imx335", "imx335@1a"),
+        ("cam1", "imx662", "starvis2@1a"),
+    ]);
+    let s = rig.pass_both(Some(mounts), Some(setting.clone())).await;
+    assert_eq!(sens(&s, "cam1"), (SV::Applied, String::new()));
+    assert_eq!(
+        mnt(&s, "cam1"),
+        (Applied, Some(0.0), Some(0.0), String::new())
+    );
+    assert!(!s.sensors.as_ref().unwrap().reboot_required);
+    assert!(!s.mount.as_ref().unwrap().reboot_required);
+    assert_eq!(rig.runner.calls().len(), 1);
+
+    // Mounted upside down: a rotation-only change, in place, the clock
+    // option kept; the sensor setting stays `applied`.
+    let flipped: &[(&str, u32)] = &[("cam1", 180)];
+    let s = rig.pass_both(Some(flipped), Some(setting.clone())).await;
+    assert_eq!(
+        rig.runner.asked(),
+        [
+            "set cam1 imx662 clock-frequency=27000000 rotation=180",
+            "rotate cam1 imx662 0"
+        ]
+    );
+    assert_eq!(sens(&s, "cam1"), (SV::Applied, String::new()));
+    assert_eq!(
+        mnt(&s, "cam1"),
+        (PendingReboot, Some(0.0), Some(180.0), String::new())
+    );
+    assert!(rig
+        .d
+        .read()
+        .ends_with("\ndtoverlay=imx662,cam1,clock-frequency=27000000,rotation=0\n"));
+    assert_eq!(
+        rig.logs()[1],
+        "info cam1: camera line for cam1 in <dir>/config.txt: rotation=0 set on the imx662 line, the rest of the line kept — REBOOT required before the image changes (the agent never reboots itself)"
+    );
+    rig.reboot();
+    rig.d.dt(&cm5_path("cam1", "starvis2@1a"), 0);
+    let s = rig.pass_both(Some(flipped), Some(setting)).await;
+    assert_eq!(
+        mnt(&s, "cam1"),
+        (Applied, Some(180.0), Some(180.0), String::new())
+    );
+    assert_eq!(rig.runner.calls().len(), 2);
 }
 
 /// S1 (review): a WRONG declaration. The line is written, the device
@@ -2634,7 +2723,7 @@ async fn a_port_that_cannot_be_applied_is_refused_and_the_others_are_applied() {
     let cases = [
         (
             json!({"sensor": "imx999"}),
-            "this agent build does not know the camera sensor \"imx999\" (it knows: imx290, imx219, imx708, imx335); update the agent or choose another sensor. config.txt is left as it is",
+            "this agent build does not know the camera sensor \"imx999\" (it knows: imx290, imx219, imx708, imx335, imx662); update the agent or choose another sensor. config.txt is left as it is",
         ),
         (
             json!({"sensor": "imx290", "options": {"lanes": 4}}),
@@ -3053,7 +3142,7 @@ async fn a_rejection_is_logged_once_per_change() {
         [
             // One line per refusal; the `cameraMount` consequence on the
             // same port is not a second line.
-            "warn cam0: camera sensor setting not applied — this agent build does not know the camera sensor \"imx999\" (it knows: imx290, imx219, imx708, imx335); update the agent or choose another sensor. config.txt is left as it is",
+            "warn cam0: camera sensor setting not applied — this agent build does not know the camera sensor \"imx999\" (it knows: imx290, imx219, imx708, imx335, imx662); update the agent or choose another sensor. config.txt is left as it is",
             "warn cam0: camera sensor setting not applied — the camera sensor setting of this port is not an object; config.txt is left as it is",
         ]
     );

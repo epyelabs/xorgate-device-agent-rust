@@ -100,6 +100,7 @@ async fn hardware_block_test_ts_reconcile_hardware_and_the_bench_block() {
                     boot_config: None,
                     board: Default::default(),
                     declared_empty: Vec::new(),
+                    requirements: Default::default(),
                 },
             )
             .await
@@ -169,6 +170,7 @@ fn opts(dir: &Path, listing: RunResult, logs: &Logs) -> ReconcileOpts {
         boot_config: None,
         board: Default::default(),
         declared_empty: Vec::new(),
+        requirements: Default::default(),
     }
 }
 

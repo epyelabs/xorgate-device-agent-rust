@@ -107,6 +107,9 @@ pub struct StreamHardware {
     /// and one that started before a block change has finished (and been
     /// replaced wholesale) by the time that pass's result lands.
     pass_lock: tokio::sync::Mutex<()>,
+    /// Stream key → the port's `requirements-missing` sentence, as of the
+    /// last pass (D128): what the capture's hold line says for that stream.
+    requirements: Mutex<std::collections::HashMap<String, String>>,
 }
 
 impl StreamHardware {
@@ -123,12 +126,39 @@ impl StreamHardware {
     pub fn snapshot(&self) -> StreamHardwareSnapshot {
         self.inner.lock().unwrap_or_else(|p| p.into_inner()).clone()
     }
+    /// The port's `requirements-missing` sentence, when the last pass knew
+    /// one (D128).
+    pub fn requirement(&self, key: &str) -> Option<String> {
+        let g = self.requirements.lock().unwrap_or_else(|p| p.into_inner());
+        g.get(key).cloned()
+    }
     /// B5: may the capture daemon launch this stream's camera?
     /// (`camera_truth::capture_allowed` over the last verdicts.)
     pub fn capture_allowed(&self, key: &str) -> bool {
         let g = self.inner.lock().unwrap_or_else(|p| p.into_inner());
         xorgate_core::camera_truth::capture_allowed(g.armed, g.statuses.get(key).copied())
     }
+}
+
+/// What each managed port's declared sensor needs and the device lacks:
+/// stream key → (sensor id, `camera_sensors::missing_requirements`' text).
+pub type RequirementsFn =
+    Arc<dyn Fn() -> std::collections::BTreeMap<String, (String, String)> + Send + Sync>;
+
+/// The real [`RequirementsFn`]: the `cameraSensors` setting in
+/// settings.json against the device's OS release, architecture and
+/// installed packages (`xorgate_hal::camera_host::host_facts`, which asks
+/// the device only while a managed port names a catalog sensor).
+pub fn real_requirements(settings: std::path::PathBuf) -> RequirementsFn {
+    Arc::new(move || {
+        xorgate_core::camera_sensors::ports_missing_requirements(
+            xorgate_hal::settings_io::load_settings(&settings)
+                .camera_sensors
+                .as_ref(),
+            xorgate_core::camera_catalog::catalog(),
+            xorgate_hal::camera_host::host_facts,
+        )
+    })
 }
 
 /// Reads the text of the boot config (`None` = no file, or unreadable).
@@ -175,6 +205,11 @@ pub struct MediaReconciler {
     /// "declared" sensor ([`real_boot_config_text`] in the worker). `None` =
     /// the model alone, as the TS has it.
     pub boot_config: Option<BootConfigTextFn>,
+    /// Rust-only (D128): what the managed ports' sensors need and the
+    /// device lacks ([`real_requirements`] in the worker), so a held port's
+    /// lines name that requirement. `None` = none known (the lines as
+    /// before).
+    pub requirements: Option<RequirementsFn>,
 }
 
 impl MediaReconciler {
@@ -245,6 +280,28 @@ impl MediaReconciler {
             })
         };
         let shm = self.ctx.paths.home.join("shm");
+        // Stream key → the port's `requirements-missing` sentence (D128).
+        let requirements: std::collections::HashMap<String, String> = self
+            .requirements
+            .as_ref()
+            .map(|f| f())
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|(key, (sensor, missing))| {
+                let v = block.video.iter().find(|v| v.key == key)?;
+                let sentence = xorgate_core::camera_truth::requirements_sentence(
+                    &v.connector,
+                    &sensor,
+                    &missing,
+                );
+                Some((key, sentence))
+            })
+            .collect();
+        *self
+            .stream_hw
+            .requirements
+            .lock()
+            .unwrap_or_else(|p| p.into_inner()) = requirements.clone();
         let res = crate::media::reconcile_hardware(
             &block,
             crate::media::ReconcileOpts {
@@ -272,6 +329,7 @@ impl MediaReconciler {
                             xorgate_core::boot_config::PROC_DEVICE_TREE,
                         ))
                     }),
+                requirements,
             },
         )
         // A throw (first failed mkdir/write, Node's message) leaves the

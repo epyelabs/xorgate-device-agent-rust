@@ -24,7 +24,7 @@ use xorgate_agent::ctx::NoopHooks;
 use xorgate_agent::media::{reconcile_hardware, ReconcileOpts};
 use xorgate_agent::recording::hooks::{HardwareReconciler, MediaReconciler, StreamHardware};
 use xorgate_agent::recording::policy_sources::{
-    cameras_fn, capture_held_warning, hold_cameras_without_a_sensor,
+    cameras_fn, capture_held_requirement_line, capture_held_warning, hold_cameras_without_a_sensor,
 };
 use xorgate_core::hardware_block::{parse_hardware_block, DeviceHardwareBlock, EncoderToken};
 use xorgate_core::pipeline_builder::{build_bridged_kvs_pipeline, build_direct_kvs_pipeline};
@@ -88,6 +88,7 @@ fn opts(dir: &Path, listing: RunResult, logs: &Logs, boot_config: Option<&str>) 
         boot_config: boot_config.map(str::to_string),
         board: Default::default(),
         declared_empty: Vec::new(),
+        requirements: Default::default(),
     }
 }
 
@@ -171,6 +172,7 @@ async fn b5_no_capture_camera_for_a_port_that_enumerated_nothing() {
             Box::pin(async move { r })
         }),
         boot_config: None,
+        requirements: None,
     };
     rec(bench_listing("no camera at all, as the benches print it"))
         .reconcile()
@@ -229,6 +231,100 @@ async fn b5_no_capture_camera_for_a_port_that_enumerated_nothing() {
     assert_eq!(hw.status("cam0"), Some(StreamHardwareStatus::Rendered));
     assert_eq!(cameras(), stale);
     assert_eq!(read(&pipelines, "cam0.camera"), format!("{IMX708_CM4}\n"));
+    let _ = std::fs::remove_dir_all(&home);
+}
+
+/// What `missing_requirements` says for an IMX335 on stock Trixie (the
+/// bench of 2026-11-23 before Arducam's pair was installed).
+const TRIXIE_MISSING: &str = "needs extra packages that are not installed in the required versions: libcamera0.8 0.8.0+rpt20261106-2 (installed: 0.8.0+rpt20261104-1), libcamera-ipa 0.8.0+rpt20261106-2 (installed: 0.8.0+rpt20261104-1). The camera will not appear until they are installed: run `sudo xorgate-rs update` on the device (the console's Update button does the same), or `sudo xorgate-rs camera requirements --install`";
+
+/// D128, the Trixie bench of 2026-11-23: the kernel bound the IMX335 and
+/// libcamera could not list it (its packages were missing). The hold lines
+/// said "check the ribbon + overlays" and "the camera name … is stale";
+/// they now say what the port's report says: the requirement. A port
+/// whose requirements are met keeps the lines as they were.
+#[tokio::test]
+async fn a_held_port_whose_sensor_lacks_its_requirements_says_so() {
+    let home = common::scratch("cam-truth-req");
+    let mut ctx = common::test_ctx(&home, "dev", Arc::new(NoopHooks), null_tape());
+    let pipelines = home.join("pipelines");
+    let mut paths = (*ctx.paths).clone();
+    paths.pipelines = pipelines.clone();
+    ctx.paths = Arc::new(paths);
+    ctx.hardware.send_replace(Some(cm4_block()));
+    let hw = Arc::new(StreamHardware::default());
+    let asked = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let rec = MediaReconciler {
+        ctx: ctx.clone(),
+        stream_hw: hw.clone(),
+        pipeline_dir: pipelines.clone(),
+        list_exec: Arc::new(move || {
+            let r = bench_listing("no camera at all, as the benches print it");
+            Box::pin(async move { r })
+        }),
+        boot_config: None,
+        requirements: Some({
+            let asked = asked.clone();
+            Arc::new(move || {
+                asked.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                std::collections::BTreeMap::from([(
+                    "cam0".to_string(),
+                    ("imx335".to_string(), TRIXIE_MISSING.to_string()),
+                )])
+            })
+        }),
+    };
+    rec.reconcile().await.unwrap();
+    assert_eq!(asked.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert_eq!(hw.status("cam0"), Some(StreamHardwareStatus::NoCamera));
+    let sentence = format!("csi0 is set to imx335, which {TRIXIE_MISSING}.");
+    assert_eq!(hw.requirement("cam0"), Some(sentence.clone()));
+    assert_eq!(hw.requirement("cam1"), None);
+    assert_eq!(
+        capture_held_requirement_line("cam0", &sentence),
+        format!("[video-capture] cam0: no camera enumerated on its port — capture not started: {sentence}")
+    );
+    // The same sentence as the port's own report.
+    assert_eq!(
+        sentence,
+        xorgate_core::camera_truth::requirements_sentence("csi0", "imx335", TRIXIE_MISSING)
+    );
+
+    // The reconcile's hold line.
+    let logs: Logs = Arc::default();
+    let none = bench_listing("no camera at all, as the benches print it");
+    let mut o = opts(
+        &home.join("p2"),
+        none.clone(),
+        &logs,
+        Some("dtoverlay=imx335,cam0\n"),
+    );
+    o.requirements = [("cam0".to_string(), sentence.clone())].into();
+    reconcile_hardware(&cm4_block(), o).await.unwrap();
+    assert_eq!(
+        *logs.lock().unwrap(),
+        [(
+            "warn".to_string(),
+            format!("cam0: no camera enumerated on csi0 — stream held down: {sentence}")
+        )]
+    );
+    // A requirement of another port changes nothing here.
+    let logs: Logs = Arc::default();
+    let mut o = opts(
+        &home.join("p3"),
+        none,
+        &logs,
+        Some("dtoverlay=imx335,cam0\n"),
+    );
+    o.requirements = [("cam1".to_string(), sentence)].into();
+    reconcile_hardware(&cm4_block(), o).await.unwrap();
+    assert_eq!(
+        *logs.lock().unwrap(),
+        [(
+            "warn".to_string(),
+            "cam0: no camera enumerated on csi0 (expected imx335) — stream held down until one appears (check the ribbon + overlays, reboot after install)".to_string()
+        )]
+    );
     let _ = std::fs::remove_dir_all(&home);
 }
 
