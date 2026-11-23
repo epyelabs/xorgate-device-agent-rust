@@ -47,7 +47,7 @@ impl Dev {
         ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("overlays")).unwrap();
-        for o in ["imx290", "imx219", "imx708", "imx335", "imx662"] {
+        for o in ["imx290", "imx219", "imx708", "imx335"] {
             std::fs::write(dir.join("overlays").join(format!("{o}.dtbo")), b"").unwrap();
         }
         std::fs::write(dir.join("model"), format!("{model}\0")).unwrap();
@@ -382,10 +382,10 @@ fn a_port_that_cannot_be_applied_fails_alone() {
     assert_eq!(
         lines,
         [
-            "cam0: FAILED: this agent build does not know the camera sensor \"imx999\" (it knows: imx290, imx219, imx708, imx335, imx662); update the agent or choose another sensor. config.txt is left as it is",
+            "cam0: FAILED: this agent build does not know the camera sensor \"imx999\" (it knows: imx290, imx219, imx708, imx335); update the agent or choose another sensor. config.txt is left as it is",
             // The port was to get a camera and has no line at all: said in
             // so many words, with the way out (the installer's WARN).
-            "cam0: NO CAMERA LINE: cam0 has NO camera line in <dir>/config.txt, so no camera will appear on that port (this agent build does not know the camera sensor \"imx999\" (it knows: imx290, imx219, imx708, imx335, imx662); update the agent or choose another sensor. config.txt is left as it is). To fix it: correct the cause, then `xorgate-rs set cameraSensors.cam0.sensor <imx290|imx219|imx708|imx335|imx662>` (the agent writes the line within a minute; reboot after), or add the dtoverlay line for cam0 by hand and reboot",
+            "cam0: NO CAMERA LINE: cam0 has NO camera line in <dir>/config.txt, so no camera will appear on that port (this agent build does not know the camera sensor \"imx999\" (it knows: imx290, imx219, imx708, imx335); update the agent or choose another sensor. config.txt is left as it is). To fix it: correct the cause, then `xorgate-rs set cameraSensors.cam0.sensor <imx290|imx219|imx708|imx335>` (the agent writes the line within a minute; reboot after), or add the dtoverlay line for cam0 by hand and reboot",
             "cam1: dtoverlay=imx219,cam1,rotation=180 written; imx219 by the camera sensor setting",
             // A key the device has no port for: nothing to say about a line.
             "cam5: FAILED: the device model declares no camera by that stream key; config.txt is left as it is",
