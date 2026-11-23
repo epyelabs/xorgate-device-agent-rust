@@ -170,7 +170,8 @@ drop-in: pass `--tag latest`.
 
 ### The packages of a sensor are held, and held packages read `hi`
 
-The IMX335's two libcamera packages are installed from pinned files and put on hold
+The IMX335's two libcamera packages (`libcamera0.5` + `libcamera-ipa` on Bookworm, `libcamera0.8`
++ `libcamera-ipa` on Trixie) are installed from pinned files and put on hold
 (`guide/07`, "The extra packages of a sensor"). Two things follow. An `apt upgrade` on such a
 device keeps them, and whatever depends on a newer libcamera, back: that is intended, and it
 means no stock libcamera fixes there until the catalog pins a newer build. And `dpkg-query`

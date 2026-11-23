@@ -26,7 +26,9 @@
 //!   render is replaced instead of being left behind with a dead
 //!   `camera-name=`. An operator's pipeline is still never overwritten.
 //! - The "no camera enumerated … (expected X)" line names the DECLARED
-//!   sensor too (config.txt's line, else the model's).
+//!   sensor too (config.txt's line, else the model's). When the sensor
+//!   setting names a sensor whose requirements the device does not meet,
+//!   the line says that requirement instead (D128).
 //! - The mismatch warning compares the enumerated sensor with the DECLARED
 //!   one (the port's config.txt line when [`ReconcileOpts::boot_config`] is
 //!   given, else the model), and libcamera's variant names
@@ -106,6 +108,13 @@ pub struct ReconcileOpts {
     /// Rust-only: such a port without a camera line is empty ON PURPOSE,
     /// and its hold line says that instead of naming the model's sensor.
     pub declared_empty: Vec<String>,
+    /// Stream key → the port's `requirements-missing` sentence
+    /// (`camera_truth::requirements_sentence`): the sensor setting names a
+    /// sensor whose requirements this device does not meet (an OS release,
+    /// packages). Rust-only (D128): when such a port lists no camera, its
+    /// hold line says that requirement, as the port's report does, instead
+    /// of pointing at the ribbon cable. Empty = none known.
+    pub requirements: std::collections::HashMap<String, String>,
 }
 
 /// `ReconcileResult` (`hardware-reconcile.ts:52-59`).
@@ -242,6 +251,19 @@ pub async fn reconcile_hardware(
                     &format!(
                         "{}: no camera is configured on {} (config.txt has no camera line for it; the device model expects {}) — stream held down",
                         video.key, video.connector, video.sensor
+                    ),
+                );
+                continue;
+            }
+            // Rust-only (D128): the declared sensor's requirements are not
+            // met (the kernel may well have bound it; libcamera cannot list
+            // it). Say what the port's report says, not "check the ribbon".
+            if let Some(sentence) = opts.requirements.get(&video.key) {
+                log(
+                    ReconcileLevel::Warn,
+                    &format!(
+                        "{}: no camera enumerated on {} — stream held down: {sentence}",
+                        video.key, video.connector
                     ),
                 );
                 continue;

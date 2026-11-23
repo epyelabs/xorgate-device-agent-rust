@@ -1382,15 +1382,15 @@ mod tests {
         // Refusals: nothing is written.
         assert_eq!(
             err("{}", "cameraSensors.cam0.sensor", "imx999"),
-            "cameraSensors.cam0.sensor: 'imx999' is not a camera sensor this agent build knows (known: imx290, imx219, imx708, imx335; or 'none' for a port with no camera, 'unmanaged' to leave the port alone)"
+            "cameraSensors.cam0.sensor: 'imx999' is not a camera sensor this agent build knows (known: imx290, imx219, imx708, imx335, imx662; or 'none' for a port with no camera, 'unmanaged' to leave the port alone)"
         );
         assert_eq!(
             err("{}", "cameraSensors.cam0.options.clockFrequency", "74250000"),
-            "cameraSensors.cam0.options.clockFrequency: set the sensor of cam0 first (xorgate-rs set cameraSensors.cam0.sensor <imx290|imx219|imx708|imx335>)"
+            "cameraSensors.cam0.options.clockFrequency: set the sensor of cam0 first (xorgate-rs set cameraSensors.cam0.sensor <imx290|imx219|imx708|imx335|imx662>)"
         );
         assert_eq!(
             err(&two, "cameraSensors.cam1.options.clockFrequency", "74250000"),
-            "cameraSensors.cam1.options.clockFrequency: set the sensor of cam1 first (xorgate-rs set cameraSensors.cam1.sensor <imx290|imx219|imx708|imx335>)"
+            "cameraSensors.cam1.options.clockFrequency: set the sensor of cam1 first (xorgate-rs set cameraSensors.cam1.sensor <imx290|imx219|imx708|imx335|imx662>)"
         );
         assert_eq!(
             err(&two, "cameraSensors.cam0.options.lanes", "4"),
@@ -1403,6 +1403,36 @@ mod tests {
         assert_eq!(
             err(&two, "cameraSensors.cam0.options.linkFrequency", ""),
             "cameraSensors.cam0.options.linkFrequency must be one of 450000000, 447000000, 453000000 (or 'default'), got ''"
+        );
+        // Catalog 4: the IMX662 and its crystal (`clockFrequency`).
+        let i662 = doc("{}", "cameraSensors.cam1.sensor", "imx662");
+        assert_eq!(
+            i662,
+            r#"{"cameraSensors":{"cameras":{"cam1":{"sensor":"imx662"}}}}"#
+        );
+        let clk = doc(
+            &i662,
+            "cameraSensors.cam1.options.clockFrequency",
+            "27000000",
+        );
+        assert_eq!(
+            clk,
+            r#"{"cameraSensors":{"cameras":{"cam1":{"sensor":"imx662","options":{"clockFrequency":27000000}}}}}"#
+        );
+        let (back, out) =
+            run(&clk, "cameraSensors.cam1.options.clockFrequency", "default").unwrap();
+        assert_eq!(back, i662);
+        assert_eq!(
+            out[0],
+            "✓ cameraSensors.cam1.options.clockFrequency = default (24000000 clock-frequency; persisted to settings.json)"
+        );
+        assert_eq!(
+            err(&i662, "cameraSensors.cam1.options.clockFrequency", "25000000"),
+            "cameraSensors.cam1.options.clockFrequency must be one of 24000000, 27000000, 37125000, 72000000, 74250000 (or 'default'), got '25000000'"
+        );
+        assert_eq!(
+            err(&i662, "cameraSensors.cam1.options.linkFrequency", "445500000"),
+            "cameraSensors.cam1.options.linkFrequency: the imx662 sensor has no option 'linkFrequency' (its options: clockFrequency)"
         );
         for key in [
             "cameraSensors.cam0",

@@ -125,6 +125,8 @@ pub fn cameras_fn(
             for key in new {
                 if empty.contains(key) {
                     tracing::info!("{}", capture_declared_empty_line(key));
+                } else if let Some(sentence) = hw.requirement(key) {
+                    warn!("{}", capture_held_requirement_line(key, &sentence));
                 } else {
                     warn!("{}", capture_held_warning(key));
                 }
@@ -150,6 +152,16 @@ pub fn hold_cameras_without_a_sensor(
 pub fn capture_held_warning(stream_key: &str) -> String {
     format!(
         "[video-capture] {stream_key}: no camera enumerated on its port — capture not started (the camera name left in {stream_key}.camera / {stream_key}.gst.direct is stale)"
+    )
+}
+
+/// The hold of a stream whose declared sensor's requirements the device
+/// does not meet (D128): the port's `requirements-missing` sentence
+/// (`camera_truth::requirements_sentence`) in place of the stale-name
+/// warning, which pointed at hardware.
+pub fn capture_held_requirement_line(stream_key: &str, sentence: &str) -> String {
+    format!(
+        "[video-capture] {stream_key}: no camera enumerated on its port — capture not started: {sentence}"
     )
 }
 

@@ -735,6 +735,43 @@ pub fn missing_requirements(
     })
 }
 
+/// Per managed port whose declared sensor needs something the device lacks:
+/// stream key → (sensor id, [`missing_requirements`]'s text). The device is
+/// asked (`host`) only while some managed port names a catalog sensor, and
+/// only about the packages those sensors' sets name. The per-port report
+/// (`requirements-missing`) and the hold lines of the journal read this.
+pub fn ports_missing_requirements(
+    settings: Option<&CameraSensorsSettings>,
+    catalog: &Catalog,
+    host: impl FnOnce(&[String]) -> HostFacts,
+) -> BTreeMap<String, (String, String)> {
+    let declared: Vec<(&String, &Sensor)> = settings
+        .and_then(|s| s.cameras.as_ref())
+        .map(|cams| {
+            cams.iter()
+                .filter_map(|(k, entry)| Some((k, catalog.by_id(&declared_id(entry)?)?)))
+                .collect()
+        })
+        .unwrap_or_default();
+    if declared.is_empty() {
+        return BTreeMap::new();
+    }
+    let mut names: Vec<String> = declared
+        .iter()
+        .flat_map(|(_, s)| required_package_names(s, catalog))
+        .collect();
+    names.sort();
+    names.dedup();
+    let facts = host(&names);
+    declared
+        .into_iter()
+        .filter_map(|(k, s)| {
+            let missing = missing_requirements(s, catalog, &facts)?;
+            Some((k.clone(), (s.id.clone(), missing)))
+        })
+        .collect()
+}
+
 // ---------------------------------------------------------------------------
 // the installer's plan (`xorgate-rs camera apply --from-claim`)
 // ---------------------------------------------------------------------------
@@ -926,7 +963,7 @@ mod tests {
         let say = |e: Value| wanted(&e, c).unwrap_err().to_string();
         assert_eq!(
             say(json!({"sensor": "imx999"})),
-            "this agent build does not know the camera sensor \"imx999\" (it knows: imx290, imx219, imx708, imx335); update the agent or choose another sensor. config.txt is left as it is"
+            "this agent build does not know the camera sensor \"imx999\" (it knows: imx290, imx219, imx708, imx335, imx662); update the agent or choose another sensor. config.txt is left as it is"
         );
         assert_eq!(
             say(json!({"sensor": "imx290", "options": {"clockFrequency": 24000000}})),
@@ -1439,9 +1476,10 @@ mod tests {
         let c = catalog();
         let imx335 = c.by_id("imx335").unwrap();
         let imx290 = c.by_id("imx290").unwrap();
+        // Every name of every target: Bookworm's pair and Trixie's.
         assert_eq!(
             required_package_names(imx335, c),
-            ["libcamera-ipa", "libcamera0.5"]
+            ["libcamera-ipa", "libcamera0.5", "libcamera0.8"]
         );
         assert!(required_package_names(imx290, c).is_empty());
         let host = |pkgs: &[(&str, &str)]| HostFacts {
@@ -1503,18 +1541,58 @@ mod tests {
             ),
             None
         );
-        // Another OS release; another architecture.
+        // Another OS release; another architecture. Catalog 4: the four
+        // older sensors run on Bookworm and Trixie, the IMX662 on Trixie only.
+        let imx662 = c.by_id("imx662").unwrap();
+        assert_eq!(
+            missing_requirements(imx662, c, &ok).as_deref(),
+            Some("needs an OS release this device does not run (needs trixie; this device runs bookworm). The camera cannot work on this OS release")
+        );
+        let trixie = |pkgs: &[(&str, &str)]| HostFacts {
+            os: Some("trixie".into()),
+            ..host(pkgs)
+        };
+        assert_eq!(missing_requirements(imx290, c, &trixie(&[])), None);
+        assert_eq!(missing_requirements(imx662, c, &trixie(&[])), None);
+        // The IMX335 on Trixie: its own pair (libcamera0.8, libcamera-ipa
+        // 0.8.0), not Bookworm's. Stock 0.8.0 is installed: both are named
+        // with the version Arducam's build needs.
         assert_eq!(
             missing_requirements(
-                imx290,
+                imx335,
                 c,
-                &HostFacts {
-                    os: Some("trixie".into()),
-                    ..ok.clone()
-                }
+                &trixie(&[
+                    ("libcamera0.8", "0.8.0+rpt20261104-1"),
+                    ("libcamera-ipa", "0.8.0+rpt20261104-1"),
+                ])
             )
             .as_deref(),
-            Some("needs an OS release this device does not run (needs bookworm; this device runs trixie). The camera cannot work on this OS release")
+            Some("needs extra packages that are not installed in the required versions: libcamera0.8 0.8.0+rpt20261106-2 (installed: 0.8.0+rpt20261104-1), libcamera-ipa 0.8.0+rpt20261106-2 (installed: 0.8.0+rpt20261104-1). The camera will not appear until they are installed: run `sudo xorgate-rs update` on the device (the console's Update button does the same), or `sudo xorgate-rs camera requirements --install`")
+        );
+        // Arducam's Trixie pair installed (the bench, by hand): nothing is
+        // missing. Bookworm's pair on a Trixie device does not count.
+        assert_eq!(
+            missing_requirements(
+                imx335,
+                c,
+                &trixie(&[
+                    ("libcamera0.8", "0.8.0+rpt20261106-2"),
+                    ("libcamera-ipa", "0.8.0+rpt20261106-2"),
+                ])
+            ),
+            None
+        );
+        assert_eq!(
+            missing_requirements(
+                imx335,
+                c,
+                &trixie(&[
+                    ("libcamera0.5", "0.5.2+rpt20250909-1"),
+                    ("libcamera-ipa", "0.5.2+rpt20250909-1"),
+                ])
+            )
+            .as_deref(),
+            Some("needs extra packages that are not installed in the required versions: libcamera0.8 0.8.0+rpt20261106-2 (not installed), libcamera-ipa 0.8.0+rpt20261106-2 (installed: 0.5.2+rpt20250909-1). The camera will not appear until they are installed: run `sudo xorgate-rs update` on the device (the console's Update button does the same), or `sudo xorgate-rs camera requirements --install`")
         );
         assert_eq!(
             missing_requirements(
@@ -1556,6 +1634,84 @@ mod tests {
             Some("bookworm")
         );
         assert_eq!(os_codename("ID=debian\n"), None);
+        // Debian 13's /etc/os-release (base-files 13.x; the Trixie bench
+        // reads `VERSION_CODENAME=trixie`).
+        assert_eq!(
+            os_codename(
+                "PRETTY_NAME=\"Debian GNU/Linux 13 (trixie)\"\nNAME=\"Debian GNU/Linux\"\nVERSION_ID=\"13\"\nVERSION=\"13 (trixie)\"\nVERSION_CODENAME=trixie\nDEBIAN_VERSION_FULL=13.2\nID=debian\nHOME_URL=\"https://www.debian.org/\"\n"
+            )
+            .as_deref(),
+            Some("trixie")
+        );
+    }
+
+    /// The managed ports whose sensor lacks something, as the report and the
+    /// hold lines read them; the device is asked only about the packages of
+    /// the declared sensors, and not at all without a managed sensor.
+    #[test]
+    fn ports_missing_requirements_per_managed_port() {
+        let c = catalog();
+        let settings: CameraSensorsSettings = serde_json::from_value(json!({"cameras": {
+            "cam0": {"sensor": "imx219"},
+            "cam1": {"sensor": "imx335"},
+            "cam2": {"sensor": "none"},
+            "cam3": {"sensor": "imx999"}
+        }}))
+        .unwrap();
+        let asked = std::cell::RefCell::new(Vec::new());
+        // Stock Trixie libcamera: the IMX335's Trixie pair is not there.
+        let got = ports_missing_requirements(Some(&settings), c, |names| {
+            asked.borrow_mut().extend(names.iter().cloned());
+            HostFacts {
+                os: Some("trixie".into()),
+                arch: Some("arm64".into()),
+                packages: Some(
+                    [
+                        (
+                            "libcamera0.8".to_string(),
+                            "0.8.0+rpt20261104-1".to_string(),
+                        ),
+                        (
+                            "libcamera-ipa".to_string(),
+                            "0.8.0+rpt20261104-1".to_string(),
+                        ),
+                    ]
+                    .into(),
+                ),
+                interrupted: None,
+            }
+        });
+        assert_eq!(
+            *asked.borrow(),
+            ["libcamera-ipa", "libcamera0.5", "libcamera0.8"]
+        );
+        assert_eq!(got.keys().collect::<Vec<_>>(), ["cam1"]);
+        assert_eq!(got["cam1"].0, "imx335");
+        assert!(
+            got["cam1"].1.starts_with("needs extra packages that are not installed in the required versions: libcamera0.8 0.8.0+rpt20261106-2 (installed: 0.8.0+rpt20261104-1)"),
+            "{}",
+            got["cam1"].1
+        );
+        // The IMX662 on a Bookworm device: the OS release.
+        let settings: CameraSensorsSettings =
+            serde_json::from_value(json!({"cameras": {"cam1": {"sensor": "imx662"}}})).unwrap();
+        let got = ports_missing_requirements(Some(&settings), c, |_| HostFacts {
+            os: Some("bookworm".into()),
+            ..HostFacts::default()
+        });
+        assert_eq!(
+            got["cam1"],
+            (
+                "imx662".to_string(),
+                "needs an OS release this device does not run (needs trixie; this device runs bookworm). The camera cannot work on this OS release".to_string()
+            )
+        );
+        // No managed catalog sensor: the device is not asked.
+        let none: CameraSensorsSettings =
+            serde_json::from_value(json!({"cameras": {"cam0": {"sensor": "none"}}})).unwrap();
+        let got = ports_missing_requirements(Some(&none), c, |_| panic!("asked"));
+        assert!(got.is_empty());
+        assert!(ports_missing_requirements(None, c, |_| panic!("asked")).is_empty());
     }
 
     #[test]

@@ -153,7 +153,7 @@ rm -f "$E/claim-mode"
 echo "== a port that cannot be applied on a fresh device: the install still completes, with a WARN that names the port, the reason and the fix"
 reset_device; echo ok-newsensor > "$E/claim-mode"; run_boot
 expect_rc 0 "a camera port that could not be applied"
-grep -q "WARN: cam0 has NO camera line in /boot/firmware/config.txt, so no camera will appear on that port (this agent build does not know the camera sensor \"imx999\"). To fix it: correct the cause, then \`xorgate-rs set cameraSensors.cam0.sensor <imx290|imx219|imx708|imx335>\`" "$OUT" \
+grep -q "WARN: cam0 has NO camera line in /boot/firmware/config.txt, so no camera will appear on that port (this agent build does not know the camera sensor \"imx999\"). To fix it: correct the cause, then \`xorgate-rs set cameraSensors.cam0.sensor <imx290|imx219|imx708|imx335|imx662>\`" "$OUT" \
   && ok "the WARN says which port has no camera line, why, and the command that fixes it" || bad "no-line WARN: $(grep -n 'camera\|WARN' "$OUT" | tail -6)"
 [ "$(grep '^dtoverlay=imx' /boot/firmware/config.txt)" = 'dtoverlay=imx219,cam1,rotation=180' ] \
   && ok "…the other port was written, and no fallback line was invented for cam0" || bad "lines: $(grep '^dtoverlay=imx' /boot/firmware/config.txt | tr '\n' ' ')"

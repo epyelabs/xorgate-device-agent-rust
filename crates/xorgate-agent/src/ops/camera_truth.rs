@@ -69,8 +69,7 @@ use serde_json::{Map, Value};
 use xorgate_core::boot_config::CamPort;
 use xorgate_core::camera_catalog::catalog;
 use xorgate_core::camera_sensors::{
-    changed_since_boot, declared_id, missing_requirements, required_package_names, HostFacts,
-    LineChange,
+    changed_since_boot, declared_id, ports_missing_requirements, HostFacts, LineChange,
 };
 use xorgate_core::camera_truth::{
     capture_allowed, capture_truth, derive_port, next_relist_ms, next_report_hold_ms,
@@ -450,8 +449,10 @@ impl CameraTruth {
         let boot_text = (o.boot_config)();
         let board = (o.board)();
         // The sensor setting: the id each managed port names.
-        let setting: HashMap<String, String> = (o.setting.sensors)()
-            .and_then(|s| s.cameras)
+        let sensors = (o.setting.sensors)();
+        let setting: HashMap<String, String> = sensors
+            .as_ref()
+            .and_then(|s| s.cameras.as_ref())
             .map(|cams| {
                 cams.iter()
                     .filter_map(|(k, entry)| Some((k.clone(), declared_id(entry)?)))
@@ -481,27 +482,11 @@ impl CameraTruth {
         };
         // What a declared sensor needs and the device lacks. The device is
         // asked only while some managed port names a catalog sensor.
-        let declared: Vec<(&String, &xorgate_core::camera_catalog::Sensor)> = setting
-            .iter()
-            .filter_map(|(k, id)| Some((k, catalog().by_id(id)?)))
-            .collect();
-        let missing: HashMap<String, String> = if declared.is_empty() {
-            HashMap::new()
-        } else {
-            let mut names: Vec<String> = declared
-                .iter()
-                .flat_map(|(_, s)| required_package_names(s, catalog()))
+        let missing: HashMap<String, String> =
+            ports_missing_requirements(sensors.as_ref(), catalog(), &o.setting.host)
+                .into_iter()
+                .map(|(k, (_, missing))| (k, missing))
                 .collect();
-            names.sort();
-            names.dedup();
-            let host = (o.setting.host)(&names);
-            declared
-                .iter()
-                .filter_map(|(k, s)| {
-                    Some(((*k).clone(), missing_requirements(s, catalog(), &host)?))
-                })
-                .collect()
-        };
         let statics = Statics {
             boot_text,
             board,
@@ -1362,7 +1347,11 @@ mod tests {
         truth.refresh();
         assert_eq!(
             asked.lock().unwrap().last().unwrap(),
-            &["libcamera-ipa".to_string(), "libcamera0.5".to_string()]
+            &[
+                "libcamera-ipa".to_string(),
+                "libcamera0.5".to_string(),
+                "libcamera0.8".to_string()
+            ]
         );
         assert_eq!(
             port("cam0"),

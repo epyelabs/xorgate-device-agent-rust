@@ -60,6 +60,87 @@ fn file_b() -> String {
     format!("libcamera-ipa_{V}_arm64.deb")
 }
 
+/// Trixie (catalog 4): Arducam's build of the stock 0.8.0, other package
+/// names than Bookworm's (`libcamera0.8`; `libcamera-ipa` is one name on
+/// both), and the stock version it replaces.
+const V8: &str = "0.8.0+rpt20261106-2";
+const STOCK8: &str = "0.8.0+rpt20261104-1";
+const C: &[u8] = b"the third tiny package: libcamera0.8, for trixie\n";
+const D: &[u8] = b"the fourth tiny package: libcamera-ipa 0.8.0, for trixie\n";
+/// Debian 13's `/etc/os-release` (the bench reads `VERSION_CODENAME=trixie`).
+const TRIXIE_OS_RELEASE: &str = "PRETTY_NAME=\"Debian GNU/Linux 13 (trixie)\"\nNAME=\"Debian GNU/Linux\"\nVERSION_ID=\"13\"\nVERSION=\"13 (trixie)\"\nVERSION_CODENAME=trixie\nID=debian\n";
+
+fn file_c() -> String {
+    format!("libcamera0.8_{V8}_arm64.deb")
+}
+
+fn file_d() -> String {
+    format!("libcamera-ipa_{V8}_arm64.deb")
+}
+
+/// The compiled-in catalog's SHAPE for the IMX335's set: one target per OS
+/// release (bookworm and trixie, arm64), each with its own pair, pointing
+/// at the tiny files.
+fn two_release_catalog() -> &'static Catalog {
+    let mut c = test_catalog(
+        "bookworm",
+        "arm64",
+        &[
+            ("libcamera0.5", V, file_a(), A),
+            ("libcamera-ipa", V, file_b(), B),
+        ],
+    )
+    .clone();
+    let real: Vec<(String, String, Vec<String>)> = catalog()
+        .package_set(SET)
+        .unwrap()
+        .targets
+        .iter()
+        .map(|t| {
+            (
+                t.os.clone(),
+                t.arch.clone(),
+                t.packages.iter().map(|p| p.name.clone()).collect(),
+            )
+        })
+        .collect();
+    // The test's targets follow the real ones: names, OS releases, order.
+    assert_eq!(
+        real,
+        [
+            (
+                "bookworm".to_string(),
+                "arm64".to_string(),
+                vec!["libcamera0.5".to_string(), "libcamera-ipa".to_string()]
+            ),
+            (
+                "trixie".to_string(),
+                "arm64".to_string(),
+                vec!["libcamera0.8".to_string(), "libcamera-ipa".to_string()]
+            ),
+        ]
+    );
+    let set = c.package_sets.iter_mut().find(|s| s.id == SET).unwrap();
+    set.targets.push(PackageTarget {
+        os: "trixie".to_string(),
+        arch: "arm64".to_string(),
+        packages: [
+            ("libcamera0.8", file_c(), C),
+            ("libcamera-ipa", file_d(), D),
+        ]
+        .into_iter()
+        .map(|(name, file, bytes)| Package {
+            name: name.to_string(),
+            version: V8.to_string(),
+            url: format!("{BASE}{file}"),
+            sha256: sha(bytes),
+            bytes: bytes.len() as u64,
+        })
+        .collect(),
+    });
+    Box::leak(Box::new(c))
+}
+
 /// The compiled-in catalog with the IMX335's package set pointing at two
 /// tiny files (`packages`: name, version, file name, bytes).
 fn test_catalog(
@@ -112,6 +193,10 @@ async fn package_server(mode: &Mode) -> HttpStub {
             A
         } else if path == b {
             B
+        } else if path == format!("/{}", file_c()) {
+            return Reply::ok(C);
+        } else if path == format!("/{}", file_d()) {
+            return Reply::ok(D);
         } else if path.starts_with("/libfoo9_") {
             // The file of a second package set: its server never answers.
             return Reply::Hang;
@@ -772,21 +857,39 @@ async fn apt_is_checked_before_and_after() {
 
 #[tokio::test]
 async fn another_os_release_or_architecture_is_refused_in_a_sentence() {
-    // The catalog pins bookworm/arm64 only.
+    // The catalog pins bookworm/arm64 and trixie/arm64: a Trixie device of
+    // another architecture is refused (the Trixie plan itself:
+    // `the_trixie_pair_is_its_own_plan`).
     let mut dev = Dev::new("os").await;
-    std::fs::write(&dev.env.os_release, "VERSION_CODENAME=trixie\n").unwrap();
+    dev.env.catalog = two_release_catalog();
+    std::fs::write(&dev.env.os_release, TRIXIE_OS_RELEASE).unwrap();
+    dev.env.arch = Some("armhf".to_string());
     assert_eq!(
         dev.run(&["--install"]).await,
         (
             3,
-            vec!["camera packages: WARN arducam-libcamera REFUSED: the catalog lists no packages of this set for trixie/arm64, so nothing can be installed on this device; imx335 (cam0) will not work here".to_string()]
+            vec!["camera packages: WARN arducam-libcamera REFUSED: the catalog lists no packages of this set for trixie/armhf, so nothing can be installed on this device; imx335 (cam0) will not work here".to_string()]
         )
     );
     let (code, lines) = dev.run(&[]).await;
     assert_eq!(code, 3);
     assert_eq!(
         lines[1],
-        "  REFUSED: the catalog lists no packages of this set for trixie/arm64; nothing can be installed on this device"
+        "  REFUSED: the catalog lists no packages of this set for trixie/armhf; nothing can be installed on this device"
+    );
+    // An OS release the catalog does not pin at all.
+    dev.env.arch = Some("arm64".to_string());
+    std::fs::write(&dev.env.os_release, "VERSION_CODENAME=bullseye\n").unwrap();
+    let (code, lines) = dev.run(&["--install"]).await;
+    assert_eq!(code, 3);
+    assert!(lines[0].contains("for bullseye/arm64"), "{lines:?}");
+    dev.env.catalog = test_catalog(
+        "bookworm",
+        "arm64",
+        &[
+            ("libcamera0.5", V, file_a(), A),
+            ("libcamera-ipa", V, file_b(), B),
+        ],
     );
     std::fs::write(&dev.env.os_release, "VERSION_CODENAME=bookworm\n").unwrap();
     dev.env.arch = Some("armhf".to_string());
@@ -820,6 +923,161 @@ async fn another_os_release_or_architecture_is_refused_in_a_sentence() {
         ["camera packages: WARN arducam-libcamera REFUSED: the catalog entry is not usable (libcamera-ipa: its URL names a host that is not allowed (allowed: github.com)); nothing was changed"]
     );
     assert_eq!((dev.stub.hits(), dev.read("apt.log")), (0, String::new()));
+}
+
+/// Catalog 4, a Trixie device: the IMX335's set has a Trixie target whose
+/// package names differ from Bookworm's (`libcamera0.8` + `libcamera-ipa`
+/// 0.8.0). The listing, the install (simulation, the one transaction, the
+/// hold, the record), the "to go back" lines and the block of packages no
+/// sensor needs any more all name the Trixie pair and the versions it
+/// replaced; Bookworm's pair is never asked for.
+#[tokio::test]
+async fn the_trixie_pair_is_its_own_plan() {
+    let mut dev = Dev::new("trixie").await;
+    dev.env.catalog = two_release_catalog();
+    std::fs::write(&dev.env.os_release, TRIXIE_OS_RELEASE).unwrap();
+    // Stock Trixie libcamera (an upgraded device may still list Bookworm's
+    // libcamera0.5 as removed, `rc`: not installed).
+    std::fs::write(
+        dev.state.join("installed.tsv"),
+        format!("libcamera0.8\t{STOCK8}\tii \nlibcamera-ipa\t{STOCK8}\tii \nlibcamera0.5\t{STOCK}\trc \n"),
+    )
+    .unwrap();
+    let header = "arducam-libcamera (Arducam's libcamera build (adds the IMX335 camera helper)), needed by imx335 (cam0):";
+    let (code, lines) = dev.run(&[]).await;
+    assert_eq!(code, 1);
+    assert_eq!(
+        lines,
+        [
+            header,
+            "  libcamera0.8   required 0.8.0+rpt20261106-2  installed 0.8.0+rpt20261104-1  MISSING",
+            "  libcamera-ipa  required 0.8.0+rpt20261106-2  installed 0.8.0+rpt20261104-1  MISSING",
+            "to install what is missing: sudo xorgate-rs camera requirements --install (or sudo xorgate-rs update)",
+        ]
+    );
+    assert_eq!(dev.stub.hits(), 0);
+
+    let (code, lines) = dev.run(&["--install"]).await;
+    assert_eq!(code, 0, "{lines:?}");
+    assert_eq!(
+        lines,
+        [
+            format!("camera packages: arducam-libcamera: downloading libcamera0.8 0.8.0+rpt20261106-2 ({} bytes)", C.len()),
+            format!("camera packages: arducam-libcamera: verified libcamera0.8_0.8.0+rpt20261106-2_arm64.deb ({} bytes, sha256 {}…)", C.len(), &sha(C)[..12]),
+            format!("camera packages: arducam-libcamera: downloading libcamera-ipa 0.8.0+rpt20261106-2 ({} bytes)", D.len()),
+            format!("camera packages: arducam-libcamera: verified libcamera-ipa_0.8.0+rpt20261106-2_arm64.deb ({} bytes, sha256 {}…)", D.len(), &sha(D)[..12]),
+            "camera packages: arducam-libcamera: installing libcamera0.8, libcamera-ipa with apt-get (never interrupted once begun)".to_string(),
+            "camera packages: arducam-libcamera: installed libcamera0.8 0.8.0+rpt20261106-2 (was 0.8.0+rpt20261104-1), libcamera-ipa 0.8.0+rpt20261106-2 (was 0.8.0+rpt20261104-1)".to_string(),
+            "camera packages: arducam-libcamera: apt hold set on libcamera0.8, libcamera-ipa".to_string(),
+            "camera packages: the agent was restarted so the camera is listed again; no reboot is needed".to_string(),
+        ]
+    );
+    // The simulation, then the one transaction, with the Trixie files only.
+    let apt = dev.read("apt.log");
+    let calls: Vec<&str> = apt.lines().collect();
+    assert_eq!(calls.len(), 2, "{apt}");
+    assert!(calls[0].contains(" -s "), "{apt}");
+    for call in &calls {
+        let files: Vec<&str> = call.split(' ').filter(|a| a.ends_with(".deb")).collect();
+        assert_eq!(files.len(), 2, "{call}");
+        assert!(files[0].ends_with(&format!("/{}", file_c())), "{call}");
+        assert!(files[1].ends_with(&format!("/{}", file_d())), "{call}");
+    }
+    assert_eq!(
+        std::fs::read(dev.state.join(format!("seen-{}", file_c()))).unwrap(),
+        C
+    );
+    assert_eq!(
+        std::fs::read(dev.state.join(format!("seen-{}", file_d()))).unwrap(),
+        D
+    );
+    assert_eq!(dev.read("held"), "libcamera0.8\nlibcamera-ipa\n");
+    assert_eq!(
+        dev.read("mark.log"),
+        "showhold\nshowhold\nhold libcamera0.8 libcamera-ipa\n"
+    );
+    assert_eq!(dev.read("systemctl.log"), "try-restart xorgate-agent-rs\n");
+    assert_eq!(
+        dev.record(),
+        json!({"v": 1, "sets": {"arducam-libcamera": {"at": 1_795_000_000_000i64, "packages": [
+            {"name": "libcamera0.8", "installed": V8, "replaced": STOCK8},
+            {"name": "libcamera-ipa", "installed": V8, "replaced": STOCK8}
+        ], "held": ["libcamera0.8", "libcamera-ipa"]}}})
+    );
+    // The listing now: the pinned versions, the hold, the way back.
+    let (code, lines) = dev.run(&[]).await;
+    assert_eq!(code, 0);
+    assert_eq!(
+        lines[1..],
+        [
+            "  libcamera0.8   required 0.8.0+rpt20261106-2  installed 0.8.0+rpt20261106-2  ok",
+            "  libcamera-ipa  required 0.8.0+rpt20261106-2  installed 0.8.0+rpt20261106-2  ok",
+            "  apt hold: set on every package",
+            "  installed by xorgate-rs; it replaced: libcamera0.8 0.8.0+rpt20261104-1, libcamera-ipa 0.8.0+rpt20261104-1",
+            "  to go back: sudo apt-mark unhold libcamera0.8 libcamera-ipa",
+            "  to go back: sudo apt-get install -y --allow-downgrades libcamera0.8=0.8.0+rpt20261104-1 libcamera-ipa=0.8.0+rpt20261104-1",
+            "  to go back: then: sudo systemctl restart xorgate-agent-rs (until the agent restarts, its running captures keep the replaced library loaded and the port still reads ok)",
+            "  (going back does not last while a port is set to a sensor that needs these packages: the next `xorgate-rs update` installs them again. Set the port to another sensor or to `none` first)",
+        ]
+    );
+    // No sensor needs the set any more: the leftover block names the
+    // Trixie pair.
+    dev.settings(json!({"cameraSensors": {"cameras": {"cam0": {"sensor": "imx662"}, "cam1": {"sensor": "imx219"}}}}));
+    let (code, lines) = dev.run(&[]).await;
+    assert_eq!(code, 0);
+    assert_eq!(
+        lines,
+        [
+            "no declared camera sensor needs extra packages",
+            "arducam-libcamera (Arducam's libcamera build (adds the IMX335 camera helper)), the set imx335 needs: no declared sensor needs it any more, but what xorgate-rs installed for it is still in place:",
+            "  libcamera0.8   installed 0.8.0+rpt20261106-2  held  (installed by xorgate-rs; it replaced 0.8.0+rpt20261104-1)",
+            "  libcamera-ipa  installed 0.8.0+rpt20261106-2  held  (installed by xorgate-rs; it replaced 0.8.0+rpt20261104-1)",
+            "  while they are held, apt does not update these packages: the OS's own updates of them do not reach this device",
+            "  to go back: sudo apt-mark unhold libcamera0.8 libcamera-ipa",
+            "  to go back: sudo apt-get install -y --allow-downgrades libcamera0.8=0.8.0+rpt20261104-1 libcamera-ipa=0.8.0+rpt20261104-1",
+            "  to go back: then: sudo systemctl restart xorgate-agent-rs (until the agent restarts, its running captures keep the replaced library loaded and the port still reads ok)",
+        ]
+    );
+}
+
+/// The Trixie bench of 2026-11-23: Arducam's Trixie pair was installed BY
+/// HAND, at the pinned version, and not held, and there is no record. The
+/// listing reads true (the packages are there, the hold is not), and
+/// `--install` sets the hold and nothing else.
+#[tokio::test]
+async fn the_trixie_pair_installed_by_hand_lacks_only_its_hold() {
+    let mut dev = Dev::new("trixie-hand").await;
+    dev.env.catalog = two_release_catalog();
+    std::fs::write(&dev.env.os_release, TRIXIE_OS_RELEASE).unwrap();
+    dev.installed(&[("libcamera0.8", V8), ("libcamera-ipa", V8)]);
+    let (code, lines) = dev.run(&[]).await;
+    assert_eq!(code, 1, "the hold is to be set");
+    assert_eq!(
+        lines[1..],
+        [
+            "  libcamera0.8   required 0.8.0+rpt20261106-2  installed 0.8.0+rpt20261106-2  ok",
+            "  libcamera-ipa  required 0.8.0+rpt20261106-2  installed 0.8.0+rpt20261106-2  ok",
+            "  apt hold: MISSING on libcamera0.8, libcamera-ipa (an apt upgrade may replace them)",
+            "to set the hold again: sudo xorgate-rs camera requirements --install (or sudo xorgate-rs update)",
+        ]
+    );
+    assert_eq!(
+        dev.run(&["--install", "--quiet"]).await,
+        (
+            0,
+            vec![
+                "camera packages: arducam-libcamera: apt hold set on libcamera0.8, libcamera-ipa"
+                    .to_string()
+            ]
+        )
+    );
+    assert_eq!(dev.stub.hits(), 0);
+    assert_eq!(dev.read("apt.log"), "");
+    assert_eq!(dev.read("systemctl.log"), "");
+    assert_eq!(dev.read("held"), "libcamera0.8\nlibcamera-ipa\n");
+    let (code, lines) = dev.run(&[]).await;
+    assert_eq!(code, 0);
+    assert_eq!(lines[3], "  apt hold: set on every package");
 }
 
 /// The installer's path: the sensors of a claim response, before any

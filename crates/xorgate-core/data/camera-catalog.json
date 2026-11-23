@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "catalogVersion": 3,
+  "catalogVersion": 4,
   "generatedBy": "backend/xorgate-core-service: npm run contract:generate",
   "sensors": [
     {
@@ -40,7 +40,8 @@
       },
       "requires": {
         "os": [
-          "bookworm"
+          "bookworm",
+          "trixie"
         ],
         "packageSet": null
       },
@@ -85,7 +86,8 @@
       },
       "requires": {
         "os": [
-          "bookworm"
+          "bookworm",
+          "trixie"
         ],
         "packageSet": null
       },
@@ -148,7 +150,8 @@
       },
       "requires": {
         "os": [
-          "bookworm"
+          "bookworm",
+          "trixie"
         ],
         "packageSet": null
       },
@@ -207,7 +210,8 @@
       },
       "requires": {
         "os": [
-          "bookworm"
+          "bookworm",
+          "trixie"
         ],
         "packageSet": "arducam-libcamera"
       },
@@ -233,23 +237,71 @@
         "Needs Arducam's libcamera packages. Until they are installed the port reports that its requirements are missing.",
         "This sensor cannot be rotated: the camera mounting setting has no effect on it. Mount the camera the right way up; turning the picture in software is not offered."
       ]
-    }
-  ],
-  "planned": [
+    },
     {
       "id": "imx662",
       "label": "Sony IMX662",
-      "tier": "planned",
+      "tier": "supported",
+      "minAgent": "0.2.1",
+      "overlay": {
+        "name": "imx662",
+        "fixedParams": [],
+        "defaultRotation": 180,
+        "canFlip": true
+      },
+      "options": [
+        {
+          "key": "clockFrequency",
+          "label": "Clock frequency",
+          "description": "Frequency of the crystal on the camera board. The overlay default is 24 MHz; check the board vendor for others. The sensor cannot report it, and the driver refuses a rate it does not support.",
+          "param": "clock-frequency",
+          "unit": "Hz",
+          "values": [
+            24000000,
+            27000000,
+            37125000,
+            72000000,
+            74250000
+          ],
+          "default": 24000000
+        }
+      ],
+      "libcameraNames": [
+        "imx662"
+      ],
+      "dtNodeNames": [
+        "starvis2"
+      ],
+      "identity": "chip-id",
+      "source": {
+        "props": []
+      },
       "requires": {
         "os": [
           "trixie"
-        ]
+        ],
+        "packageSet": null
+      },
+      "unsupportedPresets": [],
+      "info": {
+        "nativeAspect": "16:9",
+        "fullModeMaxFps": null,
+        "sensorWidthPercent": {
+          "p720": null,
+          "p1080": null
+        },
+        "sensorHeightPercent": {
+          "p720": null,
+          "p1080": null
+        }
       },
       "notes": [
-        "Not available yet. It needs a device image built on Debian Trixie."
+        "Needs Debian Trixie with kernel 6.18.60 or later and libcamera 0.8.0 or later: run sudo apt full-upgrade on the device first. On an older kernel the camera is not detected.",
+        "Not yet tested on a bench by xorgate. The driver and the tuning files ship with Raspberry Pi OS for both the CM5 and the CM4."
       ]
     }
   ],
+  "planned": [],
   "packageSets": [
     {
       "id": "arducam-libcamera",
@@ -258,7 +310,8 @@
       "notes": [
         "Replaces the stock libcamera0.5 and libcamera-ipa packages of the same name. Nothing else changes; the stock GStreamer plugin keeps working against them.",
         "Needs an apt hold on both packages: a newer stock libcamera would otherwise replace them on an upgrade and remove the IMX335 helper. The hold also keeps later stock libcamera fixes off that device.",
-        "Fetched from Arducam's GitHub release and checked against the pinned sha256. Release assets can be replaced upstream; a file that no longer matches is refused."
+        "Fetched from Arducam's GitHub release and checked against the pinned sha256. Release assets can be replaced upstream; a file that no longer matches is refused.",
+        "On Debian Trixie the pair is libcamera0.8 and libcamera-ipa 0.8.0, Arducam's build of the stock 0.8.0. The two releases cannot share files: each OS has its own pinned pair."
       ],
       "targets": [
         {
@@ -278,6 +331,26 @@
               "url": "https://github.com/ArduCAM/Arducam-Pivariety-V4L2-Driver/releases/download/libcamera-v0.0.5/libcamera-ipa_0.5.2+rpt20250909-1_arm64.deb",
               "sha256": "247961da888ab177dfac1ceb8e0e75edf2cd2f8722be2fd46984041e87d12503",
               "bytes": 600732
+            }
+          ]
+        },
+        {
+          "os": "trixie",
+          "arch": "arm64",
+          "packages": [
+            {
+              "name": "libcamera0.8",
+              "version": "0.8.0+rpt20261106-2",
+              "url": "https://github.com/ArduCAM/Arducam-Pivariety-V4L2-Driver/releases/download/libcamera-v0.0.5/libcamera0.8_0.8.0+rpt20261106-2_arm64.deb",
+              "sha256": "8f591a09c3faf866821eb421c4f601a1ff9029ff36baa8aeb32de3467b7728eb",
+              "bytes": 591404
+            },
+            {
+              "name": "libcamera-ipa",
+              "version": "0.8.0+rpt20261106-2",
+              "url": "https://github.com/ArduCAM/Arducam-Pivariety-V4L2-Driver/releases/download/libcamera-v0.0.5/libcamera-ipa_0.8.0+rpt20261106-2_arm64.deb",
+              "sha256": "5145f1961c195f1bf782e7f1233afb605c1afe97ceae79888ec5557ddfd26ccc",
+              "bytes": 659076
             }
           ]
         }

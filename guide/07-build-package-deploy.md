@@ -185,10 +185,23 @@ Test it with `tools/update-e2e/run.sh`, which uses a local fake bucket.
 ### The extra packages of a sensor
 
 Some sensors need OS packages the stock image does not have. Today that is one case: the IMX335
-needs Arducam's libcamera build (two packages, `libcamera0.5` and `libcamera-ipa`, that replace
-the stock ones of the same name). Which packages, in which version, from which URL, with which
-sha256 and size is pinned in the sensor catalog (`crates/xorgate-core/data/camera-catalog.json`,
-`packageSets`), per OS release and architecture. The catalog is compiled into the binary.
+needs Arducam's libcamera build, two packages that replace the stock ones of the same name. Which
+packages, in which version, from which URL, with which sha256 and size is pinned in the sensor
+catalog (`crates/xorgate-core/data/camera-catalog.json`, `packageSets`), per OS release and
+architecture. The catalog is compiled into the binary. Each OS release has its own pair, and the
+command takes the one that matches `VERSION_CODENAME` in `/etc/os-release` and the dpkg
+architecture:
+
+| OS release | Packages (arm64) | Pinned version | Replaces (stock) |
+|---|---|---|---|
+| Bookworm | `libcamera0.5`, `libcamera-ipa` | `0.5.2+rpt20250909-1` | 0.5.2 |
+| Trixie (catalog 4, agent 0.2.1) | `libcamera0.8`, `libcamera-ipa` | `0.8.0+rpt20261106-2` | 0.8.0 (`0.8.0+rpt20261104-1` on 2026-11-23) |
+
+On Trixie this was seen on hardware once: on a CM5 upgraded in place, the pair installed BY HAND
+made the IMX335 list and stream. This command has not yet installed the Trixie pair on a device.
+The hold works the same on both releases; on Trixie it also keeps back the stock
+`gstreamer1.0-libcamera` and `rpicam-apps` updates that need a newer libcamera, until the catalog
+pins a newer build (inferred from their dependencies, not yet seen).
 
 ```sh
 xorgate-rs camera requirements                 # anyone: what the declared sensors need, required and installed versions
@@ -365,7 +378,8 @@ try again when it has finished" instead. The unprivileged agent cannot open the 
 (root's, mode 0640), so its `requirements-missing` sentence may say "dpkg was interrupted"
 for as long as that operation runs; it corrects itself at the next check.
 
-**The hold and a later `apt upgrade`.** The stock `libcamera0.5` and `libcamera-ipa` come from the
+**The hold and a later `apt upgrade`.** (The examples below are Bookworm's; on Trixie read
+`libcamera0.8` for `libcamera0.5`.) The stock `libcamera0.5` and `libcamera-ipa` come from the
 Raspberry Pi apt repository, and a newer stock version would replace Arducam's build on the next
 `apt upgrade` and take the IMX335 helper with it. The hold prevents that: apt keeps the two
 packages back and says so ("The following packages have been kept back"), and it also keeps

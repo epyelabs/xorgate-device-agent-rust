@@ -1136,7 +1136,11 @@ mod tests {
         assert!(package_names(&plain, c).is_empty());
 
         let d = declared(&[("cam0", "imx335"), ("cam1", "imx219")]);
-        assert_eq!(package_names(&d, c), ["libcamera-ipa", "libcamera0.5"]);
+        // Every name of every target: dpkg is asked about all of them.
+        assert_eq!(
+            package_names(&d, c),
+            ["libcamera-ipa", "libcamera0.5", "libcamera0.8"]
+        );
         // Stock packages: an install is needed.
         let stock = host(
             "bookworm",
@@ -1194,11 +1198,50 @@ mod tests {
             listing(&p[0], Some(&held), None)[3],
             "  apt hold: set on every package"
         );
+        // Trixie (catalog 4): its own pair, other package names.
+        const V8: &str = "0.8.0+rpt20261106-2";
+        const STOCK8: &str = "0.8.0+rpt20261104-1";
+        let stock8 = host(
+            "trixie",
+            "arm64",
+            &[
+                ("libcamera0.8", STOCK8),
+                ("libcamera-ipa", STOCK8),
+                // Left over from Bookworm (an upgraded device): not asked for.
+                ("libcamera0.5", V),
+            ],
+        );
+        let p = plan(&d, c, &stock8);
+        assert_eq!(p[0].state, SetState::Missing);
+        assert_eq!(p[0].names(), ["libcamera0.8", "libcamera-ipa"]);
+        assert_eq!(
+            listing(&p[0], None, None),
+            [
+                "arducam-libcamera (Arducam's libcamera build (adds the IMX335 camera helper)), needed by imx335 (cam0):",
+                "  libcamera0.8   required 0.8.0+rpt20261106-2  installed 0.8.0+rpt20261104-1  MISSING",
+                "  libcamera-ipa  required 0.8.0+rpt20261106-2  installed 0.8.0+rpt20261104-1  MISSING",
+            ]
+        );
+        // Installed by hand at the pinned version, not held (the bench of
+        // 2026-11-23): satisfied, only the hold is to do.
+        let by_hand = host(
+            "trixie",
+            "arm64",
+            &[("libcamera0.8", V8), ("libcamera-ipa", V8)],
+        );
+        let p = plan(&d, c, &by_hand);
+        assert_eq!(p[0].state, SetState::Satisfied);
+        assert!(needs_work(&p[0], Some(&[])));
+        assert_eq!(
+            listing(&p[0], Some(&[]), None)[3],
+            "  apt hold: MISSING on libcamera0.8, libcamera-ipa (an apt upgrade may replace them)"
+        );
         // Another OS release or architecture: refused, in a sentence.
         for (os, arch) in [
-            ("trixie", "arm64"),
+            ("trixie", "armhf"),
             ("bookworm", "armhf"),
             ("bookworm", "amd64"),
+            ("bullseye", "arm64"),
         ] {
             let p = plan(&d, c, &host(os, arch, &[]));
             assert_eq!(
