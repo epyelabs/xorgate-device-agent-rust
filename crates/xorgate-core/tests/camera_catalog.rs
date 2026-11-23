@@ -13,8 +13,9 @@
 use sha2::{Digest, Sha256};
 use xorgate_core::camera_catalog::{catalog, loaded, parse_catalog, CATALOG_JSON, SCHEMA_VERSION};
 
-/// sha256 of the vendored file (catalog 4: backend `camera/phase6-trixie` @ `bb19cbb`).
-const SHA256: &str = "99b8d5e948b0802d2877f281695263ce399fdf66cfa0266876a08ea9a4dbf5e4";
+/// sha256 of the vendored file (catalog 4 as revised, the IMX662 back to
+/// `planned`: backend `camera/phase6-trixie` @ `76e838c`).
+const SHA256: &str = "d65cde662c5f0b0eeb541c5e79e9559060285af795bc224c916214145b833ffc";
 
 fn repo_file(rel: &str) -> String {
     let path = format!("{}/../../{rel}", env!("CARGO_MANIFEST_DIR"));
@@ -84,8 +85,7 @@ fn the_helpers_allow_list_is_generated_from_the_catalog() {
             "imx290 clock-frequency",
             "imx219",
             "imx708 link-frequency",
-            "imx335 link-frequency",
-            "imx662 clock-frequency"
+            "imx335 link-frequency"
         ]
     );
     for s in &catalog().sensors {
@@ -100,8 +100,7 @@ fn the_helpers_allow_list_is_generated_from_the_catalog() {
 }
 
 /// Every sensor of the vendored catalog may be chosen for THIS build: its
-/// `minAgent` is not newer than the workspace version (catalog 4: the
-/// IMX662 needs 0.2.1, the first build that vendors it).
+/// `minAgent` is not newer than the workspace version.
 #[test]
 fn this_build_is_new_enough_for_every_sensor() {
     let ver = |s: &str| -> Vec<u64> { s.split('.').map(|p| p.parse().unwrap()).collect() };
@@ -111,11 +110,12 @@ fn this_build_is_new_enough_for_every_sensor() {
         let min = s["minAgent"].as_str().unwrap();
         assert!(ver(min) <= me, "{}: minAgent {min}", s["id"]);
     }
-    let imx662 = doc["sensors"]
+    // The IMX662 is announced only: nothing of it is selectable.
+    let planned: Vec<&str> = doc["planned"]
         .as_array()
         .unwrap()
         .iter()
-        .find(|s| s["id"] == "imx662")
-        .unwrap();
-    assert_eq!(imx662["minAgent"], "0.2.1");
+        .map(|p| p["id"].as_str().unwrap())
+        .collect();
+    assert_eq!(planned, ["imx662"]);
 }

@@ -1,0 +1,62 @@
+{
+  "provenance": "RUST-ONLY test fixture (support-other-camera-models Phase 6, revision 2). One catalog sensor entry that tests append to the vendored catalog, to keep covered what no real sensor of catalog 4 exercises any more: a device-tree node named differently from the overlay, a per-sensor numeric option, and an OS requirement of trixie only. Shaped after the former imx662 entry; the facts are invented.",
+  "sensor": {
+    "id": "testcam",
+    "label": "Test camera (fixture)",
+    "tier": "supported",
+    "minAgent": "0.2.0",
+    "overlay": {
+      "name": "testcam",
+      "fixedParams": [],
+      "defaultRotation": 180,
+      "canFlip": true
+    },
+    "options": [
+      {
+        "key": "clockFrequency",
+        "label": "Clock frequency",
+        "description": "Frequency of the crystal on the camera board. The overlay default is 24 MHz; check the board vendor for others. The sensor cannot report it, and the driver refuses a rate it does not support.",
+        "param": "clock-frequency",
+        "unit": "Hz",
+        "values": [
+          24000000,
+          27000000,
+          37125000
+        ],
+        "default": 24000000
+      }
+    ],
+    "libcameraNames": [
+      "testcam"
+    ],
+    "dtNodeNames": [
+      "testfam"
+    ],
+    "identity": "chip-id",
+    "source": {
+      "props": []
+    },
+    "requires": {
+      "os": [
+        "trixie"
+      ],
+      "packageSet": null
+    },
+    "unsupportedPresets": [],
+    "info": {
+      "nativeAspect": "16:9",
+      "fullModeMaxFps": null,
+      "sensorWidthPercent": {
+        "p720": null,
+        "p1080": null
+      },
+      "sensorHeightPercent": {
+        "p720": null,
+        "p1080": null
+      }
+    },
+    "notes": [
+      "A FIXTURE, not a real sensor: its device-tree node name (testfam) differs from its overlay name, it has a numeric option besides the imx290's, and it runs on Trixie only."
+    ]
+  }
+}

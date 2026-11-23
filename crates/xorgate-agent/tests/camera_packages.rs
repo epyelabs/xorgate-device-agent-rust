@@ -1022,7 +1022,7 @@ async fn the_trixie_pair_is_its_own_plan() {
     );
     // No sensor needs the set any more: the leftover block names the
     // Trixie pair.
-    dev.settings(json!({"cameraSensors": {"cameras": {"cam0": {"sensor": "imx662"}, "cam1": {"sensor": "imx219"}}}}));
+    dev.settings(json!({"cameraSensors": {"cameras": {"cam0": {"sensor": "imx708"}, "cam1": {"sensor": "imx219"}}}}));
     let (code, lines) = dev.run(&[]).await;
     assert_eq!(code, 0);
     assert_eq!(

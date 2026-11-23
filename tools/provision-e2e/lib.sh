@@ -218,7 +218,7 @@ elif a[:3] == ["camera", "apply", "--from-claim"] and len(a) == 4:
     # same sensor left alone), its per-port output and its last line.
     import json, re
     log("rs camera apply --from-claim " + a[3])
-    DEFAULT = {"imx290": 0, "imx219": 180, "imx708": 180, "imx335": 180, "imx662": 180}
+    DEFAULT = {"imx290": 0, "imx219": 180, "imx708": 180, "imx335": 180}
     claim = json.load(open(a[3]))
     video = (claim.get("hardware") or {}).get("video") or []
     setting = (claim.get("cameraSensors") or {}).get("cameras")
@@ -247,7 +247,7 @@ elif a[:3] == ["camera", "apply", "--from-claim"] and len(a) == 4:
             print(cam + ": FAILED: " + why)
             if not mine:
                 # The real command's line for a port left with no camera line.
-                print(cam + ": NO CAMERA LINE: " + cam + " has NO camera line in " + path + ", so no camera will appear on that port (" + why + "). To fix it: correct the cause, then `xorgate-rs set cameraSensors." + cam + ".sensor <imx290|imx219|imx708|imx335|imx662>` (the agent writes the line within a minute; reboot after), or add the dtoverlay line for " + cam + " by hand and reboot")
+                print(cam + ": NO CAMERA LINE: " + cam + " has NO camera line in " + path + ", so no camera will appear on that port (" + why + "). To fix it: correct the cause, then `xorgate-rs set cameraSensors." + cam + ".sensor <imx290|imx219|imx708|imx335>` (the agent writes the line within a minute; reboot after), or add the dtoverlay line for " + cam + " by hand and reboot")
             failed = True
             continue
         if len(mine) == 1 and mine[0].split(",")[0] == "dtoverlay=" + sensor:

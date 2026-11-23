@@ -37,7 +37,7 @@ use xorgate_agent::ops::camera_mount::{
     WriteMemo, HELPER_NOT_INSTALLED, RETRY_FAILED_WRITE_MS,
 };
 use xorgate_core::boot_config::CamCfgOp;
-use xorgate_core::camera_catalog::catalog;
+use xorgate_core::camera_catalog::{catalog, parse_catalog, Catalog, CATALOG_JSON};
 use xorgate_core::camera_truth::PortNode;
 use xorgate_core::cameras::EnumeratedCamera;
 use xorgate_core::clock::{Clock, FixedClock};
@@ -189,6 +189,9 @@ struct HelperExecRunner {
     device_dir: PathBuf,
     calls: Mutex<Vec<Vec<String>>>,
     fail: Mutex<Option<RunResult>>,
+    /// The helper's allow-list: the generated file, unless a test hands it
+    /// the list of a fixture catalog.
+    overlays: Mutex<PathBuf>,
 }
 
 impl HelperExecRunner {
@@ -197,6 +200,7 @@ impl HelperExecRunner {
             device_dir: d.dir.clone(),
             calls: Mutex::new(vec![]),
             fail: Mutex::new(None),
+            overlays: Mutex::new(repo().join("system/xorgate-camcfg.overlays")),
         })
     }
     fn calls(&self) -> Vec<Vec<String>> {
@@ -221,26 +225,24 @@ impl PrivilegedRunner for HelperExecRunner {
         self.calls.lock().unwrap().push(argv.clone());
         let fail = self.fail.lock().unwrap().clone();
         let dir = self.device_dir.clone();
+        let overlays = self.overlays.lock().unwrap().clone();
         Box::pin(async move {
             match fail {
                 Some(r) => r,
-                None => exec_camcfg(&argv[3..], &dir).await,
+                None => exec_camcfg(&argv[3..], &dir, &overlays).await,
             }
         })
     }
 }
 
-async fn exec_camcfg(args: &[String], device_dir: &Path) -> RunResult {
+async fn exec_camcfg(args: &[String], device_dir: &Path, overlays: &Path) -> RunResult {
     let o = tokio::process::Command::new("/bin/sh")
         .arg(camcfg())
         .args(args)
         .env_clear()
         .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
         .env("XORGATE_BOOT_CONFIG", device_dir.join("config.txt"))
-        .env(
-            "XORGATE_CAMCFG_OVERLAYS",
-            repo().join("system/xorgate-camcfg.overlays"),
-        )
+        .env("XORGATE_CAMCFG_OVERLAYS", overlays)
         .env("XORGATE_CAMCFG_MODEL", device_dir.join("device-tree/model"))
         .env("XORGATE_CAMCFG_LOCK", device_dir.join("lock"))
         .output()
@@ -338,11 +340,12 @@ impl RotationWriter for Writer {
 fn helper_writer(
     runner: &Arc<HelperExecRunner>,
     installed: &Arc<AtomicBool>,
+    catalog: &'static Catalog,
 ) -> HelperRotationWriter {
     let i = installed.clone();
     HelperRotationWriter {
         runner: runner.clone(),
-        catalog: catalog(),
+        catalog,
         installed: Box::new(move || i.load(Ordering::SeqCst)),
     }
 }
@@ -436,7 +439,7 @@ async fn the_ts_golden_pass_by_pass_with_the_named_divergences() {
             let installed = Arc::new(AtomicBool::new(true));
             let writer = Arc::new(if c["apply"] == "helper" {
                 Writer {
-                    inner: Some(helper_writer(&runner, &installed)),
+                    inner: Some(helper_writer(&runner, &installed, catalog())),
                     fixed: None,
                     calls: Mutex::new(vec![]),
                 }
@@ -545,6 +548,8 @@ struct Rig {
     /// The kernel's boot id as the pass sees it; [`Rig::reboot`] moves it.
     boot_id: Arc<Mutex<String>>,
     boot_lines: Arc<BootLineStore>,
+    /// The sensor catalog of the pass: the vendored one, or a fixture.
+    catalog: &'static Catalog,
 }
 
 const NOW: i64 = 1_785_326_400_000;
@@ -606,6 +611,7 @@ impl Rig {
             now: NOW,
             boot_lines: memory_boot_lines(&boot_id),
             boot_id,
+            catalog: catalog(),
         }
     }
 
@@ -667,8 +673,8 @@ impl Rig {
                 ))
             }),
             probe: self.probe.clone(),
-            apply_rotation: Arc::new(helper_writer(&self.runner, &self.installed)),
-            catalog: catalog(),
+            apply_rotation: Arc::new(helper_writer(&self.runner, &self.installed, self.catalog)),
+            catalog: self.catalog,
             evidence: {
                 let (e, reads) = (self.evidence.clone(), self.evidence_reads.clone());
                 Arc::new(move || {
@@ -1919,7 +1925,7 @@ async fn reconciler_requests_a_report_only_when_the_summary_moves() {
             boot_config_path: BootConfigPath::Fixed(Some(d.boot_config.display().to_string())),
             dt_root: d.dt_root.clone(),
             probe: FakeProbe::new(PROBE_OK),
-            apply_rotation: Arc::new(helper_writer(&runner, &installed)),
+            apply_rotation: Arc::new(helper_writer(&runner, &installed, catalog())),
             catalog: catalog(),
             evidence: Box::new(|_| PortEvidence::default()),
             log: Arc::new(|_, _| {}),
@@ -2028,7 +2034,7 @@ fn mnt(states: &CameraStates, key: &str) -> (CameraMountVerdict, Option<f64>, Op
     cam(states.mount.as_ref().expect("cameraMount is present"), key)
 }
 
-const ALL_OVERLAYS: [&str; 5] = ["imx290", "imx219", "imx708", "imx335", "imx662"];
+const ALL_OVERLAYS: [&str; 4] = ["imx290", "imx219", "imx708", "imx335"];
 
 /// THE ZERO-WRITE PROOF, Phase 2: a device whose config.txt already holds
 /// the declared sensor's line gets NO write and NO helper call when it
@@ -2249,50 +2255,77 @@ async fn a_sensor_change_is_one_write_then_a_reboot() {
     assert_eq!(sens(&s, "cam0"), (SV::Applied, String::new()));
 }
 
-/// Catalog 4: the IMX662 on CAM1 of a CM5 (Trixie). Its device-tree node
-/// is named after the driver family, `starvis2@1a`, not after the sensor:
-/// the line is written through the real helper with its clock option, the
-/// node is recognised as the line's sensor after the reboot (no false
-/// "another overlay runs here"), the rotation in force is read back from
-/// that node (default 180), and a mount change rewrites only the rotation,
-/// keeping the option. Not yet seen on hardware (catalog note).
+/// The vendored catalog with the FIXTURE sensor `testcam` appended
+/// (`fixtures/camera_catalog/fixture-sensor.json`): its device-tree node is
+/// `testfam@1a`, not `testcam@1a`, it has a `clockFrequency` option, and
+/// its default rotation is 180. No sensor of catalog 4 has a node named
+/// differently from its overlay any more (the IMX662 is only planned).
+fn fixture_catalog() -> &'static Catalog {
+    static C: std::sync::OnceLock<Catalog> = std::sync::OnceLock::new();
+    C.get_or_init(|| {
+        let mut d: Value = serde_json::from_str(CATALOG_JSON).unwrap();
+        let f: Value = serde_json::from_slice(
+            &std::fs::read(repo().join("fixtures/camera_catalog/fixture-sensor.json")).unwrap(),
+        )
+        .unwrap();
+        d["sensors"]
+            .as_array_mut()
+            .unwrap()
+            .push(f["sensor"].clone());
+        let c = parse_catalog(&d.to_string()).unwrap();
+        assert_eq!(c.skipped, vec![]);
+        c
+    })
+}
+
+/// A sensor whose device-tree node is named after its driver family, not
+/// after the sensor (the fixture `testcam`, node `testfam@1a`), on CAM1 of
+/// a CM5: the line is written through the real helper (given the fixture's
+/// allow-list) with its clock option; after the reboot the node is
+/// recognised as the line's sensor (no false "another overlay runs here"),
+/// the rotation in force is read back from that node (default 180), and a
+/// mount change rewrites only the rotation, keeping the option.
 #[tokio::test]
-async fn imx662_on_its_starvis2_node() {
+async fn a_node_named_after_its_driver_family_is_the_lines_sensor() {
     let config =
         "camera_auto_detect=0\n[all]\ndtoverlay=imx335,cam0\ndtoverlay=imx219,cam1,rotation=180\n";
-    let d = Device::bench("p6imx662", config, MODEL_CM5);
+    let d = Device::bench("p6fixture", config, MODEL_CM5);
     d.overlays(&ALL_OVERLAYS);
+    d.overlays(&["testcam"]);
     d.camera("cam0", &cm5_path("cam0", "imx335@1a"), Some(180));
     d.camera("cam1", &cm5_path("cam1", "imx219@10"), Some(180));
     let mut rig = Rig::new(d);
+    rig.catalog = fixture_catalog();
+    let list = rig.d.dir.join("fixture.overlays");
+    std::fs::write(&list, rig.catalog.helper_allow_list()).unwrap();
+    *rig.runner.overlays.lock().unwrap() = list;
     rig.live(&[
         ("cam0", "imx335", "imx335@1a"),
         ("cam1", "imx219", "imx219@10"),
     ]);
-    let setting = json!({"cam1": {"sensor": "imx662", "options": {"clockFrequency": 27000000}}});
+    let setting = json!({"cam1": {"sensor": "testcam", "options": {"clockFrequency": 27000000}}});
     let mounts: &[(&str, u32)] = &[("cam1", 0)];
     let s = rig.pass_both(Some(mounts), Some(setting.clone())).await;
     assert_eq!(
         rig.runner.asked(),
-        ["set cam1 imx662 clock-frequency=27000000 rotation=180"]
+        ["set cam1 testcam clock-frequency=27000000 rotation=180"]
     );
     assert_eq!(sens(&s, "cam1"), (SV::PendingReboot, String::new()));
     assert_eq!(
         rig.d.read(),
-        "camera_auto_detect=0\n[all]\ndtoverlay=imx335,cam0\ndtoverlay=imx662,cam1,clock-frequency=27000000,rotation=180\n"
+        "camera_auto_detect=0\n[all]\ndtoverlay=imx335,cam0\ndtoverlay=testcam,cam1,clock-frequency=27000000,rotation=180\n"
     );
     assert_eq!(
         rig.logs(),
-        ["info cam1: camera line for cam1 in <dir>/config.txt is now the imx662 line (imx662,clock-frequency=27000000,rotation=180) — REBOOT required before the camera changes (the agent never reboots itself)"]
+        ["info cam1: camera line for cam1 in <dir>/config.txt is now the testcam line (testcam,clock-frequency=27000000,rotation=180) — REBOOT required before the camera changes (the agent never reboots itself)"]
     );
 
-    // The reboot: the kernel loads the imx662 overlay; its node is
-    // `starvis2@1a`, with the dtsi's rotation 180; libcamera lists `imx662`.
+    // The reboot: the node is `testfam@1a`, with rotation 180.
     rig.reboot();
-    rig.d.dt(&cm5_path("cam1", "starvis2@1a"), 180);
+    rig.d.dt(&cm5_path("cam1", "testfam@1a"), 180);
     rig.live(&[
         ("cam0", "imx335", "imx335@1a"),
-        ("cam1", "imx662", "starvis2@1a"),
+        ("cam1", "testcam", "testfam@1a"),
     ]);
     let s = rig.pass_both(Some(mounts), Some(setting.clone())).await;
     assert_eq!(sens(&s, "cam1"), (SV::Applied, String::new()));
@@ -2311,8 +2344,8 @@ async fn imx662_on_its_starvis2_node() {
     assert_eq!(
         rig.runner.asked(),
         [
-            "set cam1 imx662 clock-frequency=27000000 rotation=180",
-            "rotate cam1 imx662 0"
+            "set cam1 testcam clock-frequency=27000000 rotation=180",
+            "rotate cam1 testcam 0"
         ]
     );
     assert_eq!(sens(&s, "cam1"), (SV::Applied, String::new()));
@@ -2323,19 +2356,43 @@ async fn imx662_on_its_starvis2_node() {
     assert!(rig
         .d
         .read()
-        .ends_with("\ndtoverlay=imx662,cam1,clock-frequency=27000000,rotation=0\n"));
-    assert_eq!(
-        rig.logs()[1],
-        "info cam1: camera line for cam1 in <dir>/config.txt: rotation=0 set on the imx662 line, the rest of the line kept — REBOOT required before the image changes (the agent never reboots itself)"
-    );
+        .ends_with("\ndtoverlay=testcam,cam1,clock-frequency=27000000,rotation=0\n"));
     rig.reboot();
-    rig.d.dt(&cm5_path("cam1", "starvis2@1a"), 0);
+    rig.d.dt(&cm5_path("cam1", "testfam@1a"), 0);
     let s = rig.pass_both(Some(flipped), Some(setting)).await;
     assert_eq!(
         mnt(&s, "cam1"),
         (Applied, Some(180.0), Some(180.0), String::new())
     );
     assert_eq!(rig.runner.calls().len(), 2);
+}
+
+/// A device told `imx662` (planned in catalog 4, unknown to this build)
+/// fails safe as v0.2.0 did: the port is `rejected` with the four sensors
+/// this build knows, no helper runs, config.txt keeps every byte.
+#[tokio::test]
+async fn a_port_set_to_the_planned_imx662_is_refused_and_config_txt_untouched() {
+    let config =
+        "camera_auto_detect=0\n[all]\ndtoverlay=imx335,cam0\ndtoverlay=imx219,cam1,rotation=180\n";
+    let d = Device::bench("p6planned", config, MODEL_CM5);
+    d.overlays(&ALL_OVERLAYS);
+    d.camera("cam1", &cm5_path("cam1", "imx219@10"), Some(180));
+    let mut rig = Rig::new(d);
+    rig.live(&[("cam1", "imx219", "imx219@10")]);
+    let md5 = rig.d.md5();
+    let s = rig
+        .pass_both(None, Some(json!({"cam1": {"sensor": "imx662"}})))
+        .await;
+    assert_eq!(
+        sens(&s, "cam1"),
+        (
+            SV::Rejected,
+            "this agent build does not know the camera sensor \"imx662\" (it knows: imx290, imx219, imx708, imx335); update the agent or choose another sensor. config.txt is left as it is".to_string()
+        )
+    );
+    assert!(rig.runner.calls().is_empty());
+    assert_eq!(rig.d.md5(), md5);
+    assert!(!s.sensors.as_ref().unwrap().wrote);
 }
 
 /// S1 (review): a WRONG declaration. The line is written, the device
@@ -2723,7 +2780,13 @@ async fn a_port_that_cannot_be_applied_is_refused_and_the_others_are_applied() {
     let cases = [
         (
             json!({"sensor": "imx999"}),
-            "this agent build does not know the camera sensor \"imx999\" (it knows: imx290, imx219, imx708, imx335, imx662); update the agent or choose another sensor. config.txt is left as it is",
+            "this agent build does not know the camera sensor \"imx999\" (it knows: imx290, imx219, imx708, imx335); update the agent or choose another sensor. config.txt is left as it is",
+        ),
+        // The IMX662: planned in catalog 4, not selectable. Refused as
+        // v0.2.0 refused it.
+        (
+            json!({"sensor": "imx662", "options": {"clockFrequency": 24000000}}),
+            "this agent build does not know the camera sensor \"imx662\" (it knows: imx290, imx219, imx708, imx335); update the agent or choose another sensor. config.txt is left as it is",
         ),
         (
             json!({"sensor": "imx290", "options": {"lanes": 4}}),
@@ -3142,7 +3205,7 @@ async fn a_rejection_is_logged_once_per_change() {
         [
             // One line per refusal; the `cameraMount` consequence on the
             // same port is not a second line.
-            "warn cam0: camera sensor setting not applied — this agent build does not know the camera sensor \"imx999\" (it knows: imx290, imx219, imx708, imx335, imx662); update the agent or choose another sensor. config.txt is left as it is",
+            "warn cam0: camera sensor setting not applied — this agent build does not know the camera sensor \"imx999\" (it knows: imx290, imx219, imx708, imx335); update the agent or choose another sensor. config.txt is left as it is",
             "warn cam0: camera sensor setting not applied — the camera sensor setting of this port is not an object; config.txt is left as it is",
         ]
     );

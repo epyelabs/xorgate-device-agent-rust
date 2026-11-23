@@ -188,10 +188,12 @@ Value rules:
   - Catalog 4 (agent 0.2.1): the four older sensors list Bookworm and Trixie, so a Trixie device
     no longer reads `requirements-missing` "needs bookworm; this device runs trixie" for them; the
     IMX335 there needs the Trixie pair of its package set instead ("…libcamera0.8
-    0.8.0+rpt20261106-2 (installed: …)…"). The IMX662 is Trixie only: on Bookworm, "csi0 is set to
-    imx662, which needs an OS release this device does not run (needs trixie; this device runs
-    bookworm). The camera cannot work on this OS release." A sentence that names the overlay a
-    node stands for names the catalog's overlay (`imx662`), not the node (`starvis2`).
+    0.8.0+rpt20261106-2 (installed: …)…"). The IMX662 is NOT supported: it is in the catalog's
+    `planned` list only (one board was tried and did not answer on its I2C bus; nothing about the
+    sensor was verified), so a port set to `imx662` reads `unknown-sensor` and is `rejected`, as
+    on 0.2.0. A sentence that names the overlay a device-tree node stands for names the overlay
+    of the catalog sensor that owns the node's name; for every sensor of catalog 4 the two are
+    the same word.
 - **A third deliberate addition (the same plan, Phase 2): the namespace `cameraSensors`** and the
   capability `camera.sensors`. Neither exists in the JS agent, and the cloud never stores or
   publishes the namespace for a JS device.

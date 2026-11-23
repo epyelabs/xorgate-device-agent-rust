@@ -963,7 +963,7 @@ mod tests {
         let say = |e: Value| wanted(&e, c).unwrap_err().to_string();
         assert_eq!(
             say(json!({"sensor": "imx999"})),
-            "this agent build does not know the camera sensor \"imx999\" (it knows: imx290, imx219, imx708, imx335, imx662); update the agent or choose another sensor. config.txt is left as it is"
+            "this agent build does not know the camera sensor \"imx999\" (it knows: imx290, imx219, imx708, imx335); update the agent or choose another sensor. config.txt is left as it is"
         );
         assert_eq!(
             say(json!({"sensor": "imx290", "options": {"clockFrequency": 24000000}})),
@@ -1541,11 +1541,13 @@ mod tests {
             ),
             None
         );
-        // Another OS release; another architecture. Catalog 4: the four
-        // older sensors run on Bookworm and Trixie, the IMX662 on Trixie only.
-        let imx662 = c.by_id("imx662").unwrap();
+        // Another OS release; another architecture. Catalog 4: every sensor
+        // runs on Bookworm and Trixie. A sensor of one release only (the
+        // fixture `testcam`, Trixie only) on the other release:
+        let fx = crate::camera_catalog::fixture_catalog();
+        let testcam = fx.by_id("testcam").unwrap();
         assert_eq!(
-            missing_requirements(imx662, c, &ok).as_deref(),
+            missing_requirements(testcam, fx, &ok).as_deref(),
             Some("needs an OS release this device does not run (needs trixie; this device runs bookworm). The camera cannot work on this OS release")
         );
         let trixie = |pkgs: &[(&str, &str)]| HostFacts {
@@ -1553,7 +1555,7 @@ mod tests {
             ..host(pkgs)
         };
         assert_eq!(missing_requirements(imx290, c, &trixie(&[])), None);
-        assert_eq!(missing_requirements(imx662, c, &trixie(&[])), None);
+        assert_eq!(missing_requirements(testcam, fx, &trixie(&[])), None);
         // The IMX335 on Trixie: its own pair (libcamera0.8, libcamera-ipa
         // 0.8.0), not Bookworm's. Stock 0.8.0 is installed: both are named
         // with the version Arducam's build needs.
@@ -1692,20 +1694,28 @@ mod tests {
             "{}",
             got["cam1"].1
         );
-        // The IMX662 on a Bookworm device: the OS release.
+        // A Trixie-only sensor (the fixture) on a Bookworm device: the OS
+        // release.
+        let fx = crate::camera_catalog::fixture_catalog();
         let settings: CameraSensorsSettings =
-            serde_json::from_value(json!({"cameras": {"cam1": {"sensor": "imx662"}}})).unwrap();
-        let got = ports_missing_requirements(Some(&settings), c, |_| HostFacts {
+            serde_json::from_value(json!({"cameras": {"cam1": {"sensor": "testcam"}}})).unwrap();
+        let got = ports_missing_requirements(Some(&settings), fx, |_| HostFacts {
             os: Some("bookworm".into()),
             ..HostFacts::default()
         });
         assert_eq!(
             got["cam1"],
             (
-                "imx662".to_string(),
+                "testcam".to_string(),
                 "needs an OS release this device does not run (needs trixie; this device runs bookworm). The camera cannot work on this OS release".to_string()
             )
         );
+        // A sensor this build does not know (the IMX662 is only planned) is
+        // no requirement: the port is `unknown-sensor`, and the device is
+        // not asked.
+        let planned: CameraSensorsSettings =
+            serde_json::from_value(json!({"cameras": {"cam1": {"sensor": "imx662"}}})).unwrap();
+        assert!(ports_missing_requirements(Some(&planned), c, |_| panic!("asked")).is_empty());
         // No managed catalog sensor: the device is not asked.
         let none: CameraSensorsSettings =
             serde_json::from_value(json!({"cameras": {"cam0": {"sensor": "none"}}})).unwrap();

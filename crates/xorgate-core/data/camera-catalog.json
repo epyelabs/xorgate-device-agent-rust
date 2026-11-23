@@ -237,71 +237,24 @@
         "Needs Arducam's libcamera packages. Until they are installed the port reports that its requirements are missing.",
         "This sensor cannot be rotated: the camera mounting setting has no effect on it. Mount the camera the right way up; turning the picture in software is not offered."
       ]
-    },
+    }
+  ],
+  "planned": [
     {
       "id": "imx662",
       "label": "Sony IMX662",
-      "tier": "supported",
-      "minAgent": "0.2.1",
-      "overlay": {
-        "name": "imx662",
-        "fixedParams": [],
-        "defaultRotation": 180,
-        "canFlip": true
-      },
-      "options": [
-        {
-          "key": "clockFrequency",
-          "label": "Clock frequency",
-          "description": "Frequency of the crystal on the camera board. The overlay default is 24 MHz; check the board vendor for others. The sensor cannot report it, and the driver refuses a rate it does not support.",
-          "param": "clock-frequency",
-          "unit": "Hz",
-          "values": [
-            24000000,
-            27000000,
-            37125000,
-            72000000,
-            74250000
-          ],
-          "default": 24000000
-        }
-      ],
-      "libcameraNames": [
-        "imx662"
-      ],
-      "dtNodeNames": [
-        "starvis2"
-      ],
-      "identity": "chip-id",
-      "source": {
-        "props": []
-      },
+      "tier": "planned",
       "requires": {
         "os": [
           "trixie"
-        ],
-        "packageSet": null
-      },
-      "unsupportedPresets": [],
-      "info": {
-        "nativeAspect": "16:9",
-        "fullModeMaxFps": null,
-        "sensorWidthPercent": {
-          "p720": null,
-          "p1080": null
-        },
-        "sensorHeightPercent": {
-          "p720": null,
-          "p1080": null
-        }
+        ]
       },
       "notes": [
-        "Needs Debian Trixie with kernel 6.18.60 or later and libcamera 0.8.0 or later: run sudo apt full-upgrade on the device first. On an older kernel the camera is not detected.",
-        "Not yet tested on a bench by xorgate. The driver and the tuning files ship with Raspberry Pi OS for both the CM5 and the CM4."
+        "Not available. The one board tried did not answer on its I2C bus, so nothing about this sensor has been verified.",
+        "It would need Debian Trixie with kernel 6.18.60 or later. Its overlay is imx662; the device-tree node is starvis2, and the default rotation is 180 (read in the device tree)."
       ]
     }
   ],
-  "planned": [],
   "packageSets": [
     {
       "id": "arducam-libcamera",
