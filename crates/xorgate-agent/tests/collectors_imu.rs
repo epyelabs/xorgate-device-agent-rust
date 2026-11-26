@@ -202,6 +202,57 @@ fn rig(
     (bin, py, home, fifo)
 }
 
+/// D129: the line the Rust collector logs at a reader run's first sample
+/// (`[imu] BNO08x at 0x4a — streaming`: the relay shim's `ready` lines carry
+/// no identity, and these cases have no hardware block).
+fn is_streaming_line(m: &str) -> bool {
+    m.strip_prefix("[imu] BNO08x at 0x")
+        .and_then(|r| r.strip_suffix(" — streaming"))
+        .is_some_and(|hex| hex.len() == 2 && hex.chars().all(|c| c.is_ascii_hexdigit()))
+}
+
+/// The TS line, in D129's wording: the chip is `BNO08x` (no hardware block
+/// in these cases), and "detected" no longer claims "streaming".
+fn d129(ts: &str) -> String {
+    if ts == "[imu] BNO085 not detected on I2C bus 1 (0x4a/0x4b)" {
+        return "[imu] BNO08x not detected on I2C bus 1 (0x4a/0x4b)".to_string();
+    }
+    if let Some(addr) = ts
+        .strip_prefix("[imu] BNO085 detected at ")
+        .and_then(|r| r.strip_suffix(" — streaming"))
+    {
+        return format!("[imu] BNO08x detected at {addr} — starting the reader");
+    }
+    assert!(!ts.contains("BNO085"), "an unmapped TS line: {ts}");
+    ts.to_string()
+}
+
+/// The reader runs of a case (one per `waitSpawn`) whose relay sent at
+/// least one line the collector takes as a sample.
+fn runs_with_a_sample(case: &Value) -> usize {
+    let mut runs = 0;
+    let mut sampled = false;
+    for step in case["steps"].as_array().unwrap() {
+        match step["op"].as_str().unwrap() {
+            "waitSpawn" => sampled = false,
+            "line" => {
+                let text = step["text"].as_str().unwrap();
+                if !sampled
+                    && matches!(
+                        xorgate_core::imu::parse_imu_line(text),
+                        Some(xorgate_core::imu::ImuMessage::Sample { .. })
+                    )
+                {
+                    sampled = true;
+                    runs += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    runs
+}
+
 #[tokio::test]
 async fn imu_scenarios_match_the_ts_collector() {
     let fx: Value = serde_json::from_slice(
@@ -325,7 +376,8 @@ async fn imu_scenarios_match_the_ts_collector() {
             }
             sleep(200).await;
 
-            // the [imu] lines, in order, with their console level
+            // the [imu] lines, in order, with their console level; the TS
+            // wording mapped to D129's (no hardware block here: `BNO08x`)
             let want: Vec<(String, String)> = case["steps"]
                 .as_array()
                 .unwrap()
@@ -335,14 +387,24 @@ async fn imu_scenarios_match_the_ts_collector() {
                 .map(|l| {
                     (
                         l["level"].as_str().unwrap().to_string(),
-                        l["msg"].as_str().unwrap().to_string(),
+                        d129(l["msg"].as_str().unwrap()),
                     )
                 })
                 .collect();
+            // D129's one Rust-only line, at the first sample of each reader
+            // run: as many as the case has runs that produced a sample.
+            let got: Vec<(String, String)> = logs.lock().unwrap()[logs_from..].to_vec();
+            let (streaming, rest): (Vec<_>, Vec<_>) =
+                got.into_iter().partition(|(_, m)| is_streaming_line(m));
+            assert_eq!(rest, want, "[{name}] [imu] lines");
             assert_eq!(
-                logs.lock().unwrap()[logs_from..],
-                want[..],
-                "[{name}] [imu] lines"
+                streaming.len(),
+                runs_with_a_sample(case),
+                "[{name}] one streaming line per reader run that sampled"
+            );
+            assert!(
+                streaming.iter().all(|(l, _)| l == "log"),
+                "[{name}]: info level"
             );
 
             // the helper's argv: `<python dir>/bno085_read.py --address 0x4a`

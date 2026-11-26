@@ -1,6 +1,6 @@
 //! The Rust BNO085 reader's client state machine (phase 7c WP2; plan
 //! `phase-7c-rust-imu.md` §Design 1, P2, P5): a line-by-line port of what
-//! `python/bno085_read.py` (sha256 `7af7a856…`) does through the bench's
+//! `python/bno085_read.py` (sha256 `8852852b…`) does through the bench's
 //! Python stack — Blinka 9.1.0 `busio`/`generic_linux`, PureIO 1.1.11,
 //! busdevice 5.2.17 and `adafruit_bno08x` 1.3.3 — down to the i2c-dev ops.
 //!
@@ -17,7 +17,11 @@
 //! What it holds — the Python driver's state (plan P2, items 1-10):
 //! - ONE persistent [`ShtpBuffer`] shared by send and receive
 //!   (`_data_buffer`, replaced by a zeroed `bytearray(count)` above 512);
-//! - ONE [`SequenceTable`] for both directions (`_sequence_number`);
+//! - the library's [`SequenceTable`] (`_sequence_number`), written by every
+//!   received header, and since agent 0.2.2 a second one for the host's
+//!   writes (the helper's `ShtpI2C._tx_seq`): each channel's writes are
+//!   numbered 0, 1, 2… whatever the hub sends (a BNO086 answers a jump with
+//!   an SHTP error list on channel 0);
 //! - the persistent pending-slice list (`_packet_slices`, #49 carry-over:
 //!   slices left by a failed batch are processed LAST after the next packet);
 //! - the readings cache (`_readings`, cached samples, `0xFC` zero seeds);
@@ -56,8 +60,9 @@ use crate::imu_io::{
     select_device_arg, I2cError, I2cOps, ImuClock, IntervalWait, ReadOutcome, I2C_BUS_1_PATH,
 };
 use crate::py_fmt::{
-    error_line, init_failed_text, no_i2c_device_text, read_failed_text, ready_line, sample_line,
-    ExcKind, PyExc, BUS_MISSING_BCM2712_PROVISIONAL, BYTEARRAY_INDEX, PRINT_END,
+    error_line, init_failed_text, no_i2c_device_text, read_failed_text, ready_line_with,
+    sample_line, ExcKind, FirmwareId, PyExc, BUS_MISSING_BCM2712_PROVISIONAL, BYTEARRAY_INDEX,
+    PRINT_END,
 };
 use crate::sh2::{self, Readings, ReportSlice};
 use crate::shtp::{
@@ -195,10 +200,16 @@ struct Driver {
     /// `addr & 0x7F`, PureIO's ioctl argument (`smbus.py:154`).
     addr7: u8,
     buffer: ShtpBuffer,
+    /// What received headers store (the library's `_sequence_number`); a
+    /// channel > 5 raises there. Not used for sends since agent 0.2.2.
     seq: SequenceTable,
+    /// The host's own write numbering per channel (agent 0.2.2).
+    tx_seq: SequenceTable,
     pending: Vec<ReportSlice>,
     readings: Readings,
     id_read: bool,
+    /// The main firmware's identity from the accepted product-ID response.
+    firmware: Option<FirmwareId>,
 }
 
 fn os_exc(e: I2cError) -> PyExc {
@@ -221,9 +232,11 @@ impl Driver {
             addr7: select_device_arg(address),
             buffer: ShtpBuffer::new(),
             seq: SequenceTable::new(),
+            tx_seq: SequenceTable::new(),
             pending: Vec::new(),
             readings: Readings::new(),
             id_read: false,
+            firmware: None,
         }
     }
 
@@ -245,20 +258,22 @@ impl Driver {
 
     /// `_send_packet` (`i2c.py:30-46`): staged into the shared buffer, ONE
     /// write of `buffer[0:len]`; a write `EAGAIN` (`None`) counts as sent;
-    /// the sequence byte advances either way.
+    /// the sequence byte advances either way. The byte is the host's OWN
+    /// count for the channel (agent 0.2.2, the helper's `ShtpI2C`), not the
+    /// last one received; a write that fails does not advance it.
     fn send_packet<B: I2cOps, C: ImuClock, S: ImuSink>(
         &mut self,
         io: &mut Io<'_, B, C, S>,
         channel: u8,
         data: &[u8],
     ) -> Result<(), PyExc> {
-        let seq = self.seq.get(channel).unwrap_or(0);
+        let seq = self.tx_seq.get(channel).unwrap_or(0);
         let bytes = self
             .buffer
             .stage_send(channel, seq, data)
             .expect("the driver's sends fit its 512-byte buffer");
         io.bus.write(self.addr7, &bytes).map_err(os_exc)?;
-        self.seq.advance_after_send(channel);
+        self.tx_seq.advance_after_send(channel);
         Ok(())
     }
 
@@ -301,11 +316,18 @@ impl Driver {
     /// `_handle_packet` (`__init__.py:829-837`): the persistent pending list,
     /// LIFO; a successful `ME_CALIBRATE`/`SAVE_DCD` command response reads
     /// the clock (`:876-882`). The `print(packet)` dump on error: D80.
+    /// Packets on channel 0 (SHTP command) and 1 (executable) are never
+    /// reports and are dropped here (agent 0.2.2, the helper's `ShtpI2C`):
+    /// a BNO086's error list `01 0e` would otherwise read as a truncated
+    /// accelerometer report, and a reset's `01` on channel 1 likewise.
     fn handle_packet<B: I2cOps, C: ImuClock, S: ImuSink>(
         &mut self,
         io: &mut Io<'_, B, C, S>,
         packet: &Packet,
     ) -> Result<(), PyExc> {
+        if packet.header.channel == CHANNEL_SHTP_COMMAND || packet.header.channel == CHANNEL_EXE {
+            return Ok(());
+        }
         let clock = &mut *io.clock;
         sh2::handle_packet_with(packet, &mut self.pending, &mut self.readings, |slice| {
             if sh2::command_response_reads_clock(slice) {
@@ -408,6 +430,7 @@ impl Driver {
             self.wait_for_packet_type(io, CHANNEL_CONTROL, sh2::REPORT_PRODUCT_ID_RESPONSE)?;
             if matches!(self.buffer.parse_sensor_id(), Some(part) if part != 0) {
                 self.id_read = true;
+                self.firmware = self.buffer.parse_firmware_id();
                 return Ok(true);
             }
         }
@@ -589,7 +612,11 @@ fn run_inner<B: I2cOps, C: ImuClock, S: ImuSink>(
             };
         }
     };
-    if io.out.emit(&ready_line(args.address)).is_err() {
+    if io
+        .out
+        .emit(&ready_line_with(args.address, driver.firmware.as_ref()))
+        .is_err()
+    {
         return ReaderExit::StdoutClosed;
     }
     io.out.sink.loop_starts();
@@ -634,6 +661,196 @@ mod tests {
         assert_eq!(a(0.03).max_consecutive_errors(), 66);
         assert_eq!(a(0.0).max_consecutive_errors(), 40);
         assert_eq!(a(-1.0).max_consecutive_errors(), 40);
+    }
+
+    // -- agent 0.2.2: the BNO086 fixes, on a small scripted hub ----------
+
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
+    use std::rc::Rc;
+
+    use crate::imu_io::{I2cError, ReadOutcome, WriteOutcome};
+
+    /// A scripted SHTP hub (the oracle's `Sensor` model, `tools/imu/oracle/
+    /// scenarios.py`, reduced): a read of `n` bytes returns the head frame's
+    /// first `n` bytes and pops it once `n` covers it; an empty queue reads
+    /// zeros. It answers the product-ID request and each set-feature.
+    #[derive(Default)]
+    struct Hub {
+        queue: VecDeque<Vec<u8>>,
+        /// The hub's own per-channel sequence (what its headers carry).
+        seq: [u8; 6],
+        /// Every host write of 4+ bytes: (channel, sequence byte).
+        writes: Vec<(u8, u8)>,
+        /// Pushed after each set-feature: a BNO086's error list on channel 0.
+        error_list_after_set_feature: bool,
+        /// Interval waits so far; at the first, `on_first_wait` frames go in.
+        waits: u32,
+        on_first_wait: Vec<(u8, Vec<u8>)>,
+        now: f64,
+    }
+
+    impl Hub {
+        fn push(&mut self, channel: u8, payload: &[u8]) {
+            let count = (payload.len() + 4) as u16;
+            let mut f = count.to_le_bytes().to_vec();
+            f.push(channel);
+            f.push(self.seq[channel as usize]);
+            // The hub's numbering jumps (as the library's host-side
+            // overwrite would then make the HOST's jump).
+            self.seq[channel as usize] = self.seq[channel as usize].wrapping_add(3);
+            f.extend_from_slice(payload);
+            self.queue.push_back(f);
+        }
+    }
+
+    fn f8(part: u32, version: (u8, u8, u16), build: u32) -> Vec<u8> {
+        let mut v = vec![0xF8, 0x00, version.0, version.1];
+        v.extend_from_slice(&part.to_le_bytes());
+        v.extend_from_slice(&build.to_le_bytes());
+        v.extend_from_slice(&version.2.to_le_bytes());
+        v.extend_from_slice(&[0, 0]);
+        v
+    }
+
+    struct Bus(Rc<RefCell<Hub>>);
+    struct Clock(Rc<RefCell<Hub>>);
+    #[derive(Default)]
+    struct Out(String);
+
+    impl I2cOps for Bus {
+        fn open(&mut self, _path: &str) -> Result<(), I2cError> {
+            Ok(())
+        }
+        fn write(&mut self, _address: u8, bytes: &[u8]) -> Result<WriteOutcome, I2cError> {
+            let mut h = self.0.borrow_mut();
+            if bytes.len() >= 4 {
+                let (channel, payload) = (bytes[2], &bytes[4..]);
+                h.writes.push((channel, bytes[3]));
+                if channel == 2 && payload.first() == Some(&0xF9) {
+                    h.push(2, &f8(10_004_563, (3, 12, 6), 62));
+                } else if channel == 2 && payload.first() == Some(&0xFD) {
+                    let fid = payload[1];
+                    let mut fc = vec![0xFC, fid, 0, 0, 0];
+                    fc.extend_from_slice(&50_000u32.to_le_bytes());
+                    fc.extend_from_slice(&[0; 8]);
+                    h.push(2, &fc);
+                    if h.error_list_after_set_feature {
+                        h.push(0, &[0x01, 0x0E]);
+                    }
+                }
+            }
+            Ok(WriteOutcome::Written(bytes.len()))
+        }
+        fn read(&mut self, _address: u8, len: usize) -> Result<ReadOutcome, I2cError> {
+            let mut h = self.0.borrow_mut();
+            let Some(head) = h.queue.front().cloned() else {
+                return Ok(ReadOutcome::Data(vec![0; len]));
+            };
+            if len >= head.len() {
+                h.queue.pop_front();
+                let mut b = head;
+                b.resize(len, 0);
+                return Ok(ReadOutcome::Data(b));
+            }
+            Ok(ReadOutcome::Data(head[..len].to_vec()))
+        }
+    }
+
+    impl ImuClock for Clock {
+        fn monotonic(&mut self) -> f64 {
+            let mut h = self.0.borrow_mut();
+            h.now += 0.001;
+            h.now
+        }
+        fn sleep(&mut self, secs: f64) {
+            self.0.borrow_mut().now += secs;
+        }
+        fn interval_wait(&mut self, secs: f64) -> IntervalWait {
+            let mut h = self.0.borrow_mut();
+            h.now += secs;
+            h.waits += 1;
+            if h.waits == 1 {
+                for (ch, p) in std::mem::take(&mut h.on_first_wait) {
+                    h.push(ch, &p);
+                }
+            }
+            if h.waits >= 4 {
+                IntervalWait::Interrupted
+            } else {
+                IntervalWait::Elapsed
+            }
+        }
+    }
+
+    impl ImuSink for Out {
+        fn write_chunk(&mut self, chunk: &str) -> Result<(), StdoutClosed> {
+            self.0.push_str(chunk);
+            Ok(())
+        }
+    }
+
+    fn run_hub(hub: Hub) -> (ReaderEnd, Vec<String>, Hub) {
+        let hub = Rc::new(RefCell::new(hub));
+        let (mut bus, mut clock, mut out) = (Bus(hub.clone()), Clock(hub.clone()), Out::default());
+        let end = run(&mut bus, &mut clock, &mut out, &ReaderArgs::default());
+        drop((bus, clock));
+        let lines = out.0.lines().map(str::to_string).collect();
+        (end, lines, Rc::try_unwrap(hub).ok().unwrap().into_inner())
+    }
+
+    /// The host numbers its writes per channel 0, 1, 2…, whatever sequence
+    /// the hub's packets carry in between (the library copied the hub's
+    /// numbers: a BNO086 answers each jump with an error list).
+    #[test]
+    fn host_writes_number_each_channel_from_zero() {
+        let (end, lines, hub) = run_hub(Hub {
+            seq: [0x10, 0x20, 0xFE, 0xFD, 0, 0],
+            ..Hub::default()
+        });
+        assert_eq!(end.exit, ReaderExit::Interrupted, "{lines:?}");
+        let per = |ch: u8| -> Vec<u8> {
+            hub.writes
+                .iter()
+                .filter(|(c, _)| *c == ch)
+                .map(|(_, s)| *s)
+                .collect()
+        };
+        // Two soft resets on channel 1; product id, then two set-features on 2.
+        assert_eq!(per(1), [0, 1]);
+        assert_eq!(per(2), [0, 1, 2]);
+        // The received table still takes the hub's numbers (channel > 5
+        // still raises there), and is no longer what a write carries.
+        let mut t = SequenceTable::new();
+        t.store_received(2, 0xFE).unwrap();
+        assert_eq!(t.get(2), Some(0xFE));
+    }
+
+    /// A BNO086's error list (`01 0e`) on channel 0 after each set-feature
+    /// (init), then an error list and a reset's 1-byte `01` on channel 1
+    /// mid-stream: never handed to the report parser, so no
+    /// `Unprocessable Batch bytes`; the reader starts and keeps streaming.
+    /// The `ready` line carries the main firmware's identity.
+    #[test]
+    fn channel_0_and_1_packets_are_ignored_in_init_and_mid_stream() {
+        let hub = Hub {
+            error_list_after_set_feature: true,
+            on_first_wait: vec![(0, vec![0x01, 0x0E, 0x0E]), (1, vec![0x01])],
+            ..Hub::default()
+        };
+        let (end, lines, hub) = run_hub(hub);
+        assert_eq!(end.exit, ReaderExit::Interrupted, "{lines:?}");
+        assert_eq!(
+            lines[0],
+            r#"{"type": "ready", "address": "0x4a", "part": 10004563, "version": "3.12.6", "build": 62}"#
+        );
+        let samples = lines
+            .iter()
+            .filter(|l| l.starts_with(r#"{"type": "sample""#))
+            .count();
+        assert_eq!(samples, 4, "{lines:?}");
+        assert!(!lines.iter().any(|l| l.contains("error")), "{lines:?}");
+        assert!(hub.queue.is_empty(), "every packet was read");
     }
 
     #[test]

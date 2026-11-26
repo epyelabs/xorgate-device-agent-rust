@@ -59,6 +59,8 @@ SUDOERS_024=$SUDOERS_D/024_xorgate-update-rs
 CAMCFG_BIN=/usr/local/bin/xorgate-camcfg
 CAMCFG_LIST=/usr/local/bin/xorgate-camcfg.overlays
 SUDOERS_025=$SUDOERS_D/025_xorgate-camcfg
+# The IMU driver the reader's SHTP fix was proven on (D129).
+IMU_BNO08X_PIN="adafruit-circuitpython-bno08x==1.3.3"
 STATE_DIR=/var/lib/xorgate
 CONVERT_RECORD=/var/lib/xorgate-rs-install/record
 LOCK=/run/xorgate-provision-rs.lock
@@ -737,13 +739,15 @@ provision_main() {
   # call 1 + build-essential, which JS also installs here.
   apt_hard "the installer's own tools" curl ca-certificates jq build-essential python3
 
-  # 1b. IMU (BNO085) tooling (JS step 1b, identical; best-effort).
+  # 1b. IMU (BNO085/BNO086) tooling (JS step 1b; best-effort). Rust-only
+  # (D129): the driver is pinned to 1.3.3, the release the reader's BNO086
+  # SHTP fix was proven on (bench 2, 2026-11-26); blinka stays unpinned.
   log "installing IMU tooling (i2c-tools, adafruit-circuitpython-bno08x)"
   apt-get install -y -qq i2c-tools python3-pip python3-dev \
     || log "WARN: i2c-tools/python3 pip install failed; IMU disabled"
   python3 -m pip install --break-system-packages -q \
-      adafruit-circuitpython-bno08x adafruit-blinka 2>/dev/null \
-    || python3 -m pip install -q adafruit-circuitpython-bno08x adafruit-blinka \
+      "$IMU_BNO08X_PIN" adafruit-blinka 2>/dev/null \
+    || python3 -m pip install -q "$IMU_BNO08X_PIN" adafruit-blinka \
     || log "WARN: adafruit python libs failed to install; IMU disabled until installed"
   if command -v raspi-config >/dev/null 2>&1; then
     raspi-config nonint do_i2c 0 || log "WARN: 'raspi-config do_i2c' failed; enable I2C manually"

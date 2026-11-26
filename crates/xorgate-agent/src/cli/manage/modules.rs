@@ -351,12 +351,12 @@ fn imu_detail(c: &DetailCtx) -> Vec<Line<'static>> {
             Some(d) if d.imu_present && d.imu_address.is_some() => Line::from(vec![
                 s("● ", fg(Color::Green)),
                 plain(format!(
-                    "BNO085 @ {addr_list} — present (found at {})",
+                    "BNO08x @ {addr_list} — present (found at {})",
                     to_hex_addr(d.imu_address.unwrap_or_default())
                 )),
             ]),
             Some(_) => Line::from(s(
-                format!("● BNO085 @ {addr_list} — not detected on I2C bus {IMU_I2C_BUS}"),
+                format!("● BNO08x @ {addr_list} — not detected on I2C bus {IMU_I2C_BUS}"),
                 fg(Color::Red),
             )),
         });

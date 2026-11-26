@@ -192,7 +192,7 @@ recorder, which recomputes at most once a second and remembers when its data las
 
 | Group | Collector | Source |
 |---|---|---|
-| `imu` | `imu.rs` | detects the BNO085 with `i2cdetect`, then supervises `python3 python/bno085_read.py`, which prints one JSON line per sample |
+| `imu` | `imu.rs` | detects a BNO08x (the Argus board's BNO085, the Daedalus board's BNO086) with `i2cdetect`, then supervises `python3 python/bno085_read.py`, which prints one JSON line per sample. The journal names the chip by the hardware block's `imu` (upper-cased), else `BNO08x`, and says "streaming" only at the first sample, with the firmware identity from the reader's `ready` line. Since 0.2.2 the reader numbers its own SHTP writes per channel and never parses channel 0/1 packets as reports: without that a BNO086 answers with an SHTP error list and the stock Adafruit driver fails its init with `('Unprocessable Batch bytes', 2)`. Both readers (`XORGATE_IMU_BACKEND=python`, the default, and `rust`) carry the fix |
 | `gps` | `gps.rs` | reads NMEA sentences from the GNSS tty (`GPS_NMEA_PORT`, default `/dev/ttyUSB1`); computes the fix, time-to-first-fix and a "sky state"; writes `gnss-sky.json` |
 | `lte` | `lte.rs` | reads `/run/sim7600-lte/telemetry.json`, which the modem daemon rewrites atomically |
 | `system` | `system.rs` | `/proc/stat`, `/proc/meminfo`, the thermal zone, `statvfs`, `vcgencmd get_throttled` and `pmic_read_adc`, the device tree's PSU limit |

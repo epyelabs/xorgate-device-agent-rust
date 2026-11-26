@@ -25,7 +25,9 @@
 //! Every rule is pinned by `fixtures/imu_codec/shtp.json`, printed by the
 //! REAL Adafruit code (`tools/imu/codec-fixtures/gen_codec_fixtures.py`).
 
-use crate::py_fmt::{ExcKind, PyExc, BYTES_INDEX, LIST_ASSIGNMENT_INDEX, NONE_NOT_SUBSCRIPTABLE};
+use crate::py_fmt::{
+    ExcKind, FirmwareId, PyExc, BYTES_INDEX, LIST_ASSIGNMENT_INDEX, NONE_NOT_SUBSCRIPTABLE,
+};
 
 /// `_BNO_HEADER_LEN` (`__init__.py:125`).
 pub const HEADER_LEN: usize = 4;
@@ -124,7 +126,10 @@ pub fn data_ready(raw: [u8; 4]) -> DataReady {
     }
 }
 
-/// The ONE sequence table shared by both directions (`__init__.py:489-490`).
+/// A per-channel sequence table. The library keeps ONE for both directions
+/// (`__init__.py:489-490`): the received side of the client is that table;
+/// since agent 0.2.2 the host's writes number from a second one of their own
+/// (the helper's SHTP fix; a BNO086 reports a jump with an error list).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SequenceTable(pub [u8; CHANNEL_COUNT]);
 
@@ -318,6 +323,21 @@ impl ShtpBuffer {
     /// from the buffer, i.e. from the THIRD header.
     pub fn packet(&self) -> Packet {
         Packet::from_buffer(&self.buf)
+    }
+
+    /// The identity `_parse_sensor_id` reads with the part number (agent
+    /// 0.2.2's `ready` line): `None` when `buffer[4] != 0xF8` or the part
+    /// number is zero, else the first entry's part number, version and build.
+    pub fn parse_firmware_id(&self) -> Option<FirmwareId> {
+        let part = self.parse_sensor_id().filter(|p| *p != 0)?;
+        let b = |i: usize| self.buf.get(i).copied().unwrap_or(0);
+        Some(FirmwareId {
+            part,
+            major: b(6),
+            minor: b(7),
+            patch: u16::from_le_bytes([b(16), b(17)]),
+            build: u32::from_le_bytes([b(12), b(13), b(14), b(15)]),
+        })
     }
 
     /// `_parse_sensor_id` (`__init__.py:1003-1019`): reads the BUFFER, not

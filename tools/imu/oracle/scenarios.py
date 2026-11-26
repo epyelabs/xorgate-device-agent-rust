@@ -288,7 +288,10 @@ def samples_of(lines):
     return [json.loads(ln) for ln in lines if ln.startswith('{"type": "sample"')]
 
 
-READY = '{"type": "ready", "address": "0x4a"}'
+# The ready line's head: since agent 0.2.2 the helper appends the identity of
+# the main firmware entry ("part", "version", "build") after the address.
+READY = '{"type": "ready", "address": "0x4a"'
+READY_ID = '{"type": "ready", "address": "0x4a", "part": 19088743, "version": "3.2.17", "build": 498}'
 INIT = '{"type": "error", "error": "init failed at 0x4a: '
 BYTE_COUNT = "Byte count is 0x7FFF/0xFFFF; Error?"
 SEQ_FF = "Sequence number is 0xFF; Error?"
@@ -298,9 +301,9 @@ SEQ_FF = "Sequence number is 0xFF; Error?"
 class S01CleanInit(Scenario):
     name = "s01_clean_init"
     row = 1
-    title = "clean init, ready, samples"
+    title = "clean init, ready (with the firmware identity), samples"
     stop_after = 4
-    expect_in = (READY, '"type": "sample"')
+    expect_in = (READY_ID, '"type": "sample"')
 
 
 class S02IdSecondAttempt(Scenario):
@@ -551,7 +554,7 @@ class S14bErrorsBetweenCachedSamples(Scenario):
 class S15SelfResetFrozen(Scenario):
     name = "s15_self_reset_frozen"
     row = 15
-    title = "sensor resets itself: KeyError(0), Unprocessable(1), then frozen (SYNTHETIC; W0 pending)"
+    title = "sensor resets itself: its channel 0/1 packets are skipped (agent 0.2.2), then frozen (SYNTHETIC; W0 pending)"
     stop_after = 7
 
     def on_read(self, be, n):
@@ -931,7 +934,8 @@ class S24bCount0Init(Scenario):
 class S25SeqWrap(Scenario):
     name = "s25_seq_wrap"
     row = 25
-    title = "sequence 0xFE/0xFF received on channel 2 -> sends use them and wrap 255 -> 0"
+    title = ("sequence 0xFE/0xFD received on channels 2/3 -> the host's sends keep their OWN numbering "
+             "0, 1, 2... (agent 0.2.2; the stock library would send 0xFF)")
     stop_after = 3
 
     def setup(self):
@@ -940,8 +944,12 @@ class S25SeqWrap(Scenario):
 
     def extra_check(self, be, lines):
         sends = [bytes.fromhex(r["hex"]) for r in be.rec.records if r["op"] == "write" and r.get("len", 0) >= 4]
-        seqs = [s[3] for s in sends if s[2] == 2]
-        return [] if 0xFF in seqs else [f"no 0xFF send on channel 2 ({seqs})"]
+        problems = []
+        for ch in (1, 2):
+            seqs = [s[3] for s in sends if s[2] == ch]
+            if seqs != list(range(len(seqs))):
+                problems.append(f"channel-{ch} sends are not numbered 0, 1, 2...: {seqs}")
+        return problems
 
 
 class S26Queued12(Scenario):
@@ -1259,6 +1267,54 @@ class S03bWaitBudgetBoundary(_BudgetBoundary):
         return super().on_write(be, data)
 
 
+# ------------------------------------------- agent 0.2.2: the BNO086 rows
+class S30ErrorListSkipped(Scenario):
+    name = "s30_error_list_skipped"
+    row = 30
+    title = ("SHTP error lists `01 0e` on channel 0 (BNO086) after each set-feature and mid-stream, and a "
+             "1-byte channel-1 packet mid-stream: skipped, never parsed as reports -> streams")
+    stop_after = 4
+    expect_in = (READY_ID, '"type": "sample"')
+    expect_not_in = ("Unprocessable",)
+
+    def on_write(self, be, data):
+        n = super().on_write(be, data)
+        if len(data) >= 6 and data[2] == 2 and data[4] == 0xFD:
+            self.sensor.push(0, bytes([0x01, 0x0E]))
+        return n
+
+    def on_read(self, be, n):
+        if self.it == 1 and self.first_of_iteration():
+            self.sensor.push(0, bytes([0x01, 0x0E, 0x0E]))
+            self.sensor.push(1, bytes([0x01]))
+        return super().on_read(be, n)
+
+
+class S31Bno086SequenceCheck(Scenario):
+    name = "s31_bno086_sequence_check"
+    row = 31
+    title = ("a BNO086-like hub: every host write whose sequence is not the channel's previous one + 1 is "
+             "answered with an error list on channel 0 -> none is sent")
+    stop_after = 3
+    expect_in = (READY_ID, '"type": "sample"')
+
+    def setup(self):
+        self.last = {}
+        self.error_lists = 0
+
+    def on_write(self, be, data):
+        if len(data) >= 4:
+            ch, seq = data[2], data[3]
+            if ch in self.last and seq != (self.last[ch] + 1) % 256:
+                self.error_lists += 1
+                self.sensor.push(0, bytes([0x01, 0x0E]))
+            self.last[ch] = seq
+        return super().on_write(be, data)
+
+    def extra_check(self, be, lines):
+        return [] if self.error_lists == 0 else [f"{self.error_lists} error list(s): a write sequence jumped"]
+
+
 def _restamped(cls):
     """The same scenario on a bus in "restamp per transfer" mode (c5.md 2a)."""
 
@@ -1283,7 +1339,7 @@ ALL = {cls.name: cls for cls in (
     S26Queued12, S27ZeroPartNumber, S27bCheckIdSkipsChannels01, S28UnsolicitedFc, S29SigtermMidLoop,
     S01bLargeAdvert, S01cCachedRuns, S09bLaBeforeRv, S27cProductId3Reports, S25bSeqSkipWraps, S19bEagain40x,
     S18fClamp40x, S16bSigintBufferedExit, S16cSigintInInit, S29bSigtermInInit, S04bEnableBudgetBoundary,
-    S03bWaitBudgetBoundary,
+    S03bWaitBudgetBoundary, S30ErrorListSkipped, S31Bno086SequenceCheck,
 )}
 
 # c5.md 2a: a representative subset again, on a bus that restamps every transfer.

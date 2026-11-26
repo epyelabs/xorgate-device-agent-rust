@@ -1,6 +1,6 @@
 //! Python text formatting for the Rust BNO085 reader (phase 7c WP1).
 //!
-//! The reader replaces `python/bno085_read.py` (sha256 `7af7a856…`), whose
+//! The reader replaces `python/bno085_read.py` (sha256 `8852852b…`), whose
 //! stdout is the agent's IMU contract (plan `phase-7c-rust-imu.md` P1/P2). It
 //! must therefore print BYTE-identical lines:
 //!
@@ -375,12 +375,43 @@ pub fn read_failed_text(consecutive_errors: u32, exc: &str) -> String {
     format!("read failed {consecutive_errors}x: {exc}")
 }
 
-/// `json.dumps({"type": "ready", "address": hex(addr)})` (`bno085_read.py:64`).
+/// `json.dumps({"type": "ready", "address": hex(addr)})`: the helper's
+/// `ready` line when it read no firmware identity.
 pub fn ready_line(address: i64) -> String {
     format!(
         "{{\"type\": \"ready\", \"address\": {}}}",
         json_string(&py_hex(address))
     )
+}
+
+/// The main firmware's identity, as the product-ID response's FIRST entry
+/// carries it (`_parse_sensor_id`, `__init__.py:1003-1019`): what the helper
+/// adds to its `ready` line since agent 0.2.2.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct FirmwareId {
+    pub part: u32,
+    pub major: u8,
+    pub minor: u8,
+    pub patch: u16,
+    pub build: u32,
+}
+
+/// The helper's `ready` line (`bno085_read.py`, agent 0.2.2): with the
+/// identity it read, `{"type": "ready", "address": "0x4a", "part": P,
+/// "version": "MAJ.MIN.PATCH", "build": B}`; without, [`ready_line`].
+pub fn ready_line_with(address: i64, id: Option<&FirmwareId>) -> String {
+    match id {
+        None => ready_line(address),
+        Some(f) => format!(
+            "{{\"type\": \"ready\", \"address\": {}, \"part\": {}, \"version\": \"{}.{}.{}\", \"build\": {}}}",
+            json_string(&py_hex(address)),
+            f.part,
+            f.major,
+            f.minor,
+            f.patch,
+            f.build
+        ),
+    }
 }
 
 /// `json.dumps({"type": "error", "error": text})` (`bno085_read.py:61,85-86`).

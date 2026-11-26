@@ -2,7 +2,7 @@
  {
   "name": "s01_clean_init",
   "row": 1,
-  "title": "clean init, ready, samples",
+  "title": "clean init, ready (with the firmware identity), samples",
   "exit": {
    "code": 0
   },
@@ -242,17 +242,17 @@
  {
   "name": "s15_self_reset_frozen",
   "row": 15,
-  "title": "sensor resets itself: KeyError(0), Unprocessable(1), then frozen (SYNTHETIC; W0 pending)",
+  "title": "sensor resets itself: its channel 0/1 packets are skipped (agent 0.2.2), then frozen (SYNTHETIC; W0 pending)",
   "exit": {
    "code": 0
   },
-  "records": 194,
+  "records": 163,
   "ops": 134,
-  "stdout_lines": 37,
+  "stdout_lines": 8,
   "samples": 7,
-  "d80_lines": 29,
+  "d80_lines": 0,
   "stderr_bytes": 0,
-  "virtual_s": 2.5634,
+  "virtual_s": 2.4634,
   "problems": []
  },
  {
@@ -626,7 +626,7 @@
  {
   "name": "s25_seq_wrap",
   "row": 25,
-  "title": "sequence 0xFE/0xFF received on channel 2 -> sends use them and wrap 255 -> 0",
+  "title": "sequence 0xFE/0xFD received on channels 2/3 -> the host's sends keep their OWN numbering 0, 1, 2... (agent 0.2.2; the stock library would send 0xFF)",
   "exit": {
    "code": 0
   },
@@ -859,7 +859,7 @@
   "stdout_lines": 0,
   "samples": 0,
   "d80_lines": 0,
-  "stderr_bytes": 1070,
+  "stderr_bytes": 1148,
   "virtual_s": 0.0202,
   "problems": []
  },
@@ -912,9 +912,41 @@
   "problems": []
  },
  {
+  "name": "s30_error_list_skipped",
+  "row": 30,
+  "title": "SHTP error lists `01 0e` on channel 0 (BNO086) after each set-feature and mid-stream, and a 1-byte channel-1 packet mid-stream: skipped, never parsed as reports -> streams",
+  "exit": {
+   "code": 0
+  },
+  "records": 199,
+  "ops": 176,
+  "stdout_lines": 5,
+  "samples": 4,
+  "d80_lines": 0,
+  "stderr_bytes": 0,
+  "virtual_s": 2.52445,
+  "problems": []
+ },
+ {
+  "name": "s31_bno086_sequence_check",
+  "row": 31,
+  "title": "a BNO086-like hub: every host write whose sequence is not the channel's previous one + 1 is answered with an error list on channel 0 -> none is sent",
+  "exit": {
+   "code": 0
+  },
+  "records": 127,
+  "ops": 106,
+  "stdout_lines": 4,
+  "samples": 3,
+  "d80_lines": 0,
+  "stderr_bytes": 0,
+  "virtual_s": 2.1227,
+  "problems": []
+ },
+ {
   "name": "s01_clean_init_rs",
   "row": 1,
-  "title": "clean init, ready, samples [restamp per transfer]",
+  "title": "clean init, ready (with the firmware identity), samples [restamp per transfer]",
   "exit": {
    "code": 0
   },
@@ -1042,17 +1074,17 @@
  {
   "name": "s15_self_reset_frozen_rs",
   "row": 15,
-  "title": "sensor resets itself: KeyError(0), Unprocessable(1), then frozen (SYNTHETIC; W0 pending) [restamp per transfer]",
+  "title": "sensor resets itself: its channel 0/1 packets are skipped (agent 0.2.2), then frozen (SYNTHETIC; W0 pending) [restamp per transfer]",
   "exit": {
    "code": 0
   },
-  "records": 194,
+  "records": 163,
   "ops": 134,
-  "stdout_lines": 37,
+  "stdout_lines": 8,
   "samples": 7,
-  "d80_lines": 29,
+  "d80_lines": 0,
   "stderr_bytes": 0,
-  "virtual_s": 2.5634,
+  "virtual_s": 2.4634,
   "problems": []
  },
  {

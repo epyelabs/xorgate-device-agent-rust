@@ -1,4 +1,4 @@
-{"op":"meta","format":"imutx/1","device":"/dev/i2c-1","clock":"virtual","scenario":"s01b_large_advert","row":1,"title":"a ~276-byte channel-0 advertisement after each soft reset (c5.md 2d; synthetic bytes)","synthetic":true,"helper_sha256":"7af7a85627aac526124e3e9e4b0d0b92c711ba44a4bfde158abdd1c525008b3b","oracle_image":"xorgate-p7c-oracle:a5d68f3db3f9","generatedBy":"tools/imu/oracle/oracle.py scenario","notes":{"lgpio":[["gpiochip_open",0]]}}
+{"op":"meta","format":"imutx/1","device":"/dev/i2c-1","clock":"virtual","scenario":"s01b_large_advert","row":1,"title":"a ~276-byte channel-0 advertisement after each soft reset (c5.md 2d; synthetic bytes)","synthetic":true,"helper_sha256":"8852852bf754d19e084546e581ce40b0406e360734240eda1b670ac9f906e3cd","oracle_image":"xorgate-p7c-oracle:a5d68f3db3f9","generatedBy":"tools/imu/oracle/oracle.py scenario","notes":{"lgpio":[["gpiochip_open",0]]}}
 {"op":"open","path":"/dev/i2c-1","flags":"O_RDWR|O_CLOEXEC","ret":3,"errno":null,"t_us":0,"dur_us":100}
 {"op":"ioctl","req":1795,"arg":74,"ret":0,"errno":null,"t_us":100,"dur_us":50}
 {"op":"write","len":0,"hex":"","ret":0,"errno":null,"t_us":150,"dur_us":10000}
@@ -32,7 +32,7 @@
 {"op":"ioctl","req":1795,"arg":74,"ret":0,"errno":null,"t_us":1610650,"dur_us":50}
 {"op":"read","len":20,"hex":"14000200f800030267452301f201000011000000","ret":20,"errno":null,"t_us":1610700,"dur_us":10000}
 {"op":"ioctl","req":1795,"arg":74,"ret":0,"errno":null,"t_us":1620700,"dur_us":50}
-{"op":"write","len":21,"hex":"15000200fd0500000050c300000000000000000000","ret":21,"errno":null,"t_us":1620750,"dur_us":10000}
+{"op":"write","len":21,"hex":"15000201fd0500000050c300000000000000000000","ret":21,"errno":null,"t_us":1620750,"dur_us":10000}
 {"op":"clock","fn":"monotonic","bits":4610023064264981348,"v":"1.63075"}
 {"op":"clock","fn":"monotonic","bits":4610023064264981348,"v":"1.63075"}
 {"op":"ioctl","req":1795,"arg":74,"ret":0,"errno":null,"t_us":1630750,"dur_us":50}
@@ -44,7 +44,7 @@
 {"op":"ioctl","req":1795,"arg":74,"ret":0,"errno":null,"t_us":1660900,"dur_us":50}
 {"op":"read","len":4,"hex":"00000000","ret":4,"errno":null,"t_us":1660950,"dur_us":10000}
 {"op":"ioctl","req":1795,"arg":74,"ret":0,"errno":null,"t_us":1670950,"dur_us":50}
-{"op":"write","len":21,"hex":"15000201fd0400000050c300000000000000000000","ret":21,"errno":null,"t_us":1671000,"dur_us":10000}
+{"op":"write","len":21,"hex":"15000202fd0400000050c300000000000000000000","ret":21,"errno":null,"t_us":1671000,"dur_us":10000}
 {"op":"clock","fn":"monotonic","bits":4610249370146256716,"v":"1.681"}
 {"op":"clock","fn":"monotonic","bits":4610249370146256716,"v":"1.681"}
 {"op":"ioctl","req":1795,"arg":74,"ret":0,"errno":null,"t_us":1681000,"dur_us":50}
@@ -73,7 +73,7 @@
 {"op":"read","len":33,"hex":"21000302fb12000000050403005500cdff21007a3e2301040503000700f7ff0d00","ret":33,"errno":null,"t_us":1791600,"dur_us":10000}
 {"op":"ioctl","req":1795,"arg":74,"ret":0,"errno":null,"t_us":1801600,"dur_us":50}
 {"op":"read","len":4,"hex":"00000000","ret":4,"errno":null,"t_us":1801650,"dur_us":10000}
-{"op":"stdout","line":"{\"type\": \"ready\", \"address\": \"0x4a\"}","t_us":1811650}
+{"op":"stdout","line":"{\"type\": \"ready\", \"address\": \"0x4a\", \"part\": 19088743, \"version\": \"3.2.17\", \"build\": 498}","t_us":1811650}
 {"op":"ioctl","req":1795,"arg":74,"ret":0,"errno":null,"t_us":1811650,"dur_us":50}
 {"op":"read","len":4,"hex":"00000000","ret":4,"errno":null,"t_us":1811700,"dur_us":10000}
 {"op":"ioctl","req":1795,"arg":74,"ret":0,"errno":null,"t_us":1821700,"dur_us":50}

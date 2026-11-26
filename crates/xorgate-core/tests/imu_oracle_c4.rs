@@ -1,5 +1,17 @@
 //! Phase 7c gate row C4: the Rust BNO085 client (`bno08x_client`) against the
-//! Python ORACLE, on all 29 differential scenario rows (plan §WP2).
+//! Python ORACLE, on all 29 differential scenario rows (plan §WP2), plus the
+//! two BNO086 rows of agent 0.2.2 (30: SHTP error lists on channel 0 and a
+//! reset on channel 1 skipped; 31: a hub that checks the host's write
+//! numbering).
+//!
+//! Re-baselined for agent 0.2.2 (the helper's SHTP fix, sha256 `8852852b…`):
+//! regenerated with the same oracle image (`xorgate-p7c-oracle:a5d68f3db3f9`)
+//! after a control run of the old helper reproduced the old fixtures byte for
+//! byte. Against the old fixtures the 72 transcripts differ only in the meta
+//! (`helper_sha256`, three titles), the sequence byte (offset 3) of host
+//! writes, and the `ready` line's added identity, except row 15 (the sensor's
+//! own reset: its channel 0/1 packets are no longer parsed, so the
+//! `KeyError(0)` / `Unprocessable` loop errors and their D80 dumps are gone).
 //!
 //! `fixtures/imu_oracle/c4/*.imutx` were written by the oracle
 //! (`tools/imu/oracle/oracle.py scenario all`): the UNMODIFIED
@@ -25,7 +37,7 @@ use xorgate_core::bno08x_client::ReaderArgs;
 use xorgate_core::imu_lockstep::{self, ErrnoTable};
 use xorgate_core::py_fmt::BUS_MISSING_BCM2712_PROVISIONAL;
 
-const HELPER_SHA256: &str = "7af7a85627aac526124e3e9e4b0d0b92c711ba44a4bfde158abdd1c525008b3b";
+const HELPER_SHA256: &str = "8852852bf754d19e084546e581ce40b0406e360734240eda1b670ac9f906e3cd";
 
 fn errno() -> ErrnoTable {
     let v: Value = serde_json::from_str(&common::fixture_text("imu_oracle/errno.json")).unwrap();
@@ -101,8 +113,8 @@ fn c4_the_rust_client_equals_the_python_oracle_on_every_scenario() {
     }
     assert_eq!(
         rows,
-        (1..=29).collect::<BTreeSet<u64>>(),
-        "all 29 plan rows covered"
+        (1..=31).collect::<BTreeSet<u64>>(),
+        "all 29 plan rows and the two BNO086 rows covered"
     );
     assert!(failures.is_empty(), "C4 FAIL:\n{}", failures.join("\n"));
 }
