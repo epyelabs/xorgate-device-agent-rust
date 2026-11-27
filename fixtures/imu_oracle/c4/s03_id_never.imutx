@@ -1,4 +1,4 @@
-{"op":"meta","format":"imutx/1","device":"/dev/i2c-1","clock":"virtual","scenario":"s03_id_never","row":3,"title":"product id never answered -> exit 3","synthetic":true,"helper_sha256":"7af7a85627aac526124e3e9e4b0d0b92c711ba44a4bfde158abdd1c525008b3b","oracle_image":"xorgate-p7c-oracle:a5d68f3db3f9","generatedBy":"tools/imu/oracle/oracle.py scenario","notes":{"lgpio":[["gpiochip_open",0]]}}
+{"op":"meta","format":"imutx/1","device":"/dev/i2c-1","clock":"virtual","scenario":"s03_id_never","row":3,"title":"product id never answered -> exit 3","synthetic":true,"helper_sha256":"8852852bf754d19e084546e581ce40b0406e360734240eda1b670ac9f906e3cd","oracle_image":"xorgate-p7c-oracle:a5d68f3db3f9","generatedBy":"tools/imu/oracle/oracle.py scenario","notes":{"lgpio":[["gpiochip_open",0]]}}
 {"op":"open","path":"/dev/i2c-1","flags":"O_RDWR|O_CLOEXEC","ret":3,"errno":null,"t_us":0,"dur_us":100}
 {"op":"ioctl","req":1795,"arg":74,"ret":0,"errno":null,"t_us":100,"dur_us":50}
 {"op":"write","len":0,"hex":"","ret":0,"errno":null,"t_us":150,"dur_us":10000}
@@ -627,10 +627,10 @@
 {"op":"clock","fn":"monotonic","bits":4615290136619181828,"v":"3.60055"}
 {"op":"clock","fn":"sleep","bits":4602678819172646912,"secs":"0.5","sigint":false,"t_us":3600550}
 {"op":"ioctl","req":1795,"arg":74,"ret":0,"errno":null,"t_us":4100550,"dur_us":50}
-{"op":"write","len":5,"hex":"0500010101","ret":5,"errno":null,"t_us":4100600,"dur_us":10000}
+{"op":"write","len":5,"hex":"0500010201","ret":5,"errno":null,"t_us":4100600,"dur_us":10000}
 {"op":"clock","fn":"sleep","bits":4602678819172646912,"secs":"0.5","sigint":false,"t_us":4110600}
 {"op":"ioctl","req":1795,"arg":74,"ret":0,"errno":null,"t_us":4610600,"dur_us":50}
-{"op":"write","len":5,"hex":"0500010201","ret":5,"errno":null,"t_us":4610650,"dur_us":10000}
+{"op":"write","len":5,"hex":"0500010301","ret":5,"errno":null,"t_us":4610650,"dur_us":10000}
 {"op":"clock","fn":"sleep","bits":4602678819172646912,"secs":"0.5","sigint":false,"t_us":4620650}
 {"op":"ioctl","req":1795,"arg":74,"ret":0,"errno":null,"t_us":5120650,"dur_us":50}
 {"op":"read","len":4,"hex":"23000003","ret":4,"errno":null,"t_us":5120700,"dur_us":10000}
@@ -1251,10 +1251,10 @@
 {"op":"clock","fn":"monotonic","bits":4620345258315919183,"v":"7.69095"}
 {"op":"clock","fn":"sleep","bits":4602678819172646912,"secs":"0.5","sigint":false,"t_us":7690950}
 {"op":"ioctl","req":1795,"arg":74,"ret":0,"errno":null,"t_us":8190950,"dur_us":50}
-{"op":"write","len":5,"hex":"0500010301","ret":5,"errno":null,"t_us":8191000,"dur_us":10000}
+{"op":"write","len":5,"hex":"0500010401","ret":5,"errno":null,"t_us":8191000,"dur_us":10000}
 {"op":"clock","fn":"sleep","bits":4602678819172646912,"secs":"0.5","sigint":false,"t_us":8201000}
 {"op":"ioctl","req":1795,"arg":74,"ret":0,"errno":null,"t_us":8701000,"dur_us":50}
-{"op":"write","len":5,"hex":"0500010401","ret":5,"errno":null,"t_us":8701050,"dur_us":10000}
+{"op":"write","len":5,"hex":"0500010501","ret":5,"errno":null,"t_us":8701050,"dur_us":10000}
 {"op":"clock","fn":"sleep","bits":4602678819172646912,"secs":"0.5","sigint":false,"t_us":8711050}
 {"op":"ioctl","req":1795,"arg":74,"ret":0,"errno":null,"t_us":9211050,"dur_us":50}
 {"op":"read","len":4,"hex":"23000005","ret":4,"errno":null,"t_us":9211100,"dur_us":10000}

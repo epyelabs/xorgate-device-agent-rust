@@ -67,6 +67,13 @@ pub enum ImuMessage {
     Ready {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         address: Option<String>,
+        /// The main firmware's identity (agent 0.2.2 readers; D129).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        part: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        version: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        build: Option<u64>,
     },
     Sample {
         quat: Quat,
@@ -186,6 +193,18 @@ mod tests {
             parse_imu_line(r#"{"type":"ready","address":"0x4b","extra":1}"#),
             Some(ImuMessage::Ready { .. })
         ));
+        // Agent 0.2.2's readers add the main firmware's identity (D129).
+        assert_eq!(
+            parse_imu_line(
+                r#"{"type": "ready", "address": "0x4a", "part": 10004563, "version": "3.12.6", "build": 62}"#
+            ),
+            Some(ImuMessage::Ready {
+                address: Some("0x4a".into()),
+                part: Some(10_004_563),
+                version: Some("3.12.6".into()),
+                build: Some(62),
+            })
+        );
     }
 
     #[test]

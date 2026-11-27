@@ -62,7 +62,7 @@ import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HELPER_DEFAULT = os.environ.get("P7C_HELPER", "/helper/bno085_read.py")
-HELPER_SHA256 = "7af7a85627aac526124e3e9e4b0d0b92c711ba44a4bfde158abdd1c525008b3b"
+HELPER_SHA256 = "8852852bf754d19e084546e581ce40b0406e360734240eda1b670ac9f906e3cd"
 DEVICE = "/dev/i2c-1"
 OPS = ("open", "ioctl", "read", "write", "close")
 MAX_REQUESTS = 400_000

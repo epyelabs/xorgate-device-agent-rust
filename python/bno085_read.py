@@ -1,10 +1,16 @@
 #!/usr/bin/env python3
-"""Stream BNO085 motion data as line-delimited JSON for the Xorgate device agent.
+"""Stream BNO08x (BNO085/BNO086) motion data as line-delimited JSON for the
+Xorgate device agent.
 
-The device agent (Node) spawns this and reads stdout. Each line is one JSON
-object: a "ready" marker, a "sample", or an "error". I2C runs at 100 kHz to
-avoid the BNO085's clock-stretching issues on the Pi (matches the verified
-test script). Requires `adafruit-circuitpython-bno08x` + `adafruit-blinka`.
+The device agent spawns this and reads stdout. Each line is one JSON object: a
+"ready" marker, a "sample", or an "error". I2C runs at 100 kHz to avoid the
+BNO08x's clock-stretching issues on the Pi (matches the verified test script).
+Requires `adafruit-circuitpython-bno08x` + `adafruit-blinka`.
+
+The "ready" line carries the chip's self-reported identity when the driver
+read it (the first product-ID entry, the main firmware): "part", "version",
+"build". It comes from the product-ID response the driver reads anyway; no
+extra bus traffic.
 """
 import argparse
 import json
@@ -20,6 +26,61 @@ def emit(obj):
 
 def parse_address(value):
     return int(value, 16) if str(value).lower().startswith("0x") else int(value)
+
+
+# The driver internals the SHTP fix below overrides or reads. They are the same
+# in every adafruit-circuitpython-bno08x release from 1.0.0 to 1.3.3. When one
+# is missing (a later release), the stock driver is used and stderr says so.
+SHTP_FIX_NEEDS = ("_send_packet", "_handle_packet", "_parse_sensor_id", "_get_data")
+
+
+def shtp_fixed(base):
+    """`base` (BNO08X_I2C) with two SHTP fixes the BNO086 needs, harmless on a
+    BNO085, or None when `base` lacks an internal they rely on.
+
+    1. The host keeps its OWN per-channel write sequence numbers. The library
+       overwrites them with the hub's read sequence numbers, so the host's
+       channel-2 writes jump (e.g. 1 -> 4 -> 10). A BNO086 answers every such
+       jump with an SHTP error list on channel 0 (`01 0e`); a BNO085 does not.
+    2. Packets on channel 0 (SHTP command) and 1 (executable) are never sensor
+       reports: they are not handed to the report parser, which would read the
+       error list `01 0e` as a truncated accelerometer report and raise
+       RuntimeError('Unprocessable Batch bytes', 2).
+    It also keeps the main firmware's identity from the product-ID response.
+    """
+    missing = [n for n in SHTP_FIX_NEEDS if not callable(getattr(base, n, None))]
+    if missing:
+        return None
+
+    class ShtpI2C(base):
+        def __init__(self, *a, **kw):
+            self._tx_seq = [0] * 6  # set before super().__init__: it already writes
+            self._identity = None
+            super().__init__(*a, **kw)
+
+        def _send_packet(self, channel, data):
+            seqs = getattr(self, "_sequence_number", None)
+            if isinstance(seqs, list) and channel < len(seqs):
+                seqs[channel] = self._tx_seq[channel]
+            result = super()._send_packet(channel, data)
+            self._tx_seq[channel] = (self._tx_seq[channel] + 1) % 256
+            return result
+
+        def _handle_packet(self, packet):
+            if packet.channel_number in (0, 1):
+                return
+            super()._handle_packet(packet)
+
+        def _parse_sensor_id(self):
+            part = super()._parse_sensor_id()
+            if part:
+                self._identity = (part, "%d.%d.%d" % (self._get_data(2, "<B"),
+                                                      self._get_data(3, "<B"),
+                                                      self._get_data(12, "<H")),
+                                  self._get_data(8, "<I"))
+            return part
+
+    return ShtpI2C
 
 
 def main():
@@ -52,18 +113,28 @@ def main():
               "Install adafruit-circuitpython-bno08x and adafruit-blinka."})
         return 2
 
+    driver = shtp_fixed(BNO08X_I2C)
+    if driver is None:
+        print("adafruit_bno08x lacks the internals of the SHTP sequence fix; "
+              "using the stock driver (a BNO086 may fail to start)", file=sys.stderr, flush=True)
+        driver = BNO08X_I2C
+
     try:
         i2c = busio.I2C(board.SCL, board.SDA, frequency=100000)
-        bno = BNO08X_I2C(i2c, address=addr)
+        bno = driver(i2c, address=addr)
         bno.enable_feature(BNO_REPORT_ROTATION_VECTOR)
         bno.enable_feature(BNO_REPORT_LINEAR_ACCELERATION)
     except Exception as exc:  # noqa: BLE001
         emit({"type": "error", "error": f"init failed at {hex(addr)}: {exc}"})
         return 3
 
-    emit({"type": "ready", "address": hex(addr)})
+    ready = {"type": "ready", "address": hex(addr)}
+    identity = getattr(bno, "_identity", None)
+    if identity:
+        ready["part"], ready["version"], ready["build"] = identity
+    emit(ready)
 
-    # The BNO085 over I2C throws transient RuntimeErrors (clock stretching,
+    # The BNO08x over I2C throws transient RuntimeErrors (clock stretching,
     # "unprocessable batch" SHTP frames), and i2cdetect probes on the same bus
     # can bump a read. A single bad read must NOT end the stream: the agent would
     # null its cached sample, re-detect, and respawn us (~2s), so the monitor

@@ -32,8 +32,9 @@
 # Required entries verified after packing: bin/xorgate-rs, build-info.json,
 # systemd/xorgate-agent-rs.service, install-rs.sh, provision-rs.sh, python/bno085_read.py (Phase 2 WP2: the
 # IMU collector spawns `python3 <root>/python/bno085_read.py`, vendored
-# byte-identical from the JS repo @ 89b5c64, sha256 7af7a856…; the JS
-# tarball ships python/ too, device-deploy-dev.yml:98).
+# from the JS repo @ 89b5c64 (sha256 7af7a856…) and, since agent 0.2.2,
+# carrying the BNO086 SHTP fix (sha256 8852852b…, D129); the JS tarball
+# ships python/ too, device-deploy-dev.yml:98).
 #
 # Sidecar: <tarball>.sha256 in `sha256sum -c` format ("<hex>  <basename>").
 # Prints key=value lines (tarball, version, channel, builtAt, packageVersion,

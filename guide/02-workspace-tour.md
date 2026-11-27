@@ -98,7 +98,7 @@ I/O). When you look for "why does it do X", look in core first.
 | `scripts/` | `docker-build.sh`, `pack.sh`, `build-info.sh`, the `dist-*.sh` publishing helpers, `install-rs.sh` (convert a device), `bench/` (bench-device helpers) and `tests/` (script test suites). |
 | `tools/` | `replay/` (the record/replay rig: Docker compose, shims, tolerance table), and end-to-end rigs for conversion, update, OBD and SMS (`convert-e2e/`, `update-e2e/`, `obd-e2e/`, `sms-fake-modem/`). |
 | `media/` | The vendored live-video runtime `xorgate-kvs-webrtc` (a C program) and its shared libraries. |
-| `python/` | The IMU helper `bno085_read.py` and the OBD-II helper, run as supervised child processes. |
+| `python/` | The IMU helper `bno085_read.py` (BNO085 and BNO086; the file keeps its name) and the OBD-II helper, run as supervised child processes. |
 | `modem/`, `system/` | The LTE modem daemon and small sudo helpers. They ship in the tarball unchanged; the agent talks to them through files and `sudo -n`. |
 | `docs/convert.md` | The operator runbook for converting a device to this agent and back. |
 

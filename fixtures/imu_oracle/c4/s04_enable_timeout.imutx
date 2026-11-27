@@ -1,4 +1,4 @@
-{"op":"meta","format":"imutx/1","device":"/dev/i2c-1","clock":"virtual","scenario":"s04_enable_timeout","row":4,"title":"feature 0x05 never acknowledged -> exit 3","synthetic":true,"helper_sha256":"7af7a85627aac526124e3e9e4b0d0b92c711ba44a4bfde158abdd1c525008b3b","oracle_image":"xorgate-p7c-oracle:a5d68f3db3f9","generatedBy":"tools/imu/oracle/oracle.py scenario","notes":{"lgpio":[["gpiochip_open",0]]}}
+{"op":"meta","format":"imutx/1","device":"/dev/i2c-1","clock":"virtual","scenario":"s04_enable_timeout","row":4,"title":"feature 0x05 never acknowledged -> exit 3","synthetic":true,"helper_sha256":"8852852bf754d19e084546e581ce40b0406e360734240eda1b670ac9f906e3cd","oracle_image":"xorgate-p7c-oracle:a5d68f3db3f9","generatedBy":"tools/imu/oracle/oracle.py scenario","notes":{"lgpio":[["gpiochip_open",0]]}}
 {"op":"open","path":"/dev/i2c-1","flags":"O_RDWR|O_CLOEXEC","ret":3,"errno":null,"t_us":0,"dur_us":100}
 {"op":"ioctl","req":1795,"arg":74,"ret":0,"errno":null,"t_us":100,"dur_us":50}
 {"op":"write","len":0,"hex":"","ret":0,"errno":null,"t_us":150,"dur_us":10000}
@@ -32,7 +32,7 @@
 {"op":"ioctl","req":1795,"arg":74,"ret":0,"errno":null,"t_us":1610650,"dur_us":50}
 {"op":"read","len":20,"hex":"14000200f800030267452301f201000011000000","ret":20,"errno":null,"t_us":1610700,"dur_us":10000}
 {"op":"ioctl","req":1795,"arg":74,"ret":0,"errno":null,"t_us":1620700,"dur_us":50}
-{"op":"write","len":21,"hex":"15000200fd0500000050c300000000000000000000","ret":21,"errno":null,"t_us":1620750,"dur_us":10000}
+{"op":"write","len":21,"hex":"15000201fd0500000050c300000000000000000000","ret":21,"errno":null,"t_us":1620750,"dur_us":10000}
 {"op":"clock","fn":"monotonic","bits":4610023064264981348,"v":"1.63075"}
 {"op":"clock","fn":"monotonic","bits":4610023064264981348,"v":"1.63075"}
 {"op":"ioctl","req":1795,"arg":74,"ret":0,"errno":null,"t_us":1630750,"dur_us":50}

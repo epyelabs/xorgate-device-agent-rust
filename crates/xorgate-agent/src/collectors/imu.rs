@@ -6,10 +6,15 @@
 //! 1. the first `read()`/`sample()` kicks off detection WITHOUT blocking the
 //!    tick (`{}` this tick);
 //! 2. i2cdetect missing/failed or no BNO085 on bus 1 → ONE warning, inert;
-//! 3. found → `[imu] BNO085 detected at 0x4a — streaming` and the Python
+//! 3. found → `[imu] <name> detected at 0x4a — starting the reader` (D129:
+//!    the name is the hardware block's IMU kind upper-cased, else `BNO08x`;
+//!    the TS says `BNO085 … — streaming`) and the Python
 //!    helper `python3 <XORGATE_PYTHON_DIR>/bno085_read.py --address 0x4a` is
 //!    spawned (its own process group, see `xorgate_hal::child`);
-//! 4. each `sample` line replaces `latest`; an unparsed line changes NOTHING
+//! 4. each `sample` line replaces `latest`, and the FIRST of a reader run logs
+//!    `[imu] <name> at 0x4a — streaming (firmware: part …, version …, build …)`
+//!    with the identity of the reader's `ready` line (D129; no TS
+//!    counterpart); an unparsed line changes NOTHING
 //!    (neither `latest` nor `updatedMono` — CF18); helper `error` messages and
 //!    non-empty stderr lines are logged as `[imu] …` errors;
 //! 5. when the helper exits: had samples → `[imu] reader stream ended; will
@@ -56,8 +61,9 @@ use tokio::time::Instant;
 use tracing::{error, info, warn};
 use xorgate_core::imu::{parse_imu_line, ImuDetect, ImuMessage, ImuSample};
 use xorgate_core::imu_group::{
-    detected_line, exited_before_sample_line, map_latest, not_detected_line, on_reader_exit,
-    stderr_error, to_hex_addr, ReaderExit, READER_ENDED,
+    detected_line, exited_before_sample_line, imu_name, map_latest, not_detected_line,
+    on_reader_exit, stderr_error, streaming_line, to_hex_addr, ReaderExit, ReaderIdentity,
+    READER_ENDED,
 };
 use xorgate_core::telemetry::MetricGroup;
 use xorgate_hal::child::{self, ChildEvent, ChildHandle, ChildSpec};
@@ -264,6 +270,10 @@ struct State {
     /// `stop()` was called (agent shutdown): the helper's death that follows
     /// is ours, not a reader failure — the TS logs nothing there.
     stopping: bool,
+    /// The running reader's chip (journal name) and address (D129).
+    chip: Option<(String, u32)>,
+    /// The identity the running reader's `ready` line carried.
+    identity: Option<ReaderIdentity>,
 }
 
 impl State {
@@ -273,6 +283,8 @@ impl State {
         self.stream = None;
         self.latest = None;
         self.ever_sampled = false;
+        self.chip = None;
+        self.identity = None;
     }
 }
 
@@ -327,6 +339,15 @@ impl Shared {
     /// `start()` (`imu.ts:37-79`).
     async fn start(self: Arc<Self>) {
         let detect = self.io.detect(self.ctx.tape.as_ref()).await;
+        // The journal's name for the chip: the hardware block's IMU kind
+        // (any string; nothing else depends on it), else `BNO08x` (D129).
+        let name = imu_name(
+            self.ctx
+                .hardware
+                .borrow()
+                .as_ref()
+                .and_then(|b| b.imu.as_deref()),
+        );
         if !detect.available {
             let mut st = self.lock();
             if !st.warned {
@@ -340,13 +361,18 @@ impl Shared {
             _ => {
                 let mut st = self.lock();
                 if !st.warned {
-                    warn!("{}", not_detected_line());
+                    warn!("{}", not_detected_line(&name));
                     st.warned = true;
                 }
                 return;
             }
         };
-        info!("{}", detected_line(addr));
+        info!("{}", detected_line(&name, addr));
+        {
+            let mut st = self.lock();
+            st.chip = Some((name, addr));
+            st.identity = None;
+        }
         let soc_check = std::env::var(IMU_SOC_CHECK_ENV).ok();
         let spec = reader_spec(
             std::env::var(IMU_BACKEND_ENV).ok().as_deref(),
@@ -373,12 +399,30 @@ impl Shared {
                             let mut st = self.lock();
                             st.latest = Some(ImuSample { quat, linaccel });
                             st.latest_mono = Some(Instant::now());
+                            if !st.ever_sampled {
+                                // The first sample of this run (D129).
+                                if let Some((name, addr)) = &st.chip {
+                                    info!("{}", streaming_line(name, *addr, st.identity.as_ref()));
+                                }
+                            }
                             st.ever_sampled = true;
                         }
+                        Some(ImuMessage::Ready {
+                            part,
+                            version,
+                            build,
+                            ..
+                        }) => {
+                            self.lock().identity = Some(ReaderIdentity {
+                                part,
+                                version,
+                                build,
+                            });
+                        }
                         Some(ImuMessage::Error { error: msg }) => error!("[imu] {msg}"),
-                        // `ready` has no handler in the collector; an unparsed
-                        // line is ignored (CF18: `latest` and its stamp unchanged).
-                        Some(ImuMessage::Ready { .. }) | None => {}
+                        // An unparsed line is ignored (CF18: `latest` and its
+                        // stamp unchanged).
+                        None => {}
                     }
                 }
                 ChildEvent::Stderr(line) => {

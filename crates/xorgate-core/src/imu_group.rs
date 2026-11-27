@@ -56,20 +56,83 @@ pub fn to_hex_addr(addr: u32) -> String {
     format!("0x{addr:02x}")
 }
 
-/// `[imu] BNO085 not detected on I2C bus 1 (0x4a/0x4b)` (`imu.ts:49`).
-pub fn not_detected_line() -> String {
+/// The name the journal gives the IMU (D129): the hardware block's `imu`
+/// when it declares one, upper-cased (`bno086` → `BNO086`), else `BNO08x`
+/// (the TS says `BNO085` for any chip). Any string is taken as it is (only
+/// control characters are dropped, at most 32 characters kept): nothing in
+/// the agent depends on the kind, only on whether an IMU answers.
+pub fn imu_name(declared: Option<&str>) -> String {
+    let name: String = declared
+        .map(crate::js::trim)
+        .unwrap_or("")
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(32)
+        .collect::<String>()
+        .to_uppercase();
+    if name.is_empty() {
+        "BNO08x".to_string()
+    } else {
+        name
+    }
+}
+
+/// `[imu] <name> not detected on I2C bus 1 (0x4a/0x4b)` (`imu.ts:49`, which
+/// says `BNO085`; D129).
+pub fn not_detected_line(name: &str) -> String {
     let addrs: Vec<String> = IMU_ADDRESSES.iter().map(|a| to_hex_addr(*a)).collect();
-    // The TS literal is fixed text; built here from the same constants and
-    // pinned by the test below.
     format!(
-        "[imu] BNO085 not detected on I2C bus {IMU_I2C_BUS} ({})",
+        "[imu] {name} not detected on I2C bus {IMU_I2C_BUS} ({})",
         addrs.join("/")
     )
 }
 
-/// `[imu] BNO085 detected at 0x4a — streaming` (`imu.ts:54`).
-pub fn detected_line(addr: u32) -> String {
-    format!("[imu] BNO085 detected at {} — streaming", to_hex_addr(addr))
+/// `[imu] <name> detected at 0x4a — starting the reader` (D129). The TS
+/// says `BNO085 detected at 0x4a — streaming` (`imu.ts:54`) before the
+/// reader has started, and then the reader may fail its init.
+pub fn detected_line(name: &str, addr: u32) -> String {
+    format!(
+        "[imu] {name} detected at {} — starting the reader",
+        to_hex_addr(addr)
+    )
+}
+
+/// The main firmware's identity as the reader's `ready` line carries it
+/// (agent 0.2.2 readers; an older reader sends none).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ReaderIdentity {
+    pub part: Option<u64>,
+    pub version: Option<String>,
+    pub build: Option<u64>,
+}
+
+/// `[imu] <name> at 0x4a — streaming (firmware: part P, version V, build B)`,
+/// logged once per reader run at its FIRST sample (D129). Without an
+/// identity (an older reader, or a driver without the fix) the parenthesis
+/// is left out; a part of it that is missing is left out of it.
+pub fn streaming_line(name: &str, addr: u32, id: Option<&ReaderIdentity>) -> String {
+    let mut parts = Vec::new();
+    if let Some(id) = id {
+        if let Some(p) = id.part {
+            parts.push(format!("part {p}"));
+        }
+        if let Some(v) = &id.version {
+            let v: String = v.chars().filter(|c| !c.is_control()).take(32).collect();
+            parts.push(format!("version {v}"));
+        }
+        if let Some(b) = id.build {
+            parts.push(format!("build {b}"));
+        }
+    }
+    let addr = to_hex_addr(addr);
+    if parts.is_empty() {
+        format!("[imu] {name} at {addr} — streaming")
+    } else {
+        format!(
+            "[imu] {name} at {addr} — streaming (firmware: {})",
+            parts.join(", ")
+        )
+    }
 }
 
 /// `[imu] reader stream ended; will re-detect` (`imu.ts:70`).
@@ -99,12 +162,32 @@ mod tests {
     #[test]
     fn log_lines_verbatim() {
         assert_eq!(
-            not_detected_line(),
-            "[imu] BNO085 not detected on I2C bus 1 (0x4a/0x4b)"
+            not_detected_line("BNO08x"),
+            "[imu] BNO08x not detected on I2C bus 1 (0x4a/0x4b)"
         );
         assert_eq!(
-            detected_line(0x4a),
-            "[imu] BNO085 detected at 0x4a — streaming"
+            detected_line("BNO086", 0x4a),
+            "[imu] BNO086 detected at 0x4a — starting the reader"
+        );
+        assert_eq!(
+            streaming_line(
+                "BNO086",
+                0x4a,
+                Some(&ReaderIdentity {
+                    part: Some(10_004_563),
+                    version: Some("3.12.6".into()),
+                    build: Some(62),
+                })
+            ),
+            "[imu] BNO086 at 0x4a — streaming (firmware: part 10004563, version 3.12.6, build 62)"
+        );
+        assert_eq!(
+            streaming_line("BNO08x", 0x4b, None),
+            "[imu] BNO08x at 0x4b — streaming"
+        );
+        assert_eq!(
+            streaming_line("BNO08x", 0x4a, Some(&ReaderIdentity::default())),
+            "[imu] BNO08x at 0x4a — streaming"
         );
         assert_eq!(to_hex_addr(0x4b), "0x4b");
         assert_eq!(to_hex_addr(5), "0x05");
@@ -113,6 +196,20 @@ mod tests {
             "[imu] reader exited before any sample (exit ?); IMU disabled. Check: i2cdetect -y 1, python3 + adafruit-circuitpython-bno08x, and python/bno085_read.py."
         );
         assert!(exited_before_sample_line(Some(2)).contains("(exit 2);"));
+    }
+
+    /// The hardware block's IMU kind names the chip; anything goes, nothing
+    /// is refused or treated differently.
+    #[test]
+    fn the_imu_name_comes_from_the_hardware_block() {
+        assert_eq!(imu_name(Some("bno086")), "BNO086");
+        assert_eq!(imu_name(Some("bno085")), "BNO085");
+        assert_eq!(imu_name(Some(" icm-42688 ")), "ICM-42688");
+        assert_eq!(imu_name(Some("")), "BNO08x");
+        assert_eq!(imu_name(Some("  ")), "BNO08x");
+        assert_eq!(imu_name(None), "BNO08x");
+        assert_eq!(imu_name(Some("a\nb")), "AB");
+        assert_eq!(imu_name(Some(&"x".repeat(40))).len(), 32);
     }
 
     #[test]
